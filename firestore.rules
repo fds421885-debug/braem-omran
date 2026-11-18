@@ -42,6 +42,14 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/accounts/$(request.auth.uid)).data.complexId == cpxId;
     }
 
+    function isComplexStaff(cpxId) {
+      return isVerifiedUser()
+        && isValidId(cpxId)
+        && exists(/databases/$(database)/documents/accounts/$(request.auth.uid))
+        && get(/databases/$(database)/documents/accounts/$(request.auth.uid)).data.role in ['supervisor', 'teacher']
+        && get(/databases/$(database)/documents/accounts/$(request.auth.uid)).data.complexId == cpxId;
+    }
+
     function isBoundedStringList(arr, maxLen) {
       return arr is list
         && arr.size() <= maxLen
@@ -266,6 +274,53 @@ service cloud.firestore {
         && data.fullText is string && data.fullText.size() <= 25000
         && data.segments is list && data.segments.size() <= 500
         && (data.segments.size() == 0 || data.segments[0] is map)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAttendance(data, recordId) {
+      return data.keys().hasAll([
+          'id', 'complexId', 'mosqueId', 'halaqaId', 'dateKey',
+          'entries', 'recordedBy', 'recordedByName', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'complexId', 'mosqueId', 'halaqaId', 'dateKey',
+          'entries', 'recordedBy', 'recordedByName', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == recordId && isValidId(data.id)
+        && data.complexId is string && isValidId(data.complexId)
+        && data.mosqueId is string && isValidId(data.mosqueId)
+        && data.halaqaId is string && isValidId(data.halaqaId)
+        && data.dateKey is string && data.dateKey.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && data.entries is list && data.entries.size() <= 200
+        && (data.entries.size() == 0 || data.entries[0] is map)
+        && data.recordedBy is string && data.recordedBy.size() >= 1 && data.recordedBy.size() <= 128
+        && data.recordedByName is string && data.recordedByName.size() >= 1 && data.recordedByName.size() <= 120
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCurriculum(data, curriculumId) {
+      return data.keys().hasAll([
+          'id', 'complexId', 'bookId', 'bookTitle', 'halaqaIds',
+          'mosqueIds', 'days', 'scheduleNote', 'active', 'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'complexId', 'bookId', 'bookTitle', 'halaqaIds',
+          'mosqueIds', 'days', 'scheduleNote', 'active', 'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == curriculumId && isValidId(data.id)
+        && data.complexId is string && isValidId(data.complexId)
+        && data.bookId is string && isValidId(data.bookId)
+        && data.bookTitle is string && data.bookTitle.size() >= 1 && data.bookTitle.size() <= 160
+        && isBoundedStringList(data.halaqaIds, 100)
+        && data.halaqaIds.size() >= 1
+        && isBoundedStringList(data.mosqueIds, 50)
+        && isBoundedStringList(data.days, 7)
+        && data.days.size() >= 1
+        && data.scheduleNote is string && data.scheduleNote.size() <= 240
+        && data.active is bool
+        && data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128
+        && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
 
@@ -616,6 +671,73 @@ service cloud.firestore {
           'imageDataUrl', 'width', 'height', 'recognized', 'fullText', 'segments', 'updatedAt'
         ]);
       allow delete: if isValidId(pageId) && (
+        isPlatformAdmin() || isComplexSupervisor(existing().complexId)
+      );
+    }
+
+    match /attendance/{recordId} {
+      allow get: if isSignedIn() && isValidId(recordId) && (
+        isPlatformAdmin() || isComplexStaff(existing().complexId)
+      );
+      allow list: if isSignedIn() && (
+        isPlatformAdmin()
+        || (resource.data.complexId is string && isComplexStaff(resource.data.complexId))
+      );
+      allow create: if (isPlatformAdmin() || isComplexStaff(incoming().complexId))
+        && isValidId(recordId)
+        && isValidAttendance(incoming(), recordId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if (
+          isPlatformAdmin()
+          || (isComplexStaff(existing().complexId) && incoming().complexId == existing().complexId)
+        )
+        && isValidId(recordId)
+        && isValidAttendance(incoming(), recordId)
+        && incoming().id == existing().id
+        && incoming().complexId == existing().complexId
+        && incoming().mosqueId == existing().mosqueId
+        && incoming().halaqaId == existing().halaqaId
+        && incoming().dateKey == existing().dateKey
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'entries', 'recordedBy', 'recordedByName', 'updatedAt'
+        ]);
+      allow delete: if isValidId(recordId) && (
+        isPlatformAdmin() || isComplexSupervisor(existing().complexId)
+      );
+    }
+
+    match /curricula/{curriculumId} {
+      allow get: if isSignedIn() && isValidId(curriculumId) && (
+        isPlatformAdmin() || isComplexStaff(existing().complexId)
+      );
+      allow list: if isSignedIn() && (
+        isPlatformAdmin()
+        || (resource.data.complexId is string && isComplexStaff(resource.data.complexId))
+      );
+      allow create: if (isPlatformAdmin() || isComplexSupervisor(incoming().complexId))
+        && isValidId(curriculumId)
+        && isValidCurriculum(incoming(), curriculumId)
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if (
+          isPlatformAdmin()
+          || (isComplexSupervisor(existing().complexId) && incoming().complexId == existing().complexId)
+        )
+        && isValidId(curriculumId)
+        && isValidCurriculum(incoming(), curriculumId)
+        && incoming().id == existing().id
+        && incoming().complexId == existing().complexId
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'bookId', 'bookTitle', 'halaqaIds', 'mosqueIds', 'days', 'scheduleNote', 'active', 'updatedAt'
+        ]);
+      allow delete: if isValidId(curriculumId) && (
         isPlatformAdmin() || isComplexSupervisor(existing().complexId)
       );
     }

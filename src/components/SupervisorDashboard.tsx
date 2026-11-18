@@ -1,10 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { signOut } from 'firebase/auth';
 import {
+  ArrowLeftRight,
   Award,
   BarChart3,
+  BookMarked,
   BookOpen,
   Building2,
+  ClipboardCheck,
   GraduationCap,
   Home,
   Layers,
@@ -13,6 +17,7 @@ import {
   RefreshCw,
   Sparkles,
   Users,
+  X,
 } from 'lucide-react';
 import { getAuthForConfig } from '../services/multiDb';
 import {
@@ -25,18 +30,27 @@ import type {
   DailyStatsRecord,
   HalaqaRankingItem,
   StudentRankingItem,
+  TeacherRoleContext,
 } from '../types/platform';
+import { AttendanceSection } from './AttendanceSection';
 import { BookLibrarySection } from './BookLibrarySection';
 import { ComplexWorkspace } from './ComplexWorkspace';
+import { CurriculaSection } from './CurriculaSection';
 import { ModernLoader } from './ModernLoader';
 import { PWAInstallButton } from './PWAInstallButton';
+import { TeacherDashboardView } from './TeacherDashboardView';
 
 interface SupervisorDashboardProps {
   session: ActiveSession;
   onExitQuickSession: () => void;
 }
 
-type SupervisorTab = 'home' | 'accounts_mosques' | 'library';
+type SupervisorTab =
+  | 'home'
+  | 'attendance'
+  | 'accounts_mosques'
+  | 'library'
+  | 'curricula';
 
 const BASE_URL = import.meta.env.BASE_URL;
 
@@ -54,6 +68,13 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
   const [globalStats, setGlobalStats] = useState<DailyStatsRecord | null>(null);
   const [topHalaqat, setTopHalaqat] = useState<HalaqaRankingItem[]>([]);
   const [topStudents, setTopStudents] = useState<StudentRankingItem[]>([]);
+
+  // Switch to Teacher Role state
+  const [teacherContext, setTeacherContext] = useState<TeacherRoleContext | null>(null);
+  const [showTeacherPicker, setShowTeacherPicker] = useState(false);
+  const [pickerMosqueId, setPickerMosqueId] = useState('');
+  const [pickerHalaqaId, setPickerHalaqaId] = useState('');
+  const [pickerError, setPickerError] = useState<string | null>(null);
 
   const restrictMosqueIds = useMemo(() => {
     const ids = session.account.mosqueIds?.length
@@ -183,10 +204,67 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
     );
   }, [scopedSummary.mosqueSeries]);
 
+  const scopedMosquesForPicker = useMemo(() => {
+    if (!workspace) return [];
+    if (restrictMosqueIds.length === 0) return workspace.mosques;
+    const allowed = new Set(restrictMosqueIds);
+    return workspace.mosques.filter((m) => allowed.has(m.id));
+  }, [workspace, restrictMosqueIds]);
+
+  const pickerHalaqat = useMemo(() => {
+    if (!workspace || !pickerMosqueId) return [];
+    return workspace.halaqat.filter((h) => h.mosqueId === pickerMosqueId);
+  }, [workspace, pickerMosqueId]);
+
+  const openTeacherPicker = () => {
+    setPickerError(null);
+    const firstMosque = scopedMosquesForPicker[0];
+    const initialMosqueId = firstMosque?.id || '';
+    const firstHalaqa = workspace?.halaqat.find((h) => h.mosqueId === initialMosqueId);
+    setPickerMosqueId(initialMosqueId);
+    setPickerHalaqaId(firstHalaqa?.id || '');
+    setShowTeacherPicker(true);
+  };
+
+  const handlePickerMosqueChange = (nextMosqueId: string) => {
+    setPickerMosqueId(nextMosqueId);
+    const firstHalaqa = workspace?.halaqat.find((h) => h.mosqueId === nextMosqueId);
+    setPickerHalaqaId(firstHalaqa?.id || '');
+    setPickerError(null);
+  };
+
+  const handleConfirmTeacherSwitch = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!workspace) return;
+    if (!pickerMosqueId) {
+      setPickerError('يرجى اختيار الجامع أولاً.');
+      return;
+    }
+    if (!pickerHalaqaId) {
+      setPickerError('يرجى اختيار الحلقة داخل هذا الجامع.');
+      return;
+    }
+    const mosque = workspace.mosques.find((m) => m.id === pickerMosqueId);
+    const halaqa = workspace.halaqat.find((h) => h.id === pickerHalaqaId);
+    if (!mosque || !halaqa) {
+      setPickerError('تعذّر العثور على الجامع أو الحلقة المحددة.');
+      return;
+    }
+    setTeacherContext({
+      mosqueId: mosque.id,
+      mosqueName: mosque.name,
+      halaqaId: halaqa.id,
+      halaqaName: halaqa.name,
+    });
+    setShowTeacherPicker(false);
+  };
+
   const navItems: { id: SupervisorTab; label: string; icon: typeof Home }[] = [
     { id: 'home', label: 'الرئيسية', icon: Home },
+    { id: 'attendance', label: 'الحضور والغياب', icon: ClipboardCheck },
     { id: 'accounts_mosques', label: 'الحسابات والمساجد', icon: Building2 },
     { id: 'library', label: 'الملفات والكتب', icon: BookOpen },
+    { id: 'curricula', label: 'المقررات', icon: BookMarked },
   ];
 
   const rankMedals = [
@@ -233,33 +311,56 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
             </div>
           </div>
 
-          {/* Desktop 3 Main Tabs */}
-          <nav
-            aria-label="أقسام لوحة المشرف"
-            className="hidden md:flex items-center gap-1.5 bg-[#FDF6EE] p-1.5 rounded-2xl border border-[#EADBC8]"
-          >
-            {navItems.map((item) => {
-              const Icon = item.icon;
-              const active = tab === item.id;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setTab(item.id)}
-                  className={`min-h-[40px] px-4 py-1.5 rounded-xl font-display text-sm font-bold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors ${
-                    active
-                      ? 'bg-[#F56900] text-white'
-                      : 'text-[#7D4E35] hover:text-[#4A220D] hover:bg-white'
-                  }`}
-                >
-                  <Icon className="w-4 h-4 shrink-0" />
-                  <span>{item.label}</span>
-                </button>
-              );
-            })}
-          </nav>
+          {/* Desktop Main Tabs (hidden when acting in Teacher role) */}
+          {!teacherContext && (
+            <nav
+              aria-label="أقسام لوحة المشرف"
+              className="hidden md:flex items-center gap-1 bg-[#FDF6EE] p-1.5 rounded-2xl border border-[#EADBC8] overflow-x-auto"
+            >
+              {navItems.map((item) => {
+                const Icon = item.icon;
+                const active = tab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setTab(item.id)}
+                    className={`min-h-[40px] px-2.5 lg:px-3.5 py-1.5 rounded-xl font-display text-xs lg:text-sm font-bold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors ${
+                      active
+                        ? 'bg-[#F56900] text-white'
+                        : 'text-[#7D4E35] hover:text-[#4A220D] hover:bg-white'
+                    }`}
+                  >
+                    <Icon className="w-4 h-4 shrink-0" />
+                    <span>{item.label}</span>
+                  </button>
+                );
+              })}
+            </nav>
+          )}
 
           <div className="flex items-center gap-2 shrink-0">
+            {!loading && workspace && !teacherContext && (
+              <button
+                type="button"
+                onClick={openTeacherPicker}
+                className="duo-btn-green min-h-[42px] px-3 py-2 rounded-xl font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              >
+                <ArrowLeftRight className="w-4 h-4 shrink-0" />
+                <span className="hidden sm:inline">الانتقال لدور المعلم</span>
+                <span className="sm:hidden">دور المعلم</span>
+              </button>
+            )}
+            {teacherContext && (
+              <button
+                type="button"
+                onClick={() => setTeacherContext(null)}
+                className="duo-btn-orange min-h-[42px] px-3 py-2 rounded-xl font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              >
+                <ArrowLeftRight className="w-4 h-4 shrink-0" />
+                <span>العودة لدور المشرف</span>
+              </button>
+            )}
             <PWAInstallButton variant="compact" />
             <button
               type="button"
@@ -271,12 +372,12 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
               <RefreshCw
                 className={`w-4 h-4 text-[#F56900] ${refreshing ? 'animate-spin' : ''}`}
               />
-              <span className="hidden lg:inline">تحديث</span>
+              <span className="hidden xl:inline">تحديث</span>
             </button>
             <button
               type="button"
               onClick={handleLogout}
-              className="min-h-[42px] px-3.5 py-2 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              className="min-h-[42px] px-3 py-2 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
             >
               <LogOut className="w-4 h-4 shrink-0" />
               <span className="hidden sm:inline">خروج</span>
@@ -327,7 +428,15 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                     </p>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-2.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setTab('attendance')}
+                      className="duo-btn-green min-h-[44px] px-4 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                    >
+                      <ClipboardCheck className="w-4 h-4" />
+                      <span>الحضور والغياب</span>
+                    </button>
                     <button
                       type="button"
                       onClick={() => setTab('accounts_mosques')}
@@ -339,10 +448,18 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                     <button
                       type="button"
                       onClick={() => setTab('library')}
+                      className="duo-btn-cream min-h-[44px] px-4 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                    >
+                      <BookOpen className="w-4 h-4 text-[#F56900]" />
+                      <span>الملفات والكتب</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTab('curricula')}
                       className="duo-btn-orange min-h-[44px] px-4 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
                     >
-                      <BookOpen className="w-4 h-4" />
-                      <span>الملفات والكتب</span>
+                      <BookMarked className="w-4 h-4" />
+                      <span>المقررات</span>
                     </button>
                   </div>
                 </div>
@@ -735,56 +852,212 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
               </div>
             )}
 
-            {/* ==================== TAB 2: ACCOUNTS & MOSQUES (NO DB CONTROLS) ==================== */}
-            {tab === 'accounts_mosques' && (
-              <ComplexWorkspace
-                discovered={workspace.discovered}
-                connectedDbs={[]}
-                onBack={() => setTab('home')}
-                onComplexRelocated={async () => {}}
-                supervisorMode
-                initialWorkspace={workspace}
-                restrictMosqueIds={restrictMosqueIds}
-                onWorkspaceMutated={async () => {
-                  await loadAll(true);
-                }}
-              />
-            )}
-
-            {/* ==================== TAB 3: LIBRARY & SMART BOOKS ==================== */}
-            {tab === 'library' && (
-              <BookLibrarySection
+            {/* ==================== TEACHER ROLE VIEW ==================== */}
+            {teacherContext ? (
+              <TeacherDashboardView
                 workspace={workspace}
+                context={teacherContext}
                 currentUserId={session.account.uid || session.account.id}
+                currentUserName={session.account.quadrupleName}
+                onReturnToSupervisor={() => setTeacherContext(null)}
               />
+            ) : (
+              <>
+                {/* ==================== TAB 1: HOME ANALYTICS ==================== */}
+                {/* (Rendered above when tab === 'home') */}
+
+                {/* ==================== TAB 2: ATTENDANCE & ABSENCE ==================== */}
+                {tab === 'attendance' && (
+                  <AttendanceSection
+                    workspace={workspace}
+                    currentUserId={session.account.uid || session.account.id}
+                    currentUserName={session.account.quadrupleName}
+                    restrictMosqueIds={
+                      restrictMosqueIds.length > 0 ? restrictMosqueIds : undefined
+                    }
+                  />
+                )}
+
+                {/* ==================== TAB 3: ACCOUNTS & MOSQUES (NO DB CONTROLS) ==================== */}
+                {tab === 'accounts_mosques' && (
+                  <ComplexWorkspace
+                    discovered={workspace.discovered}
+                    connectedDbs={[]}
+                    onBack={() => setTab('home')}
+                    onComplexRelocated={async () => {}}
+                    supervisorMode
+                    initialWorkspace={workspace}
+                    restrictMosqueIds={restrictMosqueIds}
+                    onWorkspaceMutated={async () => {
+                      await loadAll(true);
+                    }}
+                  />
+                )}
+
+                {/* ==================== TAB 4: LIBRARY & SMART BOOKS ==================== */}
+                {tab === 'library' && (
+                  <BookLibrarySection
+                    workspace={workspace}
+                    currentUserId={session.account.uid || session.account.id}
+                  />
+                )}
+
+                {/* ==================== TAB 5: CURRICULA ==================== */}
+                {tab === 'curricula' && (
+                  <CurriculaSection
+                    workspace={workspace}
+                    currentUserId={session.account.uid || session.account.id}
+                    restrictMosqueIds={
+                      restrictMosqueIds.length > 0 ? restrictMosqueIds : undefined
+                    }
+                  />
+                )}
+              </>
             )}
           </>
         )}
       </main>
 
       {/* Mobile Bottom Navigation */}
-      <nav
-        aria-label="التنقل السفلي للمشرف"
-        className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-white/95 backdrop-blur-md border-t-2 border-[#EADBC8] px-3 py-2 flex items-center justify-around gap-1"
-      >
-        {navItems.map((item) => {
-          const Icon = item.icon;
-          const active = tab === item.id;
-          return (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => setTab(item.id)}
-              className={`flex-1 min-h-[46px] py-1.5 px-2 rounded-2xl flex flex-col items-center justify-center gap-0.5 font-display text-[11px] font-bold cursor-pointer transition-colors ${
-                active ? 'bg-[#F56900] text-white' : 'text-[#7D4E35]'
-              }`}
+      {!teacherContext && (
+        <nav
+          aria-label="التنقل السفلي للمشرف"
+          className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-white/95 backdrop-blur-md border-t-2 border-[#EADBC8] px-1.5 py-2 flex items-center justify-around gap-1"
+        >
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            const active = tab === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setTab(item.id)}
+                className={`flex-1 min-w-0 min-h-[46px] py-1.5 px-1 rounded-2xl flex flex-col items-center justify-center gap-0.5 font-display text-[10px] sm:text-[11px] font-bold cursor-pointer transition-colors ${
+                  active ? 'bg-[#F56900] text-white' : 'text-[#7D4E35]'
+                }`}
+              >
+                <Icon className="w-4 h-4 shrink-0" />
+                <span className="truncate w-full text-center">{item.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+      )}
+
+      {/* Switch to Teacher Role Picker Modal */}
+      {showTeacherPicker &&
+        workspace &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-[#4A220D]/55 backdrop-blur-xs p-4"
+            role="dialog"
+            aria-modal="true"
+          >
+            <form
+              onSubmit={handleConfirmTeacherSwitch}
+              className="w-full max-w-md bg-white border-2 border-[#EADBC8] rounded-3xl p-5 sm:p-6 space-y-4 shadow-xl"
+              dir="rtl"
             >
-              <Icon className="w-4 h-4 shrink-0" />
-              <span className="truncate">{item.label}</span>
-            </button>
-          );
-        })}
-      </nav>
+              <div className="flex items-center justify-between gap-2 pb-3 border-b border-[#F7EBDD]">
+                <div className="flex items-center gap-2">
+                  <ArrowLeftRight className="w-5 h-5 text-[#58CC02]" />
+                  <h3 className="font-display text-lg font-extrabold text-[#4A220D]">
+                    الانتقال لدور المعلم
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowTeacherPicker(false)}
+                  aria-label="إغلاق"
+                  className="p-1.5 rounded-xl text-[#7D4E35] hover:bg-[#FDF6EE] cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <p className="text-xs text-[#7D4E35] leading-relaxed">
+                اختر الجامع ثم الحلقة التي تود الدخول إليها بصفتك معلماً، ويمكنك العودة لدور المشرف في أي وقت.
+              </p>
+
+              {scopedMosquesForPicker.length === 0 ? (
+                <div className="bg-[#FDF6EE] border border-[#EADBC8] rounded-2xl p-4 text-xs font-bold text-[#7D4E35] text-center">
+                  لا توجد مساجد متاحة حالياً. أضف مسجداً وحلقة أولاً من قسم الحسابات والمساجد.
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <label className="block font-display text-xs font-bold text-[#4A220D] mb-1.5">
+                      الجامع
+                    </label>
+                    <select
+                      value={pickerMosqueId}
+                      onChange={(e) => handlePickerMosqueChange(e.target.value)}
+                      className="w-full min-h-[46px] px-3.5 rounded-2xl border-2 border-[#EADBC8] bg-[#FDF6EE] text-[#4A220D] font-semibold text-sm focus:outline-none focus:border-[#F56900]"
+                    >
+                      {scopedMosquesForPicker.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block font-display text-xs font-bold text-[#4A220D] mb-1.5">
+                      الحلقة
+                    </label>
+                    {pickerHalaqat.length === 0 ? (
+                      <p className="text-xs font-bold text-[#D95338] bg-[#D95338]/10 border border-[#D95338]/30 rounded-xl p-3">
+                        لا توجد حلقات مضافة داخل هذا الجامع بعد.
+                      </p>
+                    ) : (
+                      <select
+                        value={pickerHalaqaId}
+                        onChange={(e) => {
+                          setPickerHalaqaId(e.target.value);
+                          setPickerError(null);
+                        }}
+                        className="w-full min-h-[46px] px-3.5 rounded-2xl border-2 border-[#EADBC8] bg-[#FDF6EE] text-[#4A220D] font-semibold text-sm focus:outline-none focus:border-[#F56900]"
+                      >
+                        {pickerHalaqat.map((h) => (
+                          <option key={h.id} value={h.id}>
+                            {h.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {pickerError && (
+                <p className="text-xs font-bold text-[#D95338] bg-[#D95338]/10 border border-[#D95338]/30 rounded-xl px-3 py-2">
+                  {pickerError}
+                </p>
+              )}
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowTeacherPicker(false)}
+                  className="duo-btn-cream min-h-[44px] px-4 rounded-2xl font-display font-bold text-xs sm:text-sm cursor-pointer"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  disabled={!pickerMosqueId || !pickerHalaqaId}
+                  className="duo-btn-green min-h-[44px] px-5 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  <ArrowLeftRight className="w-4 h-4" />
+                  <span>فتح واجهة المعلم</span>
+                </button>
+              </div>
+            </form>
+          </div>,
+          document.body
+        )}
 
       <footer className="hidden md:block py-4 px-4 text-center text-xs sm:text-sm font-medium text-[#7D4E35]">
         منصة براعم عمران · جميع الحقوق محفوظة لاستيديو expraiment

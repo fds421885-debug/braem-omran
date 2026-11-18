@@ -277,3 +277,85 @@ export interface StudentRankingItem {
   attendanceActive: boolean;
   achievementScore: number;
 }
+
+export type ComplexFeatureTabKey =
+  | 'attendance'
+  | 'library'
+  | 'curricula'
+  | 'accounts_invites'
+  | 'mosques_halaqat';
+
+export const COMPLEX_FEATURE_TAB_LABELS: Record<ComplexFeatureTabKey, string> = {
+  attendance: 'الحضور والغياب',
+  library: 'الملفات والكتب',
+  curricula: 'المقررات',
+  accounts_invites: 'الحسابات وروابط التسجيل',
+  mosques_halaqat: 'المساجد والحلقات',
+};
+
+export type AttendanceStatus = 'present' | 'absent' | 'excused' | 'late';
+
+export const ATTENDANCE_STATUS_LABELS: Record<AttendanceStatus, string> = {
+  present: 'حاضر',
+  absent: 'غائب',
+  excused: 'بعذر',
+  late: 'متأخر',
+};
+
+export interface AttendanceEntry {
+  studentId: string;
+  studentName: string;
+  status: AttendanceStatus;
+  note: string;
+}
+
+export interface AttendanceRecord {
+  id: string;
+  complexId: string;
+  mosqueId: string;
+  halaqaId: string;
+  dateKey: string; // YYYY-MM-DD
+  entries: AttendanceEntry[];
+  recordedBy: string;
+  recordedByName: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export type WeekDayKey = 'sat' | 'sun' | 'mon' | 'tue' | 'wed' | 'thu' | 'fri';
+
+export const WEEK_DAYS: { key: WeekDayKey; label: string }[] = [
+  { key: 'sat', label: 'السبت' },
+  { key: 'sun', label: 'الأحد' },
+  { key: 'mon', label: 'الإثنين' },
+  { key: 'tue', label: 'الثلاثاء' },
+  { key: 'wed', label: 'الأربعاء' },
+  { key: 'thu', label: 'الخميس' },
+  { key: 'fri', label: 'الجمعة' },
+];
+
+export const QURAN_MUSHAF_BOOK_ID = 'quran_mushaf';
+export const QURAN_MUSHAF_TITLE = 'المصحف الشريف';
+
+export interface CurriculumRecord {
+  id: string;
+  complexId: string;
+  bookId: string;
+  bookTitle: string;
+  halaqaIds: string[];
+  mosqueIds: string[];
+  days: WeekDayKey[];
+  scheduleNote: string;
+  active: boolean;
+  createdBy: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface TeacherRoleContext {
+  mosqueId: string;
+  mosqueName: string;
+  halaqaId: string;
+  halaqaName: string;
+}
+

@@ -22,13 +22,19 @@ import {
 import { auth, db as primaryDb, handleFirestoreError, OperationType } from '../firebase';
 import {
   ADMIN_QUADRUPLE_NAME,
+  COMPLEX_FEATURE_TAB_LABELS,
   type AccountRecord,
   type ActiveSession,
+  type AttendanceEntry,
+  type AttendanceRecord,
+  type AttendanceStatus,
   type BookPageRecord,
   type BookRecord,
   type BookTextSegment,
+  type ComplexFeatureTabKey,
   type ComplexRecord,
   type ConnectedDatabaseInfo,
+  type CurriculumRecord,
   type DailyStatsRecord,
   type DbRegistryEntry,
   type ExternalFirebaseConfig,
@@ -39,6 +45,7 @@ import {
   type QuickLinkRecord,
   type StudentRankingItem,
   type UserRole,
+  type WeekDayKey,
 } from '../types/platform';
 import {
   buildDbConnectionId,
@@ -96,6 +103,8 @@ export interface ComplexWorkspaceData {
   mosqueConfigMap: Record<string, ExternalFirebaseConfig | null>;
   halaqaDbMap: Record<string, Firestore>;
   halaqaConfigMap: Record<string, ExternalFirebaseConfig | null>;
+  tabDbMap: Partial<Record<ComplexFeatureTabKey, Firestore>>;
+  tabConfigMap: Partial<Record<ComplexFeatureTabKey, ExternalFirebaseConfig | null>>;
   complexDb: Firestore;
 }
 
@@ -241,9 +250,28 @@ export async function getAllKnownDatabases(
       }
     }
 
-    // Backwards compatibility for any legacy per-mosque configs inside older entries
-    const legacyMosques = safeParseMosqueConfigs(entry.mosqueConfigsJson);
-    for (const mConf of Object.values(legacyMosques)) {
+    // Backwards compatibility for legacy per-mosque configs AND per-tab external routes
+    const rawMap = safeParseMosqueConfigs(entry.mosqueConfigsJson) as Record<string, unknown>;
+    const candidateConfigs: ExternalFirebaseConfig[] = [];
+    if (
+      rawMap &&
+      typeof rawMap.tabConfigs === 'object' &&
+      rawMap.tabConfigs !== null
+    ) {
+      for (const tc of Object.values(rawMap.tabConfigs as Record<string, unknown>)) {
+        if (tc && typeof tc === 'object') {
+          candidateConfigs.push(tc as ExternalFirebaseConfig);
+        }
+      }
+    } else {
+      for (const v of Object.values(rawMap)) {
+        if (v && typeof v === 'object') {
+          candidateConfigs.push(v as ExternalFirebaseConfig);
+        }
+      }
+    }
+
+    for (const mConf of candidateConfigs) {
       if (!mConf || !mConf.projectId || !mConf.apiKey) continue;
       const mKey = dbKeyFromConfig(mConf);
       if (!seenKeys.has(mKey)) {
@@ -1578,8 +1606,114 @@ export async function deleteDiscoveredComplex(discovered: DiscoveredComplex): Pr
     }
   }
 
-  // Clean up any legacy per-complex registry doc if present
+  // Clean up any legacy per-complex registry doc or per-tab routes pointer if present
   await deleteDoc(doc(primaryDb, 'dbRegistry', discovered.id)).catch(() => {});
+  await deleteDoc(doc(primaryDb, 'dbRegistry', `${TAB_ROUTE_DOC_PREFIX}${discovered.id}`)).catch(() => {});
+}
+
+const TAB_ROUTE_DOC_PREFIX = 'tabroutes_';
+
+export async function loadComplexTabRoutes(
+  complexId: string
+): Promise<Partial<Record<ComplexFeatureTabKey, ExternalFirebaseConfig>>> {
+  const cleanId = `${TAB_ROUTE_DOC_PREFIX}${complexId}`.slice(0, 128);
+  try {
+    const snap = await getDocFresh(doc(primaryDb, 'dbRegistry', cleanId));
+    if (!snap.exists()) return {};
+    const data = snap.data() as DbRegistryEntry;
+    if (!data.mosqueConfigsJson) return {};
+    const parsed = JSON.parse(data.mosqueConfigsJson) as {
+      tabConfigs?: Record<string, ExternalFirebaseConfig>;
+    };
+    if (!parsed || typeof parsed.tabConfigs !== 'object' || !parsed.tabConfigs) {
+      return {};
+    }
+    const cleanRoutes: Partial<Record<ComplexFeatureTabKey, ExternalFirebaseConfig>> = {};
+    for (const [k, conf] of Object.entries(parsed.tabConfigs)) {
+      if (conf && conf.apiKey && conf.projectId && conf.appId) {
+        cleanRoutes[k as ComplexFeatureTabKey] = conf;
+      }
+    }
+    return cleanRoutes;
+  } catch {
+    return {};
+  }
+}
+
+export async function saveComplexTabRoutes(
+  complexId: string,
+  tabConfigs: Partial<Record<ComplexFeatureTabKey, ExternalFirebaseConfig>>
+): Promise<void> {
+  const cleanId = `${TAB_ROUTE_DOC_PREFIX}${complexId}`.slice(0, 128);
+  const entries = Object.entries(tabConfigs).filter(
+    ([, conf]) => Boolean(conf && conf.apiKey && conf.projectId && conf.appId)
+  );
+  const regRef = doc(primaryDb, 'dbRegistry', cleanId);
+
+  if (entries.length === 0) {
+    await deleteDoc(regRef).catch(() => {});
+    return;
+  }
+
+  const normalizedObj: Record<string, ExternalFirebaseConfig> = {};
+  for (const [k, conf] of entries) {
+    if (conf) normalizedObj[k] = conf;
+  }
+  const serialized = JSON.stringify({ tabConfigs: normalizedObj });
+  if (serialized.length > 7900) {
+    throw new Error('حجم إعدادات قواعد التبويبات تجاوز الحد المسموح.');
+  }
+
+  const existingSnap = await getDocFresh(regRef).catch(() => null);
+  if (existingSnap?.exists()) {
+    await updateDoc(regRef, {
+      name: `توجيه تبويبات المجمع`,
+      hasExternalDb: false,
+      firebaseConfigJson: '',
+      mosqueConfigsJson: serialized,
+      active: true,
+      updatedAt: serverTimestamp(),
+    });
+  } else {
+    await setDoc(regRef, {
+      id: cleanId,
+      name: `توجيه تبويبات المجمع`,
+      hasExternalDb: false,
+      firebaseConfigJson: '',
+      mosqueConfigsJson: serialized,
+      active: true,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  }
+}
+
+export function getDbForComplexTab(
+  workspace: ComplexWorkspaceData,
+  tabKey: ComplexFeatureTabKey
+): Firestore {
+  const extConfig = workspace.tabConfigMap?.[tabKey];
+  if (extConfig && extConfig.projectId && extConfig.apiKey) {
+    const extDb = workspace.tabDbMap?.[tabKey] || getFirestoreForConfig(extConfig);
+    if (extDb === primaryDb) {
+      throw new Error(
+        `حماية العزل: تبويب "${COMPLEX_FEATURE_TAB_LABELS[tabKey]}" مرتبط بقاعدة خارجية ولا يمكن القراءة أو الكتابة في القاعدة الأم.`
+      );
+    }
+    return extDb;
+  }
+  return workspace.complexDb;
+}
+
+export function getDbLabelForComplexTab(
+  workspace: ComplexWorkspaceData,
+  tabKey: ComplexFeatureTabKey
+): string {
+  const extConfig = workspace.tabConfigMap?.[tabKey];
+  if (extConfig && extConfig.projectId) {
+    return `قاعدة منفصلة (${getDbDisplayLabel(extConfig)})`;
+  }
+  return workspace.discovered.ownerDbLabel;
 }
 
 export async function loadComplexWorkspace(
@@ -1590,6 +1724,18 @@ export async function loadComplexWorkspace(
   const mosqueConfigMap: Record<string, ExternalFirebaseConfig | null> = {};
   const halaqaDbMap: Record<string, Firestore> = {};
   const halaqaConfigMap: Record<string, ExternalFirebaseConfig | null> = {};
+
+  const loadedRoutes = await loadComplexTabRoutes(discovered.id);
+  const tabDbMap: Partial<Record<ComplexFeatureTabKey, Firestore>> = {};
+  const tabConfigMap: Partial<Record<ComplexFeatureTabKey, ExternalFirebaseConfig | null>> = {};
+
+  for (const [k, conf] of Object.entries(loadedRoutes)) {
+    if (conf) {
+      const tabKey = k as ComplexFeatureTabKey;
+      tabConfigMap[tabKey] = conf;
+      tabDbMap[tabKey] = getFirestoreForConfig(conf);
+    }
+  }
 
   let complex: ComplexRecord = discovered.complex;
   try {
@@ -1607,7 +1753,7 @@ export async function loadComplexWorkspace(
   const inviteMap = new Map<string, InviteLinkRecord>();
   const quickMap = new Map<string, QuickLinkRecord>();
 
-  const allTargets = await getAllKnownDatabases();
+  const allTargets = await getAllKnownDatabases(`${TAB_ROUTE_DOC_PREFIX}${discovered.id}`);
   // STRICT ISOLATION:
   // If this complex lives on an External DB, NEVER read from primaryDb for this complex!
   const sourcesToRead = discovered.isExternal
@@ -1620,55 +1766,114 @@ export async function loadComplexWorkspace(
     ...sourcesToRead.filter((t) => t.db !== complexDb),
   ];
 
-  for (const source of orderedSources) {
+  const extMosquesDb = tabDbMap.mosques_halaqat || null;
+  const extMosquesConfig = tabConfigMap.mosques_halaqat || null;
+  const extAccountsDb = tabDbMap.accounts_invites || null;
+
+  if (extMosquesDb) {
     try {
-      const mSnap = await getDocs(
-        query(collection(source.db, 'mosques'), where('complexId', '==', discovered.id))
-      );
+      const [mSnap, hSnap] = await Promise.all([
+        getDocsFresh(query(collection(extMosquesDb, 'mosques'), where('complexId', '==', discovered.id))),
+        getDocsFresh(query(collection(extMosquesDb, 'halaqat'), where('complexId', '==', discovered.id))),
+      ]);
       mSnap.forEach((d) => {
         const m = d.data() as MosqueRecord;
         if (m.active) {
           mosquesMap.set(m.id, m);
-          mosqueDbMap[m.id] = source.db;
-          mosqueConfigMap[m.id] = source.config;
+          mosqueDbMap[m.id] = extMosquesDb;
+          mosqueConfigMap[m.id] = extMosquesConfig;
         }
       });
-
-      const hSnap = await getDocs(
-        query(collection(source.db, 'halaqat'), where('complexId', '==', discovered.id))
-      );
       hSnap.forEach((d) => {
         const h = d.data() as HalaqaRecord;
         if (h.active) {
           halaqatMap.set(h.id, h);
-          halaqaDbMap[h.id] = source.db;
-          halaqaConfigMap[h.id] = source.config;
+          halaqaDbMap[h.id] = extMosquesDb;
+          halaqaConfigMap[h.id] = extMosquesConfig;
         }
       });
+    } catch {
+      // Skip unreachable isolated tab DB
+    }
+  }
 
-      const aSnap = await getDocs(
-        query(collection(source.db, 'accounts'), where('complexId', '==', discovered.id))
-      );
+  if (extAccountsDb) {
+    try {
+      const [aSnap, iSnap, qSnap] = await Promise.all([
+        getDocsFresh(query(collection(extAccountsDb, 'accounts'), where('complexId', '==', discovered.id))),
+        getDocsFresh(query(collection(extAccountsDb, 'inviteLinks'), where('complexId', '==', discovered.id))),
+        getDocsFresh(query(collection(extAccountsDb, 'quickLinks'), where('complexId', '==', discovered.id))),
+      ]);
       aSnap.forEach((d) => {
         const a = d.data() as AccountRecord;
         accountsMap.set(a.id, a);
       });
-
-      const iSnap = await getDocs(
-        query(collection(source.db, 'inviteLinks'), where('complexId', '==', discovered.id))
-      );
       iSnap.forEach((d) => {
         const inv = d.data() as InviteLinkRecord;
         inviteMap.set(inv.token, inv);
       });
-
-      const qSnap = await getDocs(
-        query(collection(source.db, 'quickLinks'), where('complexId', '==', discovered.id))
-      );
       qSnap.forEach((d) => {
         const ql = d.data() as QuickLinkRecord;
         quickMap.set(ql.token, ql);
       });
+    } catch {
+      // Skip unreachable isolated tab DB
+    }
+  }
+
+  for (const source of orderedSources) {
+    try {
+      if (!extMosquesDb) {
+        const mSnap = await getDocs(
+          query(collection(source.db, 'mosques'), where('complexId', '==', discovered.id))
+        );
+        mSnap.forEach((d) => {
+          const m = d.data() as MosqueRecord;
+          if (m.active) {
+            mosquesMap.set(m.id, m);
+            mosqueDbMap[m.id] = source.db;
+            mosqueConfigMap[m.id] = source.config;
+          }
+        });
+
+        const hSnap = await getDocs(
+          query(collection(source.db, 'halaqat'), where('complexId', '==', discovered.id))
+        );
+        hSnap.forEach((d) => {
+          const h = d.data() as HalaqaRecord;
+          if (h.active) {
+            halaqatMap.set(h.id, h);
+            halaqaDbMap[h.id] = source.db;
+            halaqaConfigMap[h.id] = source.config;
+          }
+        });
+      }
+
+      if (!extAccountsDb) {
+        const aSnap = await getDocs(
+          query(collection(source.db, 'accounts'), where('complexId', '==', discovered.id))
+        );
+        aSnap.forEach((d) => {
+          const a = d.data() as AccountRecord;
+          accountsMap.set(a.id, a);
+        });
+
+        const iSnap = await getDocs(
+          query(collection(source.db, 'inviteLinks'), where('complexId', '==', discovered.id))
+        );
+        iSnap.forEach((d) => {
+          const inv = d.data() as InviteLinkRecord;
+          inviteMap.set(inv.token, inv);
+        });
+
+        const qSnap = await getDocs(
+          query(collection(source.db, 'quickLinks'), where('complexId', '==', discovered.id))
+        );
+        qSnap.forEach((d) => {
+          const ql = d.data() as QuickLinkRecord;
+          quickMap.set(ql.token, ql);
+        });
+      }
     } catch {
       // Skip inaccessible external DB
     }
@@ -1686,6 +1891,8 @@ export async function loadComplexWorkspace(
     mosqueConfigMap,
     halaqaDbMap,
     halaqaConfigMap,
+    tabDbMap,
+    tabConfigMap,
     complexDb,
   };
 }
@@ -1695,6 +1902,9 @@ function resolveTargetDbForEntity(
   mosqueId: string,
   halaqaIds?: string[]
 ): Firestore {
+  if (workspace.tabConfigMap?.accounts_invites) {
+    return getDbForComplexTab(workspace, 'accounts_invites');
+  }
   if (halaqaIds && halaqaIds.length === 1 && workspace.halaqaDbMap[halaqaIds[0]]) {
     return workspace.halaqaDbMap[halaqaIds[0]];
   }
@@ -1980,7 +2190,9 @@ export async function addOrRenameMosqueInWorkspace(params: {
   name: string;
 }): Promise<void> {
   const mosqueId = params.mosqueId || generateValidId('msq');
-  const targetDb = params.workspace.mosqueDbMap[mosqueId] || params.workspace.complexDb;
+  const targetDb = params.workspace.tabConfigMap?.mosques_halaqat
+    ? getDbForComplexTab(params.workspace, 'mosques_halaqat')
+    : params.workspace.mosqueDbMap[mosqueId] || params.workspace.complexDb;
 
   if (params.mosqueId) {
     await updateDoc(doc(targetDb, 'mosques', mosqueId), {
@@ -2007,7 +2219,9 @@ export async function addOrRenameHalaqaInWorkspace(params: {
   name: string;
 }): Promise<void> {
   const halaqaId = params.halaqaId || generateValidId('hlq');
-  const targetDb = params.halaqaId
+  const targetDb = params.workspace.tabConfigMap?.mosques_halaqat
+    ? getDbForComplexTab(params.workspace, 'mosques_halaqat')
+    : params.halaqaId
     ? params.workspace.halaqaDbMap[params.halaqaId] ||
       params.workspace.mosqueDbMap[params.mosqueId] ||
       params.workspace.complexDb
@@ -2929,9 +3143,10 @@ export async function listBooksInComplex(
   workspace: ComplexWorkspaceData
 ): Promise<BookRecord[]> {
   try {
+    const libraryDb = getDbForComplexTab(workspace, 'library');
     const snap = await getDocsFresh(
       query(
-        collection(workspace.complexDb, 'books'),
+        collection(libraryDb, 'books'),
         where('complexId', '==', workspace.complex.id)
       )
     );
@@ -2953,8 +3168,9 @@ export async function loadBookPages(
   workspace: ComplexWorkspaceData,
   bookId: string
 ): Promise<BookPageRecord[]> {
+  const libraryDb = getDbForComplexTab(workspace, 'library');
   const snap = await getDocsFresh(
-    query(collection(workspace.complexDb, 'bookPages'), where('bookId', '==', bookId))
+    query(collection(libraryDb, 'bookPages'), where('bookId', '==', bookId))
   );
   const pages: BookPageRecord[] = [];
   snap.forEach((d) => {
@@ -2967,7 +3183,8 @@ export async function upsertBookRecord(
   workspace: ComplexWorkspaceData,
   book: BookRecord
 ): Promise<void> {
-  const targetRef = doc(workspace.complexDb, 'books', book.id);
+  const libraryDb = getDbForComplexTab(workspace, 'library');
+  const targetRef = doc(libraryDb, 'books', book.id);
   const existing = await getDocFresh(targetRef).catch(() => null);
   const title = book.title.trim().slice(0, 160) || 'كتاب بدون عنوان';
   const totalPages = Math.max(1, Math.min(2000, Math.round(book.totalPages)));
@@ -3005,7 +3222,8 @@ export async function upsertBookPageRecord(
   workspace: ComplexWorkspaceData,
   page: BookPageRecord
 ): Promise<void> {
-  const targetRef = doc(workspace.complexDb, 'bookPages', page.id);
+  const libraryDb = getDbForComplexTab(workspace, 'library');
+  const targetRef = doc(libraryDb, 'bookPages', page.id);
   const existing = await getDocFresh(targetRef).catch(() => null);
   const cleanSegments = sanitizeBookSegments(page.segments);
   const cleanFullText = String(page.fullText || '').slice(0, 25000);
@@ -3048,7 +3266,8 @@ export async function renameBookInWorkspace(
   if (!clean) {
     throw new Error('يرجى إدخال عنوان صالح للكتاب.');
   }
-  await updateDoc(doc(workspace.complexDb, 'books', bookId), {
+  const libraryDb = getDbForComplexTab(workspace, 'library');
+  await updateDoc(doc(libraryDb, 'books', bookId), {
     title: clean,
     updatedAt: serverTimestamp(),
   });
@@ -3058,13 +3277,986 @@ export async function deleteBookFromWorkspace(
   workspace: ComplexWorkspaceData,
   bookId: string
 ): Promise<void> {
+  const libraryDb = getDbForComplexTab(workspace, 'library');
   const pagesSnap = await getDocs(
-    query(collection(workspace.complexDb, 'bookPages'), where('bookId', '==', bookId))
+    query(collection(libraryDb, 'bookPages'), where('bookId', '==', bookId))
   ).catch(() => null);
   if (pagesSnap) {
     for (const p of pagesSnap.docs) {
-      await deleteDoc(doc(workspace.complexDb, 'bookPages', p.id)).catch(() => {});
+      await deleteDoc(doc(libraryDb, 'bookPages', p.id)).catch(() => {});
     }
   }
-  await deleteDoc(doc(workspace.complexDb, 'books', bookId));
+  await deleteDoc(doc(libraryDb, 'books', bookId));
 }
+
+// ============================================================================
+// ATTENDANCE & ABSENCE (الحضور والغياب)
+// ============================================================================
+
+export function buildAttendanceDocId(halaqaId: string, dateKey: string): string {
+  const cleanHalaqa = halaqaId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const cleanDate = dateKey.replace(/[^0-9-]/g, '');
+  return `att_${cleanHalaqa}_${cleanDate}`.slice(0, 128);
+}
+
+function sanitizeAttendanceEntries(entries: AttendanceEntry[]): AttendanceEntry[] {
+  const validStatuses = new Set<AttendanceStatus>(['present', 'absent', 'excused', 'late']);
+  return entries.slice(0, 200).map((e) => ({
+    studentId: String(e.studentId || '').slice(0, 128),
+    studentName: String(e.studentName || 'طالب').trim().slice(0, 120) || 'طالب',
+    status: validStatuses.has(e.status) ? e.status : 'present',
+    note: String(e.note || '').trim().slice(0, 200),
+  }));
+}
+
+export async function loadAttendanceRecord(
+  workspace: ComplexWorkspaceData,
+  halaqaId: string,
+  dateKey: string
+): Promise<AttendanceRecord | null> {
+  const db = getDbForComplexTab(workspace, 'attendance');
+  const docId = buildAttendanceDocId(halaqaId, dateKey);
+  const snap = await getDocFresh(doc(db, 'attendance', docId)).catch(() => null);
+  if (!snap?.exists()) return null;
+  return snap.data() as AttendanceRecord;
+}
+
+export async function listAttendanceHistory(
+  workspace: ComplexWorkspaceData,
+  options?: { halaqaId?: string; mosqueIds?: string[] }
+): Promise<AttendanceRecord[]> {
+  try {
+    const db = getDbForComplexTab(workspace, 'attendance');
+    const snap = await getDocsFresh(
+      query(collection(db, 'attendance'), where('complexId', '==', workspace.complex.id))
+    );
+    const allowedMosques =
+      options?.mosqueIds && options.mosqueIds.length > 0 ? new Set(options.mosqueIds) : null;
+    const records: AttendanceRecord[] = [];
+    snap.forEach((d) => {
+      const rec = d.data() as AttendanceRecord;
+      if (options?.halaqaId && rec.halaqaId !== options.halaqaId) return;
+      if (allowedMosques && !allowedMosques.has(rec.mosqueId)) return;
+      records.push(rec);
+    });
+    return records.sort((a, b) => b.dateKey.localeCompare(a.dateKey));
+  } catch {
+    return [];
+  }
+}
+
+export async function saveAttendanceRecord(params: {
+  workspace: ComplexWorkspaceData;
+  mosqueId: string;
+  halaqaId: string;
+  dateKey: string;
+  entries: AttendanceEntry[];
+  recordedBy: string;
+  recordedByName: string;
+}): Promise<AttendanceRecord> {
+  const { workspace, mosqueId, halaqaId, dateKey, entries, recordedBy, recordedByName } = params;
+  if (!mosqueId || !halaqaId) {
+    throw new Error('يرجى تحديد المسجد والحلقة أولاً.');
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
+    throw new Error('صيغة التاريخ غير صالحة.');
+  }
+
+  const db = getDbForComplexTab(workspace, 'attendance');
+  const id = buildAttendanceDocId(halaqaId, dateKey);
+  const targetRef = doc(db, 'attendance', id);
+  const existing = await getDocFresh(targetRef).catch(() => null);
+  const cleanEntries = sanitizeAttendanceEntries(entries);
+  const cleanRecorder = (recordedBy || auth.currentUser?.uid || 'supervisor').slice(0, 128);
+  const cleanRecorderName = (recordedByName || 'المشرف').trim().slice(0, 120) || 'المشرف';
+
+  if (existing?.exists()) {
+    await updateDoc(targetRef, {
+      entries: cleanEntries,
+      recordedBy: cleanRecorder,
+      recordedByName: cleanRecorderName,
+      updatedAt: serverTimestamp(),
+    });
+  } else {
+    await setDoc(targetRef, {
+      id,
+      complexId: workspace.complex.id,
+      mosqueId,
+      halaqaId,
+      dateKey,
+      entries: cleanEntries,
+      recordedBy: cleanRecorder,
+      recordedByName: cleanRecorderName,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  return {
+    id,
+    complexId: workspace.complex.id,
+    mosqueId,
+    halaqaId,
+    dateKey,
+    entries: cleanEntries,
+    recordedBy: cleanRecorder,
+    recordedByName: cleanRecorderName,
+  };
+}
+
+// ============================================================================
+// CURRICULA (المقررات)
+// ============================================================================
+
+export async function listCurriculaInComplex(
+  workspace: ComplexWorkspaceData
+): Promise<CurriculumRecord[]> {
+  try {
+    const db = getDbForComplexTab(workspace, 'curricula');
+    const snap = await getDocsFresh(
+      query(collection(db, 'curricula'), where('complexId', '==', workspace.complex.id))
+    );
+    const list: CurriculumRecord[] = [];
+    snap.forEach((d) => {
+      const rec = d.data() as CurriculumRecord;
+      if (rec.active !== false) {
+        list.push(rec);
+      }
+    });
+    return list.sort((a, b) => {
+      const aSec = (a.updatedAt as { seconds?: number } | undefined)?.seconds || 0;
+      const bSec = (b.updatedAt as { seconds?: number } | undefined)?.seconds || 0;
+      return bSec - aSec;
+    });
+  } catch {
+    return [];
+  }
+}
+
+export async function saveCurriculumRecord(params: {
+  workspace: ComplexWorkspaceData;
+  id?: string;
+  bookId: string;
+  bookTitle: string;
+  halaqaIds: string[];
+  mosqueIds: string[];
+  days: WeekDayKey[];
+  scheduleNote?: string;
+  createdBy: string;
+}): Promise<CurriculumRecord> {
+  const { workspace, id, bookId, bookTitle, halaqaIds, mosqueIds, days, scheduleNote, createdBy } =
+    params;
+
+  const cleanHalaqaIds = Array.from(new Set(halaqaIds.filter(Boolean))).slice(0, 100);
+  const cleanMosqueIds = Array.from(new Set(mosqueIds.filter(Boolean))).slice(0, 50);
+  const validDaysSet = new Set<WeekDayKey>(['sat', 'sun', 'mon', 'tue', 'wed', 'thu', 'fri']);
+  const cleanDays = Array.from(new Set(days.filter((d) => validDaysSet.has(d)))).slice(0, 7);
+
+  if (!bookId || !bookTitle.trim()) {
+    throw new Error('يرجى اختيار الكتاب أو المصحف الشريف للمقرر.');
+  }
+  if (cleanHalaqaIds.length === 0) {
+    throw new Error('يرجى اختيار حلقة واحدة على الأقل لهذا المقرر.');
+  }
+  if (cleanDays.length === 0) {
+    throw new Error('يرجى تحديد أيام الأسبوع الخاصة بهذا المقرر.');
+  }
+
+  const db = getDbForComplexTab(workspace, 'curricula');
+  const recordId = id || generateValidId('cur');
+  const targetRef = doc(db, 'curricula', recordId);
+  const existing = id ? await getDocFresh(targetRef).catch(() => null) : null;
+  const cleanTitle = bookTitle.trim().slice(0, 160);
+  const cleanNote = (scheduleNote || '').trim().slice(0, 240);
+  const cleanCreator = (createdBy || auth.currentUser?.uid || 'supervisor').slice(0, 128);
+
+  if (existing?.exists()) {
+    await updateDoc(targetRef, {
+      bookId,
+      bookTitle: cleanTitle,
+      halaqaIds: cleanHalaqaIds,
+      mosqueIds: cleanMosqueIds,
+      days: cleanDays,
+      scheduleNote: cleanNote,
+      active: true,
+      updatedAt: serverTimestamp(),
+    });
+  } else {
+    await setDoc(targetRef, {
+      id: recordId,
+      complexId: workspace.complex.id,
+      bookId,
+      bookTitle: cleanTitle,
+      halaqaIds: cleanHalaqaIds,
+      mosqueIds: cleanMosqueIds,
+      days: cleanDays,
+      scheduleNote: cleanNote,
+      active: true,
+      createdBy: cleanCreator,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  return {
+    id: recordId,
+    complexId: workspace.complex.id,
+    bookId,
+    bookTitle: cleanTitle,
+    halaqaIds: cleanHalaqaIds,
+    mosqueIds: cleanMosqueIds,
+    days: cleanDays,
+    scheduleNote: cleanNote,
+    active: true,
+    createdBy: cleanCreator,
+  };
+}
+
+export async function deleteCurriculumRecord(
+  workspace: ComplexWorkspaceData,
+  curriculumId: string
+): Promise<void> {
+  const db = getDbForComplexTab(workspace, 'curricula');
+  await deleteDoc(doc(db, 'curricula', curriculumId));
+}
+
+// ============================================================================
+// PER-TAB EXTERNAL DB ISOLATION, CLONE BACKUP, AND JSON / ZIP EXPORT-IMPORT
+// ============================================================================
+
+async function copyDocWithTimestamp(
+  destDb: Firestore,
+  colName: string,
+  docId: string,
+  rawData: Record<string, unknown>
+): Promise<void> {
+  const payload = { ...rawData };
+  delete payload.createdAt;
+  delete payload.updatedAt;
+  await upsertTransferredDoc(destDb, colName, docId, payload);
+}
+
+async function migrateSingleTabRecords(params: {
+  complexId: string;
+  tabKey: ComplexFeatureTabKey;
+  sourceDbs: Firestore[];
+  destDb: Firestore;
+}): Promise<number> {
+  const { complexId, tabKey, sourceDbs, destDb } = params;
+  const uniqueSources = Array.from(new Set(sourceDbs));
+  let migratedCount = 0;
+
+  if (tabKey === 'attendance') {
+    for (const sDb of uniqueSources) {
+      const snap = await getDocsFresh(
+        query(collection(sDb, 'attendance'), where('complexId', '==', complexId))
+      ).catch(() => null);
+      if (!snap) continue;
+      for (const d of snap.docs) {
+        const data = d.data() as Record<string, unknown>;
+        if (sDb !== destDb) {
+          await copyDocWithTimestamp(destDb, 'attendance', d.id, data);
+          await deleteDoc(doc(sDb, 'attendance', d.id)).catch(() => {});
+        }
+        migratedCount++;
+      }
+    }
+    if (destDb !== primaryDb) {
+      const pSnap = await getDocs(
+        query(collection(primaryDb, 'attendance'), where('complexId', '==', complexId))
+      ).catch(() => null);
+      if (pSnap) {
+        for (const d of pSnap.docs) {
+          await deleteDoc(doc(primaryDb, 'attendance', d.id)).catch(() => {});
+        }
+      }
+    }
+    return migratedCount;
+  }
+
+  if (tabKey === 'curricula') {
+    for (const sDb of uniqueSources) {
+      const snap = await getDocsFresh(
+        query(collection(sDb, 'curricula'), where('complexId', '==', complexId))
+      ).catch(() => null);
+      if (!snap) continue;
+      for (const d of snap.docs) {
+        const data = d.data() as Record<string, unknown>;
+        if (sDb !== destDb) {
+          await copyDocWithTimestamp(destDb, 'curricula', d.id, data);
+          await deleteDoc(doc(sDb, 'curricula', d.id)).catch(() => {});
+        }
+        migratedCount++;
+      }
+    }
+    if (destDb !== primaryDb) {
+      const pSnap = await getDocs(
+        query(collection(primaryDb, 'curricula'), where('complexId', '==', complexId))
+      ).catch(() => null);
+      if (pSnap) {
+        for (const d of pSnap.docs) {
+          await deleteDoc(doc(primaryDb, 'curricula', d.id)).catch(() => {});
+        }
+      }
+    }
+    return migratedCount;
+  }
+
+  if (tabKey === 'library') {
+    for (const sDb of uniqueSources) {
+      const booksSnap = await getDocsFresh(
+        query(collection(sDb, 'books'), where('complexId', '==', complexId))
+      ).catch(() => null);
+      if (booksSnap) {
+        for (const d of booksSnap.docs) {
+          const data = d.data() as Record<string, unknown>;
+          if (sDb !== destDb) {
+            await copyDocWithTimestamp(destDb, 'books', d.id, data);
+            await deleteDoc(doc(sDb, 'books', d.id)).catch(() => {});
+          }
+          migratedCount++;
+        }
+      }
+
+      const pagesSnap = await getDocsFresh(
+        query(collection(sDb, 'bookPages'), where('complexId', '==', complexId))
+      ).catch(() => null);
+      if (pagesSnap) {
+        for (const d of pagesSnap.docs) {
+          const data = d.data() as Record<string, unknown>;
+          if (sDb !== destDb) {
+            await setDoc(doc(destDb, 'bookPages', d.id), {
+              ...data,
+              updatedAt: serverTimestamp(),
+            });
+            await deleteDoc(doc(sDb, 'bookPages', d.id)).catch(() => {});
+          }
+          migratedCount++;
+        }
+      }
+    }
+    if (destDb !== primaryDb) {
+      for (const colName of ['books', 'bookPages']) {
+        const pSnap = await getDocs(
+          query(collection(primaryDb, colName), where('complexId', '==', complexId))
+        ).catch(() => null);
+        if (pSnap) {
+          for (const d of pSnap.docs) {
+            await deleteDoc(doc(primaryDb, colName, d.id)).catch(() => {});
+          }
+        }
+      }
+    }
+    return migratedCount;
+  }
+
+  if (tabKey === 'mosques_halaqat') {
+    for (const sDb of uniqueSources) {
+      for (const colName of ['mosques', 'halaqat']) {
+        const snap = await getDocsFresh(
+          query(collection(sDb, colName), where('complexId', '==', complexId))
+        ).catch(() => null);
+        if (!snap) continue;
+        for (const d of snap.docs) {
+          const data = d.data() as Record<string, unknown>;
+          if (sDb !== destDb) {
+            await copyDocWithTimestamp(destDb, colName, d.id, data);
+            await deleteDoc(doc(sDb, colName, d.id)).catch(() => {});
+          }
+          migratedCount++;
+        }
+      }
+    }
+    if (destDb !== primaryDb) {
+      for (const colName of ['mosques', 'halaqat']) {
+        const pSnap = await getDocs(
+          query(collection(primaryDb, colName), where('complexId', '==', complexId))
+        ).catch(() => null);
+        if (pSnap) {
+          for (const d of pSnap.docs) {
+            await deleteDoc(doc(primaryDb, colName, d.id)).catch(() => {});
+          }
+        }
+      }
+    }
+    return migratedCount;
+  }
+
+  // accounts_invites
+  for (const sDb of uniqueSources) {
+    const aSnap = await getDocsFresh(
+      query(collection(sDb, 'accounts'), where('complexId', '==', complexId))
+    ).catch(() => null);
+    if (aSnap) {
+      for (const d of aSnap.docs) {
+        const acc = d.data() as AccountRecord;
+        if (sDb !== destDb) {
+          if (acc.nameHash) {
+            await upsertNameIndexSafe(destDb, acc.nameHash, acc.id);
+            await deleteDoc(doc(sDb, 'nameIndex', acc.nameHash)).catch(() => {});
+          }
+          await copyDocWithTimestamp(destDb, 'accounts', d.id, d.data() as Record<string, unknown>);
+          await deleteDoc(doc(sDb, 'accounts', d.id)).catch(() => {});
+        }
+        migratedCount++;
+      }
+    }
+
+    for (const colName of ['inviteLinks', 'quickLinks']) {
+      const snap = await getDocsFresh(
+        query(collection(sDb, colName), where('complexId', '==', complexId))
+      ).catch(() => null);
+      if (!snap) continue;
+      for (const d of snap.docs) {
+        if (sDb !== destDb) {
+          await copyDocWithTimestamp(destDb, colName, d.id, d.data() as Record<string, unknown>);
+          await deleteDoc(doc(sDb, colName, d.id)).catch(() => {});
+        }
+        migratedCount++;
+      }
+    }
+  }
+  if (destDb !== primaryDb) {
+    const pAccounts = await getDocs(
+      query(collection(primaryDb, 'accounts'), where('complexId', '==', complexId))
+    ).catch(() => null);
+    if (pAccounts) {
+      for (const d of pAccounts.docs) {
+        const acc = d.data() as AccountRecord;
+        if (acc.nameHash) {
+          await deleteDoc(doc(primaryDb, 'nameIndex', acc.nameHash)).catch(() => {});
+        }
+        await deleteDoc(doc(primaryDb, 'accounts', d.id)).catch(() => {});
+      }
+    }
+    for (const colName of ['inviteLinks', 'quickLinks']) {
+      const pSnap = await getDocs(
+        query(collection(primaryDb, colName), where('complexId', '==', complexId))
+      ).catch(() => null);
+      if (pSnap) {
+        for (const d of pSnap.docs) {
+          await deleteDoc(doc(primaryDb, colName, d.id)).catch(() => {});
+        }
+      }
+    }
+  }
+  return migratedCount;
+}
+
+/**
+ * Assigns an external DB (or reverts to complex default if targetConfig is null) for specific tab(s)
+ * ONLY for this complex, migrating all existing tab data and purging old copies permanently from primaryDb.
+ */
+export async function assignExternalDbToComplexTabs(params: {
+  workspace: ComplexWorkspaceData;
+  tabKeys: ComplexFeatureTabKey[];
+  targetConfig: ExternalFirebaseConfig | null;
+}): Promise<{ movedDocsCount: number }> {
+  const { workspace, tabKeys, targetConfig } = params;
+  if (tabKeys.length === 0) {
+    throw new Error('يرجى اختيار تبويب واحد على الأقل.');
+  }
+
+  if (targetConfig) {
+    await registerExternalDatabaseConnection(targetConfig);
+  }
+  const destDb = targetConfig ? getFirestoreForConfig(targetConfig) : workspace.complexDb;
+  const currentRoutes = await loadComplexTabRoutes(workspace.complex.id);
+  const nextRoutes: Partial<Record<ComplexFeatureTabKey, ExternalFirebaseConfig>> = {
+    ...currentRoutes,
+  };
+
+  let movedDocsCount = 0;
+
+  for (const tabKey of tabKeys) {
+    const activeTabDb = getDbForComplexTab(workspace, tabKey);
+    const sourceDbs: Firestore[] = [activeTabDb, workspace.complexDb];
+    if (tabKey === 'accounts_invites' || tabKey === 'mosques_halaqat') {
+      sourceDbs.push(
+        ...Object.values(workspace.mosqueDbMap),
+        ...Object.values(workspace.halaqaDbMap)
+      );
+    }
+
+    movedDocsCount += await migrateSingleTabRecords({
+      complexId: workspace.complex.id,
+      tabKey,
+      sourceDbs,
+      destDb,
+    });
+
+    if (targetConfig) {
+      nextRoutes[tabKey] = targetConfig;
+    } else {
+      delete nextRoutes[tabKey];
+    }
+  }
+
+  await saveComplexTabRoutes(workspace.complex.id, nextRoutes);
+  return { movedDocsCount };
+}
+
+/**
+ * Copies ALL data of this complex across all collections & tabs into an isolated backup Firebase DB
+ * WITHOUT altering or deleting the live data.
+ */
+export async function cloneComplexToBackupDatabase(params: {
+  workspace: ComplexWorkspaceData;
+  backupConfig: ExternalFirebaseConfig;
+}): Promise<{ totalCopiedDocs: number }> {
+  const { workspace, backupConfig } = params;
+  const backupDb = getFirestoreForConfig(backupConfig);
+  let totalCopiedDocs = 0;
+
+  // Store inactive complex marker so live discovery queries (active == true) never mistake backup for live
+  await upsertTransferredDoc(backupDb, 'complexes', workspace.complex.id, {
+    id: workspace.complex.id,
+    name: workspace.complex.name,
+    usesExternalDb: true,
+    active: false,
+    createdBy: auth.currentUser?.uid || workspace.complex.createdBy || 'admin',
+  });
+  totalCopiedDocs++;
+
+  for (const m of workspace.mosques) {
+    await upsertTransferredDoc(backupDb, 'mosques', m.id, {
+      id: m.id,
+      complexId: m.complexId,
+      name: m.name,
+      usesExternalDb: m.usesExternalDb,
+      active: m.active,
+    });
+    totalCopiedDocs++;
+  }
+
+  for (const h of workspace.halaqat) {
+    await upsertTransferredDoc(backupDb, 'halaqat', h.id, {
+      id: h.id,
+      complexId: h.complexId,
+      mosqueId: h.mosqueId,
+      name: h.name,
+      active: h.active,
+    });
+    totalCopiedDocs++;
+  }
+
+  for (const acc of workspace.accounts) {
+    if (acc.nameHash) {
+      await upsertNameIndexSafe(backupDb, acc.nameHash, acc.id);
+    }
+    await upsertTransferredDoc(backupDb, 'accounts', acc.id, {
+      id: acc.id,
+      uid: acc.uid || '',
+      quadrupleName: acc.quadrupleName,
+      nameHash: acc.nameHash,
+      email: acc.email || '',
+      photoURL: acc.photoURL || '',
+      role: acc.role,
+      complexId: acc.complexId || '',
+      mosqueId: acc.mosqueId || '',
+      mosqueIds: acc.mosqueIds || [],
+      halaqaIds: acc.halaqaIds || [],
+      inviteToken: acc.inviteToken || '',
+      quickToken: acc.quickToken || '',
+      lastLoginDate: acc.lastLoginDate || '',
+    });
+    totalCopiedDocs++;
+  }
+
+  for (const inv of workspace.inviteLinks) {
+    await upsertTransferredDoc(backupDb, 'inviteLinks', inv.token, {
+      token: inv.token,
+      title: inv.title,
+      complexId: inv.complexId,
+      role: inv.role,
+      mosqueId: inv.mosqueId || '',
+      mosqueIds: inv.mosqueIds || [],
+      halaqaIds: inv.halaqaIds || [],
+      startsAtMs: inv.startsAtMs || 0,
+      endsAtMs: inv.endsAtMs || 0,
+      active: inv.active,
+    });
+    totalCopiedDocs++;
+  }
+
+  for (const ql of workspace.quickLinks) {
+    await upsertTransferredDoc(backupDb, 'quickLinks', ql.token, {
+      token: ql.token,
+      accountId: ql.accountId,
+      quadrupleName: ql.quadrupleName,
+      role: ql.role,
+      complexId: ql.complexId || '',
+      complexName: ql.complexName || '',
+      mosqueId: ql.mosqueId || '',
+      mosqueName: ql.mosqueName || '',
+      halaqaNames: ql.halaqaNames || [],
+      active: ql.active,
+    });
+    totalCopiedDocs++;
+  }
+
+  const attendanceList = await listAttendanceHistory(workspace);
+  for (const att of attendanceList) {
+    await upsertTransferredDoc(backupDb, 'attendance', att.id, {
+      id: att.id,
+      complexId: att.complexId,
+      mosqueId: att.mosqueId,
+      halaqaId: att.halaqaId,
+      dateKey: att.dateKey,
+      entries: att.entries,
+      recordedBy: att.recordedBy,
+      recordedByName: att.recordedByName,
+    });
+    totalCopiedDocs++;
+  }
+
+  const books = await listBooksInComplex(workspace);
+  for (const book of books) {
+    await upsertTransferredDoc(backupDb, 'books', book.id, {
+      id: book.id,
+      complexId: book.complexId,
+      title: book.title,
+      fileName: book.fileName,
+      fileType: book.fileType,
+      totalPages: book.totalPages,
+      uploadedPages: book.uploadedPages,
+      recognizedPages: book.recognizedPages,
+      status: book.status,
+      createdBy: book.createdBy,
+    });
+    totalCopiedDocs++;
+    const pages = await loadBookPages(workspace, book.id);
+    for (const p of pages) {
+      await setDoc(doc(backupDb, 'bookPages', p.id), {
+        id: p.id,
+        bookId: p.bookId,
+        complexId: p.complexId,
+        pageNumber: p.pageNumber,
+        imageDataUrl: p.imageDataUrl,
+        width: p.width,
+        height: p.height,
+        recognized: p.recognized,
+        fullText: p.fullText,
+        segments: p.segments,
+        updatedAt: serverTimestamp(),
+      });
+      totalCopiedDocs++;
+    }
+  }
+
+  const curricula = await listCurriculaInComplex(workspace);
+  for (const cur of curricula) {
+    await upsertTransferredDoc(backupDb, 'curricula', cur.id, {
+      id: cur.id,
+      complexId: cur.complexId,
+      bookId: cur.bookId,
+      bookTitle: cur.bookTitle,
+      halaqaIds: cur.halaqaIds,
+      mosqueIds: cur.mosqueIds,
+      days: cur.days,
+      scheduleNote: cur.scheduleNote || '',
+      active: cur.active,
+      createdBy: cur.createdBy,
+    });
+    totalCopiedDocs++;
+  }
+
+  return { totalCopiedDocs };
+}
+
+export interface TabJsonExportPayload {
+  platform: string;
+  exportedAt: string;
+  complexId: string;
+  complexName: string;
+  tabKey: ComplexFeatureTabKey;
+  tabLabel: string;
+  dbLabel: string;
+  data: Record<string, unknown>;
+}
+
+export async function exportComplexTabJsonPayload(
+  workspace: ComplexWorkspaceData,
+  tabKey: ComplexFeatureTabKey
+): Promise<TabJsonExportPayload> {
+  const dbLabel = getDbLabelForComplexTab(workspace, tabKey);
+  let data: Record<string, unknown> = {};
+
+  if (tabKey === 'attendance') {
+    const records = await listAttendanceHistory(workspace);
+    data = { attendance: records };
+  } else if (tabKey === 'curricula') {
+    const records = await listCurriculaInComplex(workspace);
+    data = { curricula: records };
+  } else if (tabKey === 'library') {
+    const books = await listBooksInComplex(workspace);
+    const bookPages: BookPageRecord[] = [];
+    for (const b of books) {
+      const pages = await loadBookPages(workspace, b.id);
+      bookPages.push(...pages);
+    }
+    data = { books, bookPages };
+  } else if (tabKey === 'mosques_halaqat') {
+    data = {
+      mosques: workspace.mosques,
+      halaqat: workspace.halaqat,
+    };
+  } else {
+    data = {
+      accounts: workspace.accounts,
+      inviteLinks: workspace.inviteLinks,
+      quickLinks: workspace.quickLinks,
+    };
+  }
+
+  return {
+    platform: 'براعم عمران',
+    exportedAt: new Date().toISOString(),
+    complexId: workspace.complex.id,
+    complexName: workspace.complex.name,
+    tabKey,
+    tabLabel: COMPLEX_FEATURE_TAB_LABELS[tabKey],
+    dbLabel,
+    data,
+  };
+}
+
+export async function exportAllComplexBackupFiles(workspace: ComplexWorkspaceData): Promise<{
+  files: { filename: string; content: string }[];
+  fullSnapshot: Record<string, unknown>;
+}> {
+  const tabKeys: ComplexFeatureTabKey[] = [
+    'mosques_halaqat',
+    'accounts_invites',
+    'attendance',
+    'library',
+    'curricula',
+  ];
+
+  const files: { filename: string; content: string }[] = [];
+  const tabsBundle: Record<string, TabJsonExportPayload> = {};
+
+  for (const key of tabKeys) {
+    const payload = await exportComplexTabJsonPayload(workspace, key);
+    tabsBundle[key] = payload;
+    files.push({
+      filename: `${key}.json`,
+      content: JSON.stringify(payload, null, 2),
+    });
+  }
+
+  const fullSnapshot = {
+    platform: 'براعم عمران',
+    exportedAt: new Date().toISOString(),
+    complex: workspace.complex,
+    ownerDbLabel: workspace.discovered.ownerDbLabel,
+    tabs: tabsBundle,
+  };
+
+  files.push({
+    filename: 'full-complex-backup.json',
+    content: JSON.stringify(fullSnapshot, null, 2),
+  });
+
+  return { files, fullSnapshot };
+}
+
+export async function importComplexTabJsonPayload(params: {
+  workspace: ComplexWorkspaceData;
+  tabKey: ComplexFeatureTabKey;
+  parsedJson: unknown;
+}): Promise<{ importedCount: number }> {
+  const { workspace, tabKey, parsedJson } = params;
+  if (!parsedJson || typeof parsedJson !== 'object') {
+    throw new Error('ملف JSON غير صالح.');
+  }
+
+  const obj = parsedJson as Record<string, unknown>;
+  let sourceData: Record<string, unknown> = obj;
+
+  if (obj.tabs && typeof obj.tabs === 'object') {
+    const tabsObj = obj.tabs as Record<string, unknown>;
+    const tabEntry = tabsObj[tabKey] as Record<string, unknown> | undefined;
+    if (tabEntry && tabEntry.data && typeof tabEntry.data === 'object') {
+      sourceData = tabEntry.data as Record<string, unknown>;
+    }
+  } else if (obj.data && typeof obj.data === 'object') {
+    sourceData = obj.data as Record<string, unknown>;
+  }
+
+  const destDb = getDbForComplexTab(workspace, tabKey);
+  const complexId = workspace.complex.id;
+  let importedCount = 0;
+
+  if (tabKey === 'attendance') {
+    const items = Array.isArray(sourceData.attendance) ? (sourceData.attendance as AttendanceRecord[]) : [];
+    for (const rec of items) {
+      if (!rec || !rec.halaqaId || !rec.dateKey) continue;
+      const docId = buildAttendanceDocId(rec.halaqaId, rec.dateKey);
+      await upsertTransferredDoc(destDb, 'attendance', docId, {
+        id: docId,
+        complexId,
+        mosqueId: rec.mosqueId || '',
+        halaqaId: rec.halaqaId,
+        dateKey: rec.dateKey,
+        entries: sanitizeAttendanceEntries(Array.isArray(rec.entries) ? rec.entries : []),
+        recordedBy: rec.recordedBy || auth.currentUser?.uid || 'admin',
+        recordedByName: rec.recordedByName || 'استيراد JSON',
+      });
+      importedCount++;
+    }
+    return { importedCount };
+  }
+
+  if (tabKey === 'curricula') {
+    const items = Array.isArray(sourceData.curricula) ? (sourceData.curricula as CurriculumRecord[]) : [];
+    for (const cur of items) {
+      if (!cur || !cur.id || !cur.bookId || !cur.bookTitle) continue;
+      await upsertTransferredDoc(destDb, 'curricula', cur.id, {
+        id: cur.id,
+        complexId,
+        bookId: cur.bookId,
+        bookTitle: cur.bookTitle,
+        halaqaIds: Array.isArray(cur.halaqaIds) ? cur.halaqaIds : [],
+        mosqueIds: Array.isArray(cur.mosqueIds) ? cur.mosqueIds : [],
+        days: Array.isArray(cur.days) ? cur.days : [],
+        scheduleNote: cur.scheduleNote || '',
+        active: cur.active !== false,
+        createdBy: cur.createdBy || auth.currentUser?.uid || 'admin',
+      });
+      importedCount++;
+    }
+    return { importedCount };
+  }
+
+  if (tabKey === 'library') {
+    const books = Array.isArray(sourceData.books) ? (sourceData.books as BookRecord[]) : [];
+    const pages = Array.isArray(sourceData.bookPages) ? (sourceData.bookPages as BookPageRecord[]) : [];
+    for (const b of books) {
+      if (!b || !b.id) continue;
+      await upsertTransferredDoc(destDb, 'books', b.id, {
+        id: b.id,
+        complexId,
+        title: b.title || 'كتاب مستورد',
+        fileName: b.fileName || 'book.pdf',
+        fileType: b.fileType === 'image' ? 'image' : 'pdf',
+        totalPages: Number(b.totalPages) || 1,
+        uploadedPages: Number(b.uploadedPages) || 0,
+        recognizedPages: Number(b.recognizedPages) || 0,
+        status: b.status || 'ready',
+        createdBy: b.createdBy || auth.currentUser?.uid || 'admin',
+      });
+      importedCount++;
+    }
+    for (const p of pages) {
+      if (!p || !p.id || !p.bookId) continue;
+      await setDoc(doc(destDb, 'bookPages', p.id), {
+        id: p.id,
+        bookId: p.bookId,
+        complexId,
+        pageNumber: Number(p.pageNumber) || 1,
+        imageDataUrl: p.imageDataUrl || '',
+        width: Number(p.width) || 800,
+        height: Number(p.height) || 1000,
+        recognized: Boolean(p.recognized),
+        fullText: String(p.fullText || '').slice(0, 25000),
+        segments: sanitizeBookSegments(Array.isArray(p.segments) ? p.segments : []),
+        updatedAt: serverTimestamp(),
+      });
+      importedCount++;
+    }
+    return { importedCount };
+  }
+
+  if (tabKey === 'mosques_halaqat') {
+    const mosques = Array.isArray(sourceData.mosques) ? (sourceData.mosques as MosqueRecord[]) : [];
+    const halaqat = Array.isArray(sourceData.halaqat) ? (sourceData.halaqat as HalaqaRecord[]) : [];
+    for (const m of mosques) {
+      if (!m || !m.id || !m.name) continue;
+      await upsertTransferredDoc(destDb, 'mosques', m.id, {
+        id: m.id,
+        complexId,
+        name: m.name,
+        usesExternalDb: false,
+        active: m.active !== false,
+      });
+      importedCount++;
+    }
+    for (const h of halaqat) {
+      if (!h || !h.id || !h.mosqueId || !h.name) continue;
+      await upsertTransferredDoc(destDb, 'halaqat', h.id, {
+        id: h.id,
+        complexId,
+        mosqueId: h.mosqueId,
+        name: h.name,
+        active: h.active !== false,
+      });
+      importedCount++;
+    }
+    return { importedCount };
+  }
+
+  // accounts_invites
+  const accounts = Array.isArray(sourceData.accounts) ? (sourceData.accounts as AccountRecord[]) : [];
+  const invites = Array.isArray(sourceData.inviteLinks) ? (sourceData.inviteLinks as InviteLinkRecord[]) : [];
+  const quicks = Array.isArray(sourceData.quickLinks) ? (sourceData.quickLinks as QuickLinkRecord[]) : [];
+
+  for (const acc of accounts) {
+    if (!acc || !acc.id || !acc.quadrupleName) continue;
+    if (acc.nameHash) {
+      await upsertNameIndexSafe(destDb, acc.nameHash, acc.id);
+    }
+    await upsertTransferredDoc(destDb, 'accounts', acc.id, {
+      id: acc.id,
+      uid: acc.uid || '',
+      quadrupleName: acc.quadrupleName,
+      nameHash: acc.nameHash || '',
+      email: acc.email || '',
+      photoURL: acc.photoURL || '',
+      role: acc.role || 'student',
+      complexId,
+      mosqueId: acc.mosqueId || '',
+      mosqueIds: Array.isArray(acc.mosqueIds) ? acc.mosqueIds : [],
+      halaqaIds: Array.isArray(acc.halaqaIds) ? acc.halaqaIds : [],
+      inviteToken: acc.inviteToken || '',
+      quickToken: acc.quickToken || '',
+      lastLoginDate: acc.lastLoginDate || '',
+    });
+    importedCount++;
+  }
+  for (const inv of invites) {
+    if (!inv || !inv.token) continue;
+    await upsertTransferredDoc(destDb, 'inviteLinks', inv.token, {
+      token: inv.token,
+      title: inv.title || 'رابط تسجيل',
+      complexId,
+      role: inv.role || 'student',
+      mosqueId: inv.mosqueId || '',
+      mosqueIds: Array.isArray(inv.mosqueIds) ? inv.mosqueIds : [],
+      halaqaIds: Array.isArray(inv.halaqaIds) ? inv.halaqaIds : [],
+      startsAtMs: Number(inv.startsAtMs) || 0,
+      endsAtMs: Number(inv.endsAtMs) || 0,
+      active: inv.active !== false,
+    });
+    importedCount++;
+  }
+  for (const ql of quicks) {
+    if (!ql || !ql.token) continue;
+    await upsertTransferredDoc(destDb, 'quickLinks', ql.token, {
+      token: ql.token,
+      accountId: ql.accountId || '',
+      quadrupleName: ql.quadrupleName || '',
+      role: ql.role || 'student',
+      complexId,
+      complexName: ql.complexName || workspace.complex.name,
+      mosqueId: ql.mosqueId || '',
+      mosqueName: ql.mosqueName || '',
+      halaqaNames: Array.isArray(ql.halaqaNames) ? ql.halaqaNames : [],
+      active: ql.active !== false,
+    });
+    importedCount++;
+  }
+
+  return { importedCount };
+}
+

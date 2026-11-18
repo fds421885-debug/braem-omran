@@ -55,6 +55,12 @@ service cloud.firestore {
     match /bookPages/{id} {
       allow read, write: if true;
     }
+    match /attendance/{id} {
+      allow read, write: if true;
+    }
+    match /curricula/{id} {
+      allow read, write: if true;
+    }
   }
 }`;
 

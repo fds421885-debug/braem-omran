@@ -279,6 +279,68 @@
         "segments",
         "updatedAt"
       ]
+    },
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "Daily attendance sheet per halaqa and date.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "complexId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "mosqueId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "halaqaId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "dateKey": { "type": "string", "minLength": 8, "maxLength": 16, "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "entries": { "type": "array" },
+        "recordedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "recordedByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "complexId",
+        "mosqueId",
+        "halaqaId",
+        "dateKey",
+        "entries",
+        "recordedBy",
+        "recordedByName",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CurriculumRecord": {
+      "title": "CurriculumRecord",
+      "description": "Assigned book or Quran curriculum mapped to halaqat and weekly schedule days.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "complexId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "bookId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "bookTitle": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "halaqaIds": { "type": "array" },
+        "mosqueIds": { "type": "array" },
+        "days": { "type": "array" },
+        "scheduleNote": { "type": "string", "maxLength": 240 },
+        "active": { "type": "boolean" },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "complexId",
+        "bookId",
+        "bookTitle",
+        "halaqaIds",
+        "mosqueIds",
+        "days",
+        "scheduleNote",
+        "active",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -292,7 +354,7 @@
     },
     "/dbRegistry/{complexId}": {
       "schema": { "$ref": "#/entities/DbRegistryEntry" },
-      "description": "Discovery registry linking complexes/mosques to external Firebase configs."
+      "description": "Discovery registry linking complexes/mosques/tabs to external Firebase configs."
     },
     "/complexes/{complexId}": {
       "schema": { "$ref": "#/entities/ComplexRecord" },
@@ -329,6 +391,14 @@
     "/bookPages/{pageId}": {
       "schema": { "$ref": "#/entities/BookPageRecord" },
       "description": "Rendered pages and OCR word/ayah segments for uploaded books."
+    },
+    "/attendance/{recordId}": {
+      "schema": { "$ref": "#/entities/AttendanceRecord" },
+      "description": "Daily attendance records per halaqa and date."
+    },
+    "/curricula/{curriculumId}": {
+      "schema": { "$ref": "#/entities/CurriculumRecord" },
+      "description": "Curricula assignments linking books or Mushaf to halaqat and schedule days."
     }
   }
 }

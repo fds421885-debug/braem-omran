@@ -46,6 +46,7 @@ import {
   type InviteLinkRecord,
   type UserRole,
 } from '../types/platform';
+import { ComplexDatabasesTab } from './ComplexDatabasesTab';
 import { DatabaseTransferModal } from './DatabaseTransferModal';
 import { ModernLoader } from './ModernLoader';
 
@@ -60,7 +61,7 @@ interface ComplexWorkspaceProps {
   onWorkspaceMutated?: () => Promise<void> | void;
 }
 
-type WorkspaceTab = 'stats' | 'accounts' | 'mosques' | 'quick_links';
+type WorkspaceTab = 'stats' | 'accounts' | 'mosques' | 'quick_links' | 'databases';
 type AccountSubTab = 'invites' | 'list';
 type TargetRoleOption = Exclude<UserRole, 'platform_admin'> | 'complex_supervisor';
 
@@ -728,6 +729,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
         { id: 'accounts' as WorkspaceTab, label: 'الحسابات', icon: Users },
         { id: 'mosques' as WorkspaceTab, label: 'المساجد', icon: Building2 },
         { id: 'quick_links' as WorkspaceTab, label: 'روابط الدخول السريع', icon: KeyRound },
+        { id: 'databases' as WorkspaceTab, label: 'قواعد البيانات', icon: Database },
       ];
 
   return (
@@ -803,7 +805,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
             </div>
           </div>
 
-          {/* 4 Workspace Tabs */}
+          {/* Workspace Tabs */}
           <div className="flex flex-wrap items-center gap-1.5 bg-[#FDF6EE] p-1.5 rounded-2xl border border-[#EADBC8]">
             {workspaceTabsList.map((t) => {
               const Icon = t.icon;
@@ -1984,6 +1986,23 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
             </div>
           )}
         </div>
+      )}
+
+      {/* ==================== TAB 5: COMPLEX & PER-TAB DATABASES (ADMIN ONLY) ==================== */}
+      {!supervisorMode && tab === 'databases' && (
+        <ComplexDatabasesTab
+          workspace={workspace}
+          connectedDbs={connectedDbs}
+          onOpenComplexDbTransferModal={() =>
+            setTransferTarget({
+              scope: 'complex',
+              targetId: discovered.id,
+              targetName: workspace.complex?.name || discovered.name,
+              currentDbLabel: discovered.ownerDbLabel,
+            })
+          }
+          onWorkspaceUpdated={refreshWorkspace}
+        />
       )}
 
       {!supervisorMode && transferTarget && (
