@@ -1,4 +1,4 @@
-import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
+import { GoogleGenAI, MediaResolution, ThinkingLevel, Type } from '@google/genai';
 import dotenv from 'dotenv';
 import express, { type Request, type Response } from 'express';
 import fs from 'node:fs';
@@ -162,7 +162,9 @@ async function startServer() {
    - إذا كانت "kind" تساوي "ayah": حدد بدقة "surahNumber" (رقم السورة 1-114)، و"ayahNumber" (رقم الآية التي تنتمي إليها هذه الكلمة)، و"surahName" (اسم السورة بالعربية مثل الفاتحة، البقرة، الإخلاص).
 
 ملاحظات حاسمة:
-- لا تتجاهل أي كلمة عربية أو قرآنية واضحة في الصفحة.
+- تجاهل تماماً شريط الحالة العلوي للهاتف (الساعة، البطارية، اسم الشبكة مثل salam mobile)، وأزرار التطبيقات الجانبية العائمة أو أشرطة الأدوات، والزخارف الجانبية للمصحف.
+- اقرأ النص بوضوح تام حتى لو كان داخل لقطة شاشة ذات خلفية مظللة (مثل التظليل الأزرق الفاتح أو الأصفر على الآيات) أو بخط المصحف العثماني الدقيق أو بدقة منخفضة.
+- لا تتجاهل أي كلمة عربية أو قرآنية واضحة في متن الصفحة.
 - تأكد من صحة الحركات (تشكيل كل حرف) وعدم إسقاطها.
 - تأكد أن 0 <= ymin < ymax <= 1000 و 0 <= xmin < xmax <= 1000 لكل كلمة.`;
 
@@ -181,6 +183,7 @@ async function startServer() {
             ],
           },
           config: {
+            mediaResolution: MediaResolution.MEDIA_RESOLUTION_HIGH,
             responseMimeType: 'application/json',
             responseSchema: {
               type: Type.OBJECT,

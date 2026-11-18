@@ -2,7 +2,9 @@ import * as pdfjsLib from 'pdfjs-dist';
 import type { BookTextSegment, NoorAlBayanStep } from '../types/platform';
 import {
   analyzeBookPageInBrowser,
+  enhanceImageDataUrlForRecognition,
   generateNoorAlBayanClientFallback,
+  verifyAndAlignSegmentsWithQuran,
 } from './clientArabicEngine';
 
 function getPdfJsAssetBaseUrl(): string {
@@ -39,6 +41,8 @@ export interface EmbeddedWordHint {
 export interface BookLocalPage {
   pageNumber: number;
   imageDataUrl: string;
+  /** High-resolution / low-compression image used during recognition, then pruned */
+  ocrImageDataUrl?: string;
   width: number;
   height: number;
   uploaded: boolean;
@@ -280,11 +284,38 @@ export async function extractBookFilePages(
       canvas.height = height;
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error('تعذّر تهيئة رسم الصفحة.');
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
       ctx.fillStyle = '#FFFFFF';
       ctx.fillRect(0, 0, width, height);
       ctx.drawImage(img, 0, 0, width, height);
 
       const imageDataUrl = encodeCanvasWithinBudget(canvas);
+
+      // Keep crisp full-native source for OCR (preserves 2560px screenshots & low-res uploads before JPEG budget compression)
+      let ocrImageDataUrl = imageDataUrl;
+      const ocrMaxWidth = 2600;
+      const ocrRatio =
+        img.width > ocrMaxWidth
+          ? ocrMaxWidth / img.width
+          : img.width < 1500
+          ? Math.min(2.6, 2000 / Math.max(1, img.width))
+          : 1;
+      const ocrW = Math.max(100, Math.round(img.width * ocrRatio));
+      const ocrH = Math.max(100, Math.round(img.height * ocrRatio));
+      const ocrCanvas = document.createElement('canvas');
+      ocrCanvas.width = ocrW;
+      ocrCanvas.height = ocrH;
+      const ocrCtx = ocrCanvas.getContext('2d');
+      if (ocrCtx) {
+        ocrCtx.imageSmoothingEnabled = true;
+        ocrCtx.imageSmoothingQuality = 'high';
+        ocrCtx.fillStyle = '#FFFFFF';
+        ocrCtx.fillRect(0, 0, ocrW, ocrH);
+        ocrCtx.drawImage(img, 0, 0, ocrW, ocrH);
+        ocrImageDataUrl = ocrCanvas.toDataURL('image/jpeg', 0.95);
+      }
+
       onProgress(1, 1);
 
       return {
@@ -293,6 +324,7 @@ export async function extractBookFilePages(
           {
             pageNumber: 1,
             imageDataUrl,
+            ocrImageDataUrl,
             width,
             height,
             uploaded: false,
@@ -323,26 +355,50 @@ export async function extractBookFilePages(
       const page = await pdf.getPage(pageNum);
       try {
         const baseViewport = page.getViewport({ scale: 1 });
-        // Scale cleanly for both low-res PDFs AND huge scanned image PDFs (e.g., 3000px wide scans)
-        const widthRatio = 1220 / Math.max(1, baseViewport.width);
-        const heightRatio = 1750 / Math.max(1, baseViewport.height);
-        const targetScale = Math.min(2.2, Math.max(0.2, Math.min(widthRatio, heightRatio)));
-        const viewport = page.getViewport({ scale: targetScale });
+        // Render at high DPI (~2450px wide, up to 4.5x for low-res PDFs) for OCR & fine harakat clarity
+        const ocrWidthRatio = 2450 / Math.max(1, baseViewport.width);
+        const ocrHeightRatio = 3400 / Math.max(1, baseViewport.height);
+        let ocrScale = Math.min(4.5, Math.max(1.2, Math.min(ocrWidthRatio, ocrHeightRatio)));
+        // Safety pixel cap (~7.5M px) so mobile browsers never run out of memory
+        const rawArea = baseViewport.width * ocrScale * (baseViewport.height * ocrScale);
+        if (rawArea > 7_500_000) {
+          ocrScale *= Math.sqrt(7_500_000 / rawArea);
+        }
 
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.max(120, Math.round(viewport.width));
-        canvas.height = Math.max(120, Math.round(viewport.height));
-        const ctx = canvas.getContext('2d');
-        if (!ctx) throw new Error('تعذّر تهيئة معالجة صفحة الكتاب.');
+        const ocrViewport = page.getViewport({ scale: ocrScale });
+        const ocrCanvas = document.createElement('canvas');
+        ocrCanvas.width = Math.max(160, Math.round(ocrViewport.width));
+        ocrCanvas.height = Math.max(160, Math.round(ocrViewport.height));
+        const ocrCtx = ocrCanvas.getContext('2d');
+        if (!ocrCtx) throw new Error('تعذّر تهيئة معالجة صفحة الكتاب.');
 
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ocrCtx.fillStyle = '#FFFFFF';
+        ocrCtx.fillRect(0, 0, ocrCanvas.width, ocrCanvas.height);
 
         await page.render({
-          canvasContext: ctx,
-          viewport,
-          canvas,
+          canvasContext: ocrCtx,
+          viewport: ocrViewport,
+          canvas: ocrCanvas,
         }).promise;
+
+        const ocrImageDataUrl = ocrCanvas.toDataURL('image/jpeg', 0.94);
+
+        // Downsample cleanly to display dimensions & Firestore size budget
+        const dispRatio = Math.min(
+          1,
+          1220 / Math.max(1, ocrCanvas.width),
+          1750 / Math.max(1, ocrCanvas.height)
+        );
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(120, Math.round(ocrCanvas.width * dispRatio));
+        canvas.height = Math.max(120, Math.round(ocrCanvas.height * dispRatio));
+        const ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error('تعذّر تهيئة رسم صفحة الكتاب.');
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(ocrCanvas, 0, 0, canvas.width, canvas.height);
 
         // Also inspect embedded text layer softly (optional hint for text/hybrid PDFs)
         let embeddedSegments: EmbeddedWordHint[] = [];
@@ -351,43 +407,67 @@ export async function extractBookFilePages(
           const hints: EmbeddedWordHint[] = [];
           for (const item of textContent.items) {
             if (!('str' in item)) continue;
-            const rawStr = String(item.str || '').trim();
+            const rawStr = String(item.str || '')
+              .normalize('NFKC')
+              .replace(/[\u200B-\u200F\uFEFF]/g, '')
+              .trim();
             if (!rawStr) continue;
 
-            const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+            const tx = pdfjsLib.Util.transform(ocrViewport.transform, item.transform);
             const itemLeftPx = tx[4];
             const itemBaselinePx = tx[5];
-            const itemFontH = Math.max(10, Math.hypot(tx[2], tx[3]) || item.height * targetScale || 14);
-            const itemWidthPx = Math.max(12, (item.width || rawStr.length * 6) * targetScale);
+            const itemFontH = Math.max(
+              10,
+              Math.hypot(tx[2], tx[3]) || item.height * ocrScale || 14
+            );
+            const itemWidthPx = Math.max(
+              12,
+              (item.width || rawStr.length * 6) * ocrScale
+            );
 
             const words = rawStr.split(/\s+/).filter(Boolean);
             const wordSliceW = itemWidthPx / Math.max(1, words.length);
+            const isRtlRun = /[\u0600-\u06FF]/.test(rawStr);
 
             words.forEach((word, wIdx) => {
               if (hints.length >= 420) return;
-              // RTL word progression from right edge to left
-              const wx1 = itemLeftPx + itemWidthPx - wIdx * wordSliceW;
-              const wx0 = Math.max(0, wx1 - wordSliceW);
+              const wx0 = isRtlRun
+                ? Math.max(0, itemLeftPx + itemWidthPx - (wIdx + 1) * wordSliceW)
+                : itemLeftPx + wIdx * wordSliceW;
+              const wx1 = Math.min(ocrCanvas.width, wx0 + wordSliceW);
               const wy0 = Math.max(0, itemBaselinePx - itemFontH);
-              const wy1 = Math.min(canvas.height, itemBaselinePx + itemFontH * 0.25);
+              const wy1 = Math.min(ocrCanvas.height, itemBaselinePx + itemFontH * 0.25);
 
-              const ymin = Math.max(0, Math.min(990, Math.round((wy0 / canvas.height) * 1000)));
-              const xmin = Math.max(0, Math.min(990, Math.round((wx0 / canvas.width) * 1000)));
-              const ymax = Math.max(ymin + 8, Math.min(1000, Math.round((wy1 / canvas.height) * 1000)));
-              const xmax = Math.max(xmin + 8, Math.min(1000, Math.round((wx1 / canvas.width) * 1000)));
+              const ymin = Math.max(
+                0,
+                Math.min(990, Math.round((wy0 / ocrCanvas.height) * 1000))
+              );
+              const xmin = Math.max(
+                0,
+                Math.min(990, Math.round((wx0 / ocrCanvas.width) * 1000))
+              );
+              const ymax = Math.max(
+                ymin + 8,
+                Math.min(1000, Math.round((wy1 / ocrCanvas.height) * 1000))
+              );
+              const xmax = Math.max(
+                xmin + 8,
+                Math.min(1000, Math.round((wx1 / ocrCanvas.width) * 1000))
+              );
 
               hints.push({ text: word, ymin, xmin, ymax, xmax });
             });
           }
           embeddedSegments = hints;
         } catch {
-          // Image-only scanned PDF — no embedded text layer, which is handled cleanly by OCR
+          // Image-only scanned PDF — handled cleanly by super-OCR
         }
 
         const imageDataUrl = encodeCanvasWithinBudget(canvas);
         pages.push({
           pageNumber: pageNum,
           imageDataUrl,
+          ocrImageDataUrl,
           width: canvas.width,
           height: canvas.height,
           uploaded: false,
@@ -428,6 +508,7 @@ function isStaticMissingApi(res: Response): boolean {
 
 export async function analyzeBookPageOnServer(params: {
   imageDataUrl: string;
+  ocrImageDataUrl?: string;
   pageNumber: number;
   bookTitle?: string;
   embeddedSegments?: EmbeddedWordHint[];
@@ -435,13 +516,17 @@ export async function analyzeBookPageOnServer(params: {
   fullText: string;
   segments: BookTextSegment[];
 }> {
+  const highResSource =
+    params.ocrImageDataUrl ||
+    (await enhanceImageDataUrlForRecognition(params.imageDataUrl));
+
   if (staticHostWithoutApi !== true) {
     try {
       const res = await fetch('/api/books/analyze-page', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          imageDataUrl: params.imageDataUrl,
+          imageDataUrl: highResSource,
           pageNumber: params.pageNumber,
           bookTitle: params.bookTitle,
         }),
@@ -457,10 +542,11 @@ export async function analyzeBookPageOnServer(params: {
           staticHostWithoutApi = false;
           const serverSegments = Array.isArray(data.segments) ? data.segments : [];
           if (serverSegments.length > 0 || (data.fullText || '').trim().length > 0) {
-            return {
-              fullText: String(data.fullText || '').trim(),
+            return await verifyAndAlignSegmentsWithQuran({
               segments: serverSegments,
-            };
+              fullText: String(data.fullText || '').trim(),
+              pageNumber: params.pageNumber,
+            });
           }
         } else if (res.status !== 404 && res.status !== 405 && res.status !== 501) {
           // If server returned a transient/upstream failure on a PDF scan, fall through to in-browser OCR below!
@@ -474,7 +560,7 @@ export async function analyzeBookPageOnServer(params: {
   }
 
   return analyzeBookPageInBrowser({
-    imageDataUrl: params.imageDataUrl,
+    imageDataUrl: highResSource,
     pageNumber: params.pageNumber,
     embeddedSegments: params.embeddedSegments,
   });

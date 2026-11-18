@@ -163,6 +163,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
   const [readerBook, setReaderBook] = useState<BookRecord | null>(null);
   const [readerPages, setReaderPages] = useState<BookPageRecord[]>([]);
   const [loadingReader, setLoadingReader] = useState(false);
+  const [reanalyzingPage, setReanalyzingPage] = useState(false);
   const [currentPageIndex, setCurrentPageIndex] = useState(0);
   const [selectedSegment, setSelectedSegment] = useState<BookTextSegment | null>(null);
 
@@ -354,6 +355,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
 
           const analyzed = await analyzeBookPageOnServer({
             imageDataUrl: page.imageDataUrl,
+            ocrImageDataUrl: page.ocrImageDataUrl,
             pageNumber: page.pageNumber,
             bookTitle: workingJob.title,
             embeddedSegments: page.embeddedSegments,
@@ -361,6 +363,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
 
           const updatedPage: BookLocalPage = {
             ...page,
+            ocrImageDataUrl: undefined,
             uploaded: true,
             recognized: true,
             fullText: analyzed.fullText,
@@ -946,6 +949,82 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
     }
   };
 
+  const handleReanalyzeCurrentPage = async () => {
+    if (!readerBook || !currentPage || reanalyzingPage) return;
+    stopAndResetAudio();
+    setReanalyzingPage(true);
+    setFeedback(null);
+    try {
+      const analyzed = await analyzeBookPageOnServer({
+        imageDataUrl: currentPage.imageDataUrl,
+        pageNumber: currentPage.pageNumber,
+        bookTitle: readerBook.title,
+      });
+      const updatedRecord: BookPageRecord = {
+        ...currentPage,
+        recognized: true,
+        fullText: analyzed.fullText,
+        segments: analyzed.segments,
+      };
+      await upsertBookPageRecord(workspace, updatedRecord);
+      setReaderPages((prev) =>
+        prev.map((p) => (p.id === updatedRecord.id ? updatedRecord : p))
+      );
+      setSelectedSegment(updatedRecord.segments[0] || null);
+      setFeedback({
+        type: 'ok',
+        text: `تم إعادة التعرف على الصفحة ${currentPage.pageNumber} بدقة محسّنة (${updatedRecord.segments.length} كلمة).`,
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'تعذّر إعادة تحليل هذه الصفحة.',
+      });
+    } finally {
+      setReanalyzingPage(false);
+    }
+  };
+
+  const handleReanalyzeBook = async (book: BookRecord) => {
+    if (isRunningJob) return;
+    setFeedback(null);
+    try {
+      const remotePages = await loadBookPages(workspace, book.id);
+      if (remotePages.length === 0) {
+        setFeedback({ type: 'err', text: 'لا توجد صفحات محفوظة لإعادة تحليلها.' });
+        return;
+      }
+      const reJob: BookJobState = {
+        bookId: book.id,
+        complexId: book.complexId,
+        title: book.title,
+        fileName: book.fileName,
+        fileType: book.fileType,
+        totalPages: Math.max(book.totalPages, remotePages.length),
+        status: 'processing',
+        pages: remotePages.map((p) => ({
+          pageNumber: p.pageNumber,
+          imageDataUrl: p.imageDataUrl,
+          width: p.width,
+          height: p.height,
+          uploaded: true,
+          recognized: false,
+          fullText: '',
+          segments: [],
+        })),
+        updatedAtMs: Date.now(),
+      };
+      await saveBookJobLocal(reJob);
+      setActiveJob(reJob);
+      await runBookPipeline(reJob);
+    } catch (err) {
+      setFeedback({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'تعذّر بدء إعادة تحليل الكتاب.',
+      });
+    }
+  };
+
   // ==================== INTERACTIVE READER VIEW ====================
   if (readerBook) {
     return (
@@ -973,44 +1052,78 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
             </div>
           </div>
 
-          {readerPages.length > 0 && (
-            <div className="flex items-center gap-2 bg-[#FDF6EE] border border-[#EADBC8] rounded-2xl p-1.5 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {currentPage && (
               <button
                 type="button"
-                disabled={currentPageIndex <= 0}
-                onClick={() => {
-                  const nextIdx = Math.max(0, currentPageIndex - 1);
-                  setCurrentPageIndex(nextIdx);
-                  const first = readerPages[nextIdx]?.segments?.[0] || null;
-                  if (first) handleSelectSegment(first);
-                }}
-                aria-label="الصفحة السابقة"
-                className="min-h-[38px] px-3 rounded-xl bg-white border border-[#EADBC8] text-[#4A220D] font-bold text-xs inline-flex items-center gap-1 cursor-pointer disabled:opacity-40"
+                disabled={reanalyzingPage || loadingReader}
+                onClick={() => void handleReanalyzeCurrentPage()}
+                className="duo-btn-green min-h-[40px] px-3.5 rounded-xl font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-60 whitespace-nowrap"
               >
-                <ChevronRight className="w-4 h-4" />
-                <span>السابقة</span>
+                <RefreshCw
+                  className={`w-3.5 h-3.5 ${reanalyzingPage ? 'animate-spin' : ''}`}
+                />
+                <span>{reanalyzingPage ? 'جاري التحسين...' : 'إعادة تحليل الصفحة'}</span>
               </button>
-              <span className="px-3 text-xs sm:text-sm font-display font-extrabold text-[#4A220D] tabular-nums whitespace-nowrap">
-                صفحة {currentPageIndex + 1} من {readerPages.length}
-              </span>
-              <button
-                type="button"
-                disabled={currentPageIndex >= readerPages.length - 1}
-                onClick={() => {
-                  const nextIdx = Math.min(readerPages.length - 1, currentPageIndex + 1);
-                  setCurrentPageIndex(nextIdx);
-                  const first = readerPages[nextIdx]?.segments?.[0] || null;
-                  if (first) handleSelectSegment(first);
-                }}
-                aria-label="الصفحة التالية"
-                className="min-h-[38px] px-3 rounded-xl bg-white border border-[#EADBC8] text-[#4A220D] font-bold text-xs inline-flex items-center gap-1 cursor-pointer disabled:opacity-40"
-              >
-                <span>التالية</span>
-                <ChevronLeft className="w-4 h-4" />
-              </button>
-            </div>
-          )}
+            )}
+
+            {readerPages.length > 0 && (
+              <div className="flex items-center gap-2 bg-[#FDF6EE] border border-[#EADBC8] rounded-2xl p-1.5 shrink-0">
+                <button
+                  type="button"
+                  disabled={currentPageIndex <= 0}
+                  onClick={() => {
+                    const nextIdx = Math.max(0, currentPageIndex - 1);
+                    setCurrentPageIndex(nextIdx);
+                    const first = readerPages[nextIdx]?.segments?.[0] || null;
+                    if (first) handleSelectSegment(first);
+                  }}
+                  aria-label="الصفحة السابقة"
+                  className="min-h-[38px] px-3 rounded-xl bg-white border border-[#EADBC8] text-[#4A220D] font-bold text-xs inline-flex items-center gap-1 cursor-pointer disabled:opacity-40"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                  <span>السابقة</span>
+                </button>
+                <span className="px-3 text-xs sm:text-sm font-display font-extrabold text-[#4A220D] tabular-nums whitespace-nowrap">
+                  صفحة {currentPageIndex + 1} من {readerPages.length}
+                </span>
+                <button
+                  type="button"
+                  disabled={currentPageIndex >= readerPages.length - 1}
+                  onClick={() => {
+                    const nextIdx = Math.min(readerPages.length - 1, currentPageIndex + 1);
+                    setCurrentPageIndex(nextIdx);
+                    const first = readerPages[nextIdx]?.segments?.[0] || null;
+                    if (first) handleSelectSegment(first);
+                  }}
+                  aria-label="الصفحة التالية"
+                  className="min-h-[38px] px-3 rounded-xl bg-white border border-[#EADBC8] text-[#4A220D] font-bold text-xs inline-flex items-center gap-1 cursor-pointer disabled:opacity-40"
+                >
+                  <span>التالية</span>
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+          </div>
         </div>
+
+        {feedback && (
+          <div
+            role="alert"
+            className={`rounded-2xl border-2 px-4 py-3 text-sm font-bold flex items-center gap-2 ${
+              feedback.type === 'ok'
+                ? 'bg-[#58CC02]/10 border-[#58CC02] text-[#46A302]'
+                : 'bg-[#D95338]/10 border-[#D95338]/40 text-[#D95338]'
+            }`}
+          >
+            {feedback.type === 'ok' ? (
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+            ) : (
+              <AlertCircle className="w-4 h-4 shrink-0" />
+            )}
+            <span>{feedback.text}</span>
+          </div>
+        )}
 
         {loadingReader ? (
           <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-8">
@@ -1683,14 +1796,26 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
 
                 <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-[#F7EBDD]">
                   {isReady ? (
-                    <button
-                      type="button"
-                      onClick={() => void openBookReader(book)}
-                      className="duo-btn-orange flex-1 min-h-[42px] px-3 py-2 rounded-xl font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
-                    >
-                      <BookOpen className="w-4 h-4 shrink-0" />
-                      <span>معاينة وقراءة</span>
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => void openBookReader(book)}
+                        className="duo-btn-orange flex-1 min-h-[42px] px-3 py-2 rounded-xl font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                      >
+                        <BookOpen className="w-4 h-4 shrink-0" />
+                        <span>معاينة وقراءة</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isRunningJob}
+                        onClick={() => void handleReanalyzeBook(book)}
+                        title="إعادة التعرف على النص بدقة محسّنة"
+                        aria-label={`إعادة تحليل ${book.title}`}
+                        className="min-h-[42px] px-3 rounded-xl border border-[#EADBC8] bg-[#FDF6EE] hover:border-[#58CC02] text-xs font-bold text-[#46A302] inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                      </button>
+                    </>
                   ) : (
                     <>
                       <button
