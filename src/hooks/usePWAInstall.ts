@@ -35,7 +35,7 @@ export function usePWAInstall() {
       inIframe = true;
     }
     const inAppWebView =
-      /wv|fbav|fban|instagram|line|snapchat|whatsapp|telegram|twitter|tiktok/i.test(ua);
+      /\bwv\b|fbav|fban|instagram|\bline\/|snapchat|whatsapp|telegram|bytedance|tiktok/i.test(ua);
     setIsEmbeddedOrInApp(inIframe || inAppWebView);
 
     if (window.__pwaInstallPrompt) {
