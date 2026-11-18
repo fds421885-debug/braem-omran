@@ -2127,6 +2127,168 @@ export async function transferAccountAssignment(params: {
   }
 }
 
+export async function updateMemberAccountInWorkspace(params: {
+  workspace: ComplexWorkspaceData;
+  account: AccountRecord;
+  quadrupleName: string;
+  role: Exclude<UserRole, 'platform_admin'>;
+  mosqueId: string;
+  mosqueIds: string[];
+  halaqaIds: string[];
+}): Promise<AccountRecord> {
+  const { workspace, account, quadrupleName, role, mosqueId, mosqueIds, halaqaIds } = params;
+  if (account.role === 'platform_admin') {
+    throw new Error('لا يمكن تعديل حساب المشرف المبرمج من هنا.');
+  }
+
+  const validation = validateQuadrupleArabicName(quadrupleName);
+  if (!validation.valid) {
+    throw new Error(validation.error || 'يرجى كتابة الاسم الرباعي كاملاً.');
+  }
+
+  const newNameHash = await hashQuadrupleName(validation.normalized);
+  const resolvedSourceDb = resolveTargetDbForEntity(
+    workspace,
+    account.mosqueId,
+    account.halaqaIds
+  );
+  const destDb = resolveTargetDbForEntity(workspace, mosqueId, halaqaIds);
+
+  // Locate the actual DB containing this account doc in case it resided elsewhere in the workspace
+  let actualSourceDb = resolvedSourceDb;
+  const candidateDbs = Array.from(
+    new Set<Firestore>([
+      resolvedSourceDb,
+      workspace.complexDb,
+      ...Object.values(workspace.mosqueDbMap),
+      ...Object.values(workspace.halaqaDbMap),
+    ])
+  );
+  for (const cand of candidateDbs) {
+    const snap = await getDocFresh(doc(cand, 'accounts', account.id)).catch(() => null);
+    if (snap?.exists()) {
+      actualSourceDb = cand;
+      break;
+    }
+  }
+
+  if (newNameHash !== account.nameHash) {
+    const { unique } = await isQuadrupleNameUniqueGlobally(validation.normalized, destDb);
+    if (!unique) {
+      throw new Error('هذا الاسم الرباعي مسجل مسبقاً، لا يمكن تكرار الاسم الرباعي.');
+    }
+    await upsertNameIndexSafe(destDb, newNameHash, account.id);
+    if (account.nameHash) {
+      await deleteDoc(doc(actualSourceDb, 'nameIndex', account.nameHash)).catch(() => {});
+      if (destDb !== actualSourceDb) {
+        await deleteDoc(doc(destDb, 'nameIndex', account.nameHash)).catch(() => {});
+      }
+    }
+  } else if (actualSourceDb !== destDb && newNameHash) {
+    await upsertNameIndexSafe(destDb, newNameHash, account.id);
+    await deleteDoc(doc(actualSourceDb, 'nameIndex', account.nameHash)).catch(() => {});
+  }
+
+  const normalizedMosqueIds = (
+    role === 'supervisor'
+      ? mosqueIds
+      : mosqueIds.length > 0
+      ? mosqueIds
+      : mosqueId
+      ? [mosqueId]
+      : []
+  ).slice(0, 50);
+  const normalizedPrimaryMosque = role === 'supervisor' ? normalizedMosqueIds[0] || '' : mosqueId;
+  const normalizedHalaqaIds = (role === 'supervisor' ? [] : halaqaIds).slice(0, 50);
+  const quickToken = account.quickToken || generateToken(24);
+
+  const updatedAccount: AccountRecord = {
+    ...account,
+    quadrupleName: validation.normalized,
+    nameHash: newNameHash,
+    role,
+    mosqueId: normalizedPrimaryMosque,
+    mosqueIds: normalizedMosqueIds,
+    halaqaIds: normalizedHalaqaIds,
+    quickToken,
+  };
+
+  if (actualSourceDb === destDb) {
+    await updateDoc(doc(destDb, 'accounts', account.id), {
+      quadrupleName: updatedAccount.quadrupleName,
+      nameHash: updatedAccount.nameHash,
+      role: updatedAccount.role,
+      mosqueId: updatedAccount.mosqueId,
+      mosqueIds: updatedAccount.mosqueIds,
+      halaqaIds: updatedAccount.halaqaIds,
+      quickToken: updatedAccount.quickToken,
+      updatedAt: serverTimestamp(),
+    });
+  } else {
+    await upsertTransferredDoc(destDb, 'accounts', account.id, {
+      id: updatedAccount.id,
+      uid: updatedAccount.uid || '',
+      quadrupleName: updatedAccount.quadrupleName,
+      nameHash: updatedAccount.nameHash,
+      email: updatedAccount.email || '',
+      photoURL: updatedAccount.photoURL || '',
+      role: updatedAccount.role,
+      complexId: updatedAccount.complexId || '',
+      mosqueId: updatedAccount.mosqueId || '',
+      mosqueIds: updatedAccount.mosqueIds || [],
+      halaqaIds: updatedAccount.halaqaIds || [],
+      inviteToken: updatedAccount.inviteToken || '',
+      quickToken: updatedAccount.quickToken || '',
+      lastLoginDate: updatedAccount.lastLoginDate || '',
+    });
+    await deleteDoc(doc(actualSourceDb, 'accounts', account.id)).catch(() => {});
+    if (account.quickToken) {
+      await deleteDoc(doc(actualSourceDb, 'quickLinks', account.quickToken)).catch(() => {});
+    }
+  }
+
+  await syncQuickLinkForAccount(workspace, updatedAccount, destDb);
+  return updatedAccount;
+}
+
+export async function deleteMemberAccountFromWorkspace(
+  workspace: ComplexWorkspaceData,
+  account: AccountRecord
+): Promise<void> {
+  if (account.role === 'platform_admin') {
+    throw new Error('لا يمكن حذف حساب المشرف المبرمج.');
+  }
+
+  const candidateDbs = Array.from(
+    new Set<Firestore>([
+      resolveTargetDbForEntity(workspace, account.mosqueId, account.halaqaIds),
+      workspace.complexDb,
+      ...Object.values(workspace.mosqueDbMap),
+      ...Object.values(workspace.halaqaDbMap),
+    ])
+  );
+
+  for (const targetDb of candidateDbs) {
+    await deleteDoc(doc(targetDb, 'accounts', account.id)).catch(() => {});
+    if (account.nameHash) {
+      await deleteDoc(doc(targetDb, 'nameIndex', account.nameHash)).catch(() => {});
+    }
+    if (account.quickToken) {
+      await deleteDoc(doc(targetDb, 'quickLinks', account.quickToken)).catch(() => {});
+    }
+    try {
+      const qSnap = await getDocs(
+        query(collection(targetDb, 'quickLinks'), where('accountId', '==', account.id))
+      );
+      for (const qDoc of qSnap.docs) {
+        await deleteDoc(doc(targetDb, 'quickLinks', qDoc.id)).catch(() => {});
+      }
+    } catch {
+      // Non-fatal
+    }
+  }
+}
+
 /**
  * Builds a complete JSON backup bundle for a Complex, Mosque, or Halaqa before changing/migrating DB.
  */

@@ -15,21 +15,25 @@ import {
   Link2,
   Lock,
   Plus,
+  Search,
   Trash2,
   Unlock,
   Users,
+  X,
 } from 'lucide-react';
-import { getDbDisplayLabel } from '../services/multiDb';
+import { getDbDisplayLabel, validateQuadrupleArabicName } from '../services/multiDb';
 import {
   addOrRenameHalaqaInWorkspace,
   addOrRenameMosqueInWorkspace,
   deleteInviteLinkFromWorkspace,
+  deleteMemberAccountFromWorkspace,
   loadComplexWorkspace,
   saveInviteLinkToWorkspace,
   syncQuickLinkForAccount,
   toggleInviteLinkActiveState,
   transferAccountAssignment,
   transferEntireHalaqa,
+  updateMemberAccountInWorkspace,
   type ComplexWorkspaceData,
   type DbTransferScope,
   type DiscoveredComplex,
@@ -102,6 +106,20 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
   const [quickMosqueFilter, setQuickMosqueFilter] = useState<string>('all');
   const [quickHalaqaFilter, setQuickHalaqaFilter] = useState<string>('all');
   const [memberSearch, setMemberSearch] = useState('');
+  const [memberRoleFilter, setMemberRoleFilter] = useState<
+    'all' | 'student' | 'teacher' | 'supervisor'
+  >('all');
+  const [editingMember, setEditingMember] = useState<AccountRecord | null>(null);
+  const [editMemberName, setEditMemberName] = useState('');
+  const [editMemberRole, setEditMemberRole] =
+    useState<Exclude<UserRole, 'platform_admin'>>('student');
+  const [editMemberMosqueId, setEditMemberMosqueId] = useState('');
+  const [editMemberMosqueIds, setEditMemberMosqueIds] = useState<string[]>([]);
+  const [editMemberHalaqaIds, setEditMemberHalaqaIds] = useState<string[]>([]);
+  const [editMemberError, setEditMemberError] = useState<string | null>(null);
+  const [savingMember, setSavingMember] = useState(false);
+  const [confirmDeleteMember, setConfirmDeleteMember] = useState<AccountRecord | null>(null);
+  const [deletingMember, setDeletingMember] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [copyToast, setCopyToast] = useState<string | null>(null);
   const copyTimerRef = useRef<number | null>(null);
@@ -504,9 +522,110 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
     return true;
   });
 
-  const filteredMemberList = workspace.accounts.filter((a) =>
-    a.quadrupleName.includes(memberSearch.trim())
-  );
+  const openEditMemberModal = (acc: AccountRecord) => {
+    if (acc.role === 'platform_admin') return;
+    setEditingMember(acc);
+    setEditMemberName(acc.quadrupleName);
+    setEditMemberRole(acc.role);
+    const defaultMosqueId = acc.mosqueId || workspace.mosques[0]?.id || '';
+    setEditMemberMosqueId(defaultMosqueId);
+    setEditMemberMosqueIds(
+      acc.mosqueIds.length > 0 ? acc.mosqueIds : acc.mosqueId ? [acc.mosqueId] : []
+    );
+    setEditMemberHalaqaIds(acc.halaqaIds || []);
+    setEditMemberError(null);
+  };
+
+  const handleSaveMemberEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingMember) return;
+    setEditMemberError(null);
+
+    const validation = validateQuadrupleArabicName(editMemberName);
+    if (!validation.valid) {
+      setEditMemberError(validation.error || 'يرجى كتابة الاسم الرباعي كاملاً.');
+      return;
+    }
+
+    const mIds =
+      editMemberRole === 'supervisor'
+        ? editMemberMosqueIds
+        : editMemberMosqueId
+        ? [editMemberMosqueId]
+        : [];
+    const primaryMosque = editMemberRole === 'supervisor' ? mIds[0] || '' : editMemberMosqueId;
+    const hIds = editMemberRole === 'supervisor' ? [] : editMemberHalaqaIds;
+
+    setSavingMember(true);
+    try {
+      await updateMemberAccountInWorkspace({
+        workspace,
+        account: editingMember,
+        quadrupleName: validation.normalized,
+        role: editMemberRole,
+        mosqueId: primaryMosque,
+        mosqueIds: mIds,
+        halaqaIds: hIds,
+      });
+      setEditingMember(null);
+      setFeedback({ type: 'ok', text: 'تم تعديل بيانات العضو وتحديث رابط الدخول السريع بنجاح.' });
+      await refreshWorkspace();
+    } catch (err) {
+      setEditMemberError(err instanceof Error ? err.message : 'تعذّر حفظ تعديلات العضو.');
+    } finally {
+      setSavingMember(false);
+    }
+  };
+
+  const handleConfirmDeleteMember = async () => {
+    if (!confirmDeleteMember) return;
+    setDeletingMember(true);
+    setFeedback(null);
+    try {
+      const deletedName = confirmDeleteMember.quadrupleName;
+      await deleteMemberAccountFromWorkspace(workspace, confirmDeleteMember);
+      setConfirmDeleteMember(null);
+      setFeedback({ type: 'ok', text: `تم حذف "${deletedName}" من المجمع بنجاح.` });
+      await refreshWorkspace();
+    } catch (err) {
+      setFeedback({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'تعذّر حذف العضو.',
+      });
+    } finally {
+      setDeletingMember(false);
+    }
+  };
+
+  const normalizeSearchText = (val: string): string =>
+    val
+      .trim()
+      .replace(/[\u064B-\u065F\u0670]/g, '')
+      .replace(/[أإآ]/g, 'ا')
+      .replace(/ى/g, 'ي')
+      .replace(/ة/g, 'ه')
+      .replace(/\s+/g, ' ')
+      .toLowerCase();
+
+  const normalizedQuery = normalizeSearchText(memberSearch);
+
+  const filteredMemberList = workspace.accounts.filter((a) => {
+    if (memberRoleFilter !== 'all' && a.role !== memberRoleFilter) {
+      return false;
+    }
+    if (!normalizedQuery) return true;
+
+    const mosqueText = (a.mosqueIds.length ? a.mosqueIds : [a.mosqueId])
+      .map((id) => workspace.mosques.find((m) => m.id === id)?.name || '')
+      .join(' ');
+    const halaqaText = a.halaqaIds
+      .map((id) => workspace.halaqat.find((h) => h.id === id)?.name || '')
+      .join(' ');
+    const haystack = normalizeSearchText(
+      `${a.quadrupleName} ${a.email || ''} ${mosqueText} ${halaqaText}`
+    );
+    return haystack.includes(normalizedQuery);
+  });
 
   return (
     <div className="space-y-6">
@@ -1003,21 +1122,60 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
 
           {accountSubTab === 'list' && (
             <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 sm:p-6 space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <h3 className="font-display text-lg font-extrabold text-[#4A220D]">
-                  أعضاء المجمع
-                </h3>
-                <input
-                  type="search"
-                  value={memberSearch}
-                  onChange={(e) => setMemberSearch(e.target.value)}
-                  placeholder="بحث بالاسم الرباعي..."
-                  className="min-h-[42px] px-3.5 py-2 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE]/60 text-sm w-full sm:w-64"
-                />
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div>
+                  <h3 className="font-display text-lg font-extrabold text-[#4A220D]">
+                    أعضاء المجمع ({filteredMemberList.length} من {workspace.accounts.length})
+                  </h3>
+                  <p className="text-xs text-[#7D4E35]">
+                    ابحث بالاسم أو البريد أو الحلقة، أو عدّل/احذف العضو أو انسخ رابط الدخول السريع الخاص به.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto">
+                  <div className="relative flex-1 sm:flex-initial sm:w-72">
+                    <Search className="w-4 h-4 text-[#7D4E35] absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="search"
+                      value={memberSearch}
+                      onChange={(e) => setMemberSearch(e.target.value)}
+                      placeholder="بحث بالاسم أو البريد أو الحلقة..."
+                      className="w-full min-h-[42px] pr-10 pl-8 py-2 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE]/60 text-sm focus:outline-none focus:border-[#F56900] focus:bg-white"
+                    />
+                    {memberSearch && (
+                      <button
+                        type="button"
+                        onClick={() => setMemberSearch('')}
+                        aria-label="مسح البحث"
+                        className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#7D4E35] hover:text-[#4A220D] cursor-pointer"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+
+                  <select
+                    value={memberRoleFilter}
+                    onChange={(e) =>
+                      setMemberRoleFilter(
+                        e.target.value as 'all' | 'student' | 'teacher' | 'supervisor'
+                      )
+                    }
+                    aria-label="تصفية حسب الفئة"
+                    className="min-h-[42px] px-3 py-2 rounded-xl border-2 border-[#EADBC8] bg-white text-sm font-bold text-[#4A220D]"
+                  >
+                    <option value="all">كل الأعضاء</option>
+                    <option value="student">الطلاب فقط</option>
+                    <option value="teacher">المعلمين فقط</option>
+                    <option value="supervisor">المشرفين فقط</option>
+                  </select>
+                </div>
               </div>
 
               {filteredMemberList.length === 0 ? (
-                <p className="text-sm text-[#7D4E35]">لا توجد حسابات مطابقة.</p>
+                <p className="text-sm text-[#7D4E35] py-4 text-center">
+                  لا توجد حسابات مطابقة للبحث أو التصفية المحددة.
+                </p>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-right text-sm">
@@ -1027,6 +1185,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                         <th className="py-2.5 px-3 font-display font-bold">الرتبة</th>
                         <th className="py-2.5 px-3 font-display font-bold">المسجد</th>
                         <th className="py-2.5 px-3 font-display font-bold">الحلقات</th>
+                        <th className="py-2.5 px-3 font-display font-bold">الإجراءات ورابط الدخول</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1039,16 +1198,69 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                           .map((id) => workspace.halaqat.find((h) => h.id === id)?.name)
                           .filter(Boolean)
                           .join('، ');
+                        const isQuickCopied = copiedId === `qk_${acc.id}`;
                         return (
                           <tr key={acc.id} className="border-b border-[#F7EBDD] last:border-b-0">
-                            <td className="py-3 px-3 font-bold text-[#4A220D]">
-                              {acc.quadrupleName}
+                            <td className="py-3 px-3">
+                              <p className="font-bold text-[#4A220D]">{acc.quadrupleName}</p>
+                              {acc.email && (
+                                <p className="text-[11px] text-[#7D4E35]" dir="ltr">
+                                  {acc.email}
+                                </p>
+                              )}
                             </td>
-                            <td className="py-3 px-3 text-[#F56900] font-bold">
+                            <td className="py-3 px-3 text-[#F56900] font-bold whitespace-nowrap">
                               {ROLE_LABELS[acc.role]}
                             </td>
                             <td className="py-3 px-3 text-[#7D4E35]">{mNames || '—'}</td>
                             <td className="py-3 px-3 text-[#7D4E35]">{hNames || '—'}</td>
+                            <td className="py-3 px-3">
+                              {acc.role === 'platform_admin' ? (
+                                <span className="text-xs font-bold text-[#7D4E35]">حساب المنصة الأساسي</span>
+                              ) : (
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCopyQuickUrl(acc)}
+                                    className={`min-h-[38px] px-3 py-1.5 rounded-xl font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors ${
+                                      isQuickCopied ? 'duo-btn-green' : 'duo-btn-orange'
+                                    }`}
+                                  >
+                                    {isQuickCopied ? (
+                                      <>
+                                        <Check className="w-3.5 h-3.5" />
+                                        <span>تم النسخ بنجاح</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <KeyRound className="w-3.5 h-3.5" />
+                                        <span>نسخ الدخول السريع</span>
+                                      </>
+                                    )}
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => openEditMemberModal(acc)}
+                                    aria-label={`تعديل ${acc.quadrupleName}`}
+                                    className="min-h-[38px] px-2.5 py-1.5 rounded-xl border border-[#EADBC8] bg-[#FDF6EE] hover:border-[#F56900] text-xs font-bold text-[#4A220D] inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                                  >
+                                    <Edit3 className="w-3.5 h-3.5 text-[#F56900]" />
+                                    <span>تعديل</span>
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmDeleteMember(acc)}
+                                    aria-label={`حذف ${acc.quadrupleName}`}
+                                    className="min-h-[38px] px-2.5 py-1.5 rounded-xl border border-[#EADBC8] bg-white hover:border-[#D95338] hover:bg-[#D95338]/10 text-xs font-bold text-[#D95338] inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                    <span>حذف</span>
+                                  </button>
+                                </div>
+                              )}
+                            </td>
                           </tr>
                         );
                       })}
@@ -1637,6 +1849,234 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
           }}
         />
       )}
+      {editingMember &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-[#4A220D]/55 backdrop-blur-xs p-4"
+            role="dialog"
+            aria-modal="true"
+          >
+            <form
+              onSubmit={handleSaveMemberEdit}
+              className="w-full max-w-lg bg-white border-2 border-[#EADBC8] rounded-3xl p-5 sm:p-6 space-y-4 shadow-xl max-h-[90vh] overflow-y-auto"
+              dir="rtl"
+            >
+              <div className="flex items-center justify-between gap-2 pb-3 border-b border-[#F7EBDD]">
+                <h3 className="font-display text-lg font-extrabold text-[#4A220D]">
+                  تعديل بيانات العضو
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setEditingMember(null)}
+                  aria-label="إغلاق"
+                  className="p-1.5 rounded-xl text-[#7D4E35] hover:bg-[#FDF6EE] cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between gap-2 mb-1.5">
+                  <label className="font-display text-xs font-bold text-[#4A220D]">
+                    الاسم الرباعي (إلزامي)
+                  </label>
+                  <span className="text-xs font-bold text-[#7D4E35] tabular-nums">
+                    {validateQuadrupleArabicName(editMemberName).wordCount} / ٤ مقاطع
+                  </span>
+                </div>
+                <input
+                  type="text"
+                  value={editMemberName}
+                  onChange={(e) => {
+                    setEditMemberName(e.target.value);
+                    if (editMemberError) setEditMemberError(null);
+                  }}
+                  placeholder="الاسم الأول اسم الأب اسم الجد العائلة"
+                  maxLength={100}
+                  required
+                  className="w-full min-h-[46px] px-3.5 py-2 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE]/60 text-sm font-medium focus:outline-none focus:border-[#F56900] focus:bg-white"
+                />
+              </div>
+
+              <div>
+                <label className="block font-display text-xs font-bold text-[#4A220D] mb-1.5">
+                  الصفة
+                </label>
+                <select
+                  value={editMemberRole}
+                  onChange={(e) => {
+                    const nextRole = e.target.value as Exclude<UserRole, 'platform_admin'>;
+                    setEditMemberRole(nextRole);
+                    if (nextRole === 'supervisor') {
+                      setEditMemberHalaqaIds([]);
+                      if (editMemberMosqueIds.length === 0 && editMemberMosqueId) {
+                        setEditMemberMosqueIds([editMemberMosqueId]);
+                      }
+                    } else if (!editMemberMosqueId && editMemberMosqueIds[0]) {
+                      setEditMemberMosqueId(editMemberMosqueIds[0]);
+                    }
+                  }}
+                  className="w-full min-h-[46px] px-3.5 py-2 rounded-xl border-2 border-[#EADBC8] bg-white text-sm font-bold"
+                >
+                  <option value="student">طالب</option>
+                  <option value="teacher">معلم</option>
+                  <option value="supervisor">مشرف</option>
+                </select>
+              </div>
+
+              {editMemberRole === 'supervisor' ? (
+                <div>
+                  <p className="font-display text-xs font-bold text-[#4A220D] mb-2">
+                    المساجد التي يشرف عليها:
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {workspace.mosques.map((m) => (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() =>
+                          setEditMemberMosqueIds((prev) => toggleArrayItem(prev, m.id))
+                        }
+                        className={`min-h-[38px] px-3 py-1 rounded-xl border-2 text-xs font-bold cursor-pointer ${
+                          editMemberMosqueIds.includes(m.id)
+                            ? 'bg-[#F56900] border-[#C95200] text-white'
+                            : 'bg-[#FDF6EE] border-[#EADBC8] text-[#4A220D]'
+                        }`}
+                      >
+                        {m.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div>
+                    <label className="block font-display text-xs font-bold text-[#4A220D] mb-1.5">
+                      المسجد
+                    </label>
+                    <select
+                      value={editMemberMosqueId}
+                      onChange={(e) => {
+                        setEditMemberMosqueId(e.target.value);
+                        setEditMemberHalaqaIds([]);
+                      }}
+                      className="w-full min-h-[46px] px-3.5 py-2 rounded-xl border-2 border-[#EADBC8] bg-white text-sm font-bold"
+                    >
+                      <option value="">-- بدون مسجد --</option>
+                      {workspace.mosques.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <p className="font-display text-xs font-bold text-[#4A220D] mb-2">
+                      {editMemberRole === 'teacher' ? 'الحلقات:' : 'الحلقة:'}
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {workspace.halaqat
+                        .filter((h) => h.mosqueId === editMemberMosqueId)
+                        .map((h) => (
+                          <button
+                            key={h.id}
+                            type="button"
+                            onClick={() =>
+                              setEditMemberHalaqaIds((prev) =>
+                                editMemberRole === 'teacher'
+                                  ? toggleArrayItem(prev, h.id)
+                                  : [h.id]
+                              )
+                            }
+                            className={`min-h-[38px] px-3 py-1 rounded-xl border-2 text-xs font-bold cursor-pointer ${
+                              editMemberHalaqaIds.includes(h.id)
+                                ? 'bg-[#F56900] border-[#C95200] text-white'
+                                : 'bg-[#FDF6EE] border-[#EADBC8] text-[#4A220D]'
+                            }`}
+                          >
+                            {h.name}
+                          </button>
+                        ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {editMemberError && (
+                <div
+                  role="alert"
+                  className="rounded-2xl bg-[#D95338]/10 border-2 border-[#D95338]/30 px-4 py-2.5 text-xs font-bold text-[#D95338] flex items-center gap-2"
+                >
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{editMemberError}</span>
+                </div>
+              )}
+
+              <div className="flex items-center gap-3 pt-2">
+                <button
+                  type="submit"
+                  disabled={savingMember}
+                  className="duo-btn-orange flex-1 min-h-[46px] rounded-2xl font-display font-bold text-sm cursor-pointer disabled:opacity-60"
+                >
+                  {savingMember ? 'جاري الحفظ...' : 'حفظ التعديلات'}
+                </button>
+                <button
+                  type="button"
+                  disabled={savingMember}
+                  onClick={() => setEditingMember(null)}
+                  className="duo-btn-cream flex-1 min-h-[46px] rounded-2xl font-display font-bold text-sm cursor-pointer disabled:opacity-60"
+                >
+                  إلغاء
+                </button>
+              </div>
+            </form>
+          </div>,
+          document.body
+        )}
+
+      {confirmDeleteMember &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-[#4A220D]/55 backdrop-blur-xs p-4"
+            role="dialog"
+            aria-modal="true"
+          >
+            <div
+              className="w-full max-w-sm bg-white border-2 border-[#EADBC8] rounded-3xl p-6 text-center space-y-4 shadow-xl"
+              dir="rtl"
+            >
+              <h3 className="font-display text-lg font-extrabold text-[#4A220D]">
+                حذف {ROLE_LABELS[confirmDeleteMember.role]}: {confirmDeleteMember.quadrupleName}؟
+              </h3>
+              <p className="text-sm text-[#7D4E35]">
+                سيتم حذف الحساب وفهرس الاسم الرباعي ورابط الدخول السريع الخاص به من قاعدة البيانات بشكل نهائي.
+              </p>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  disabled={deletingMember}
+                  onClick={handleConfirmDeleteMember}
+                  className="flex-1 min-h-[46px] rounded-2xl bg-[#D95338] text-white font-display font-bold text-sm cursor-pointer disabled:opacity-60"
+                >
+                  {deletingMember ? 'جاري الحذف...' : 'تأكيد الحذف'}
+                </button>
+                <button
+                  type="button"
+                  disabled={deletingMember}
+                  onClick={() => setConfirmDeleteMember(null)}
+                  className="duo-btn-cream flex-1 min-h-[46px] rounded-2xl font-display font-bold text-sm cursor-pointer disabled:opacity-60"
+                >
+                  إلغاء
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
       {copyToast &&
         typeof document !== 'undefined' &&
         createPortal(
