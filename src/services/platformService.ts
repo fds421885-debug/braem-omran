@@ -24,15 +24,20 @@ import {
   ADMIN_QUADRUPLE_NAME,
   type AccountRecord,
   type ActiveSession,
+  type BookPageRecord,
+  type BookRecord,
+  type BookTextSegment,
   type ComplexRecord,
   type ConnectedDatabaseInfo,
   type DailyStatsRecord,
   type DbRegistryEntry,
   type ExternalFirebaseConfig,
+  type HalaqaRankingItem,
   type HalaqaRecord,
   type InviteLinkRecord,
   type MosqueRecord,
   type QuickLinkRecord,
+  type StudentRankingItem,
   type UserRole,
 } from '../types/platform';
 import {
@@ -897,6 +902,7 @@ export async function resolveQuickLinkSession(
     mosqueNames: quick.mosqueName ? [quick.mosqueName] : [],
     halaqaNames: quick.halaqaNames || [],
     dbSourceLabel: activeTarget.label,
+    authConfig: activeTarget.config,
   };
 }
 
@@ -2677,4 +2683,388 @@ export async function executeDatabaseTransfer(params: {
     }
   }
   await deleteDoc(doc(sourceDb, 'halaqat', halaqa.id)).catch(() => {});
+}
+
+export async function loadSupervisorWorkspace(
+  session: ActiveSession
+): Promise<ComplexWorkspaceData> {
+  const complexId = session.account.complexId;
+  if (!complexId) {
+    throw new Error('حساب المشرف غير مرتبط بمجمع قرآني حالياً.');
+  }
+
+  let discovered: DiscoveredComplex | undefined;
+  const allComplexes = await listAllComplexesAcrossDatabases();
+  discovered = allComplexes.find((c) => c.id === complexId);
+
+  if (!discovered && session.authConfig) {
+    const extDb = getFirestoreForConfig(session.authConfig);
+    const snap = await getDocFresh(doc(extDb, 'complexes', complexId)).catch(() => null);
+    if (snap?.exists()) {
+      const c = snap.data() as ComplexRecord;
+      discovered = {
+        id: c.id,
+        name: c.name,
+        usesExternalDb: true,
+        isExternal: true,
+        ownerDb: extDb,
+        ownerDbKey: dbKeyFromConfig(session.authConfig),
+        ownerDbLabel: getDbDisplayLabel(session.authConfig),
+        ownerConfig: session.authConfig,
+        complex: c,
+      };
+    }
+  }
+
+  if (!discovered) {
+    throw new Error('تعذّر العثور على بيانات المجمع المرتبط بهذا الحساب.');
+  }
+
+  return loadComplexWorkspace(discovered);
+}
+
+export async function loadSupervisorDashboardAnalytics(
+  workspace: ComplexWorkspaceData,
+  restrictMosqueIds?: string[]
+): Promise<{
+  todayStats: DailyStatsRecord;
+  globalStats: DailyStatsRecord;
+  topHalaqat: HalaqaRankingItem[];
+  topStudents: StudentRankingItem[];
+}> {
+  const todayKey = getTodayDateKey();
+  const dailyDocId = `daily_${todayKey}`;
+  const emptyStats = (dateKey: string): DailyStatsRecord => ({
+    dateKey,
+    studentLogins: 0,
+    teacherLogins: 0,
+    supervisorLogins: 0,
+    totalVisits: 0,
+    recitedAyahs: 0,
+    recitedPages: 0,
+  });
+
+  const todayStats = emptyStats(dailyDocId);
+  const globalStats = emptyStats('global');
+
+  const uniqueDbs = Array.from(
+    new Set<Firestore>([
+      workspace.complexDb,
+      ...Object.values(workspace.mosqueDbMap),
+      ...Object.values(workspace.halaqaDbMap),
+    ])
+  ).filter((d) => !(workspace.discovered.isExternal && d === primaryDb));
+
+  for (const targetDb of uniqueDbs) {
+    try {
+      const [todaySnap, globalSnap] = await Promise.all([
+        getDocFresh(doc(targetDb, 'stats', dailyDocId)).catch(() => null),
+        getDocFresh(doc(targetDb, 'stats', 'global')).catch(() => null),
+      ]);
+      if (todaySnap?.exists()) {
+        const d = todaySnap.data() as DailyStatsRecord;
+        todayStats.studentLogins += d.studentLogins || 0;
+        todayStats.teacherLogins += d.teacherLogins || 0;
+        todayStats.supervisorLogins += d.supervisorLogins || 0;
+        todayStats.totalVisits += d.totalVisits || 0;
+        todayStats.recitedAyahs += d.recitedAyahs || 0;
+        todayStats.recitedPages += d.recitedPages || 0;
+      }
+      if (globalSnap?.exists()) {
+        const g = globalSnap.data() as DailyStatsRecord;
+        globalStats.studentLogins += g.studentLogins || 0;
+        globalStats.teacherLogins += g.teacherLogins || 0;
+        globalStats.supervisorLogins += g.supervisorLogins || 0;
+        globalStats.totalVisits += g.totalVisits || 0;
+        globalStats.recitedAyahs += g.recitedAyahs || 0;
+        globalStats.recitedPages += g.recitedPages || 0;
+      }
+    } catch {
+      // Non-fatal stats aggregation failure
+    }
+  }
+
+  const allowedSet =
+    restrictMosqueIds && restrictMosqueIds.length > 0 ? new Set(restrictMosqueIds) : null;
+
+  const scopedHalaqat = workspace.halaqat.filter(
+    (h) => !allowedSet || allowedSet.has(h.mosqueId)
+  );
+  const scopedAccounts = workspace.accounts.filter((a) => {
+    if (!allowedSet) return true;
+    return allowedSet.has(a.mosqueId) || a.mosqueIds.some((id) => allowedSet.has(id));
+  });
+
+  const topHalaqat: HalaqaRankingItem[] = scopedHalaqat
+    .map((h) => {
+      const mosqueName =
+        workspace.mosques.find((m) => m.id === h.mosqueId)?.name || 'مسجد';
+      const hStudents = scopedAccounts.filter(
+        (a) => a.role === 'student' && a.halaqaIds.includes(h.id)
+      );
+      const hTeachers = scopedAccounts.filter(
+        (a) => a.role === 'teacher' && a.halaqaIds.includes(h.id)
+      );
+      const activeTodayCount = hStudents.filter(
+        (s) => s.lastLoginDate === todayKey
+      ).length;
+
+      let recitedAyahs = 0;
+      let recitedPages = 0;
+      for (const s of hStudents) {
+        const ext = s as AccountRecord & { recitedAyahs?: number; recitedPages?: number };
+        recitedAyahs += Number(ext.recitedAyahs) || 0;
+        recitedPages += Number(ext.recitedPages) || 0;
+      }
+
+      const achievementScore =
+        recitedAyahs * 2 +
+        recitedPages * 20 +
+        activeTodayCount * 15 +
+        hStudents.length * 5 +
+        hTeachers.length * 3;
+
+      return {
+        halaqaId: h.id,
+        halaqaName: h.name,
+        mosqueName,
+        studentsCount: hStudents.length,
+        teachersCount: hTeachers.length,
+        recitedAyahs,
+        recitedPages,
+        achievementScore,
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.achievementScore - a.achievementScore ||
+        b.studentsCount - a.studentsCount ||
+        a.halaqaName.localeCompare(b.halaqaName, 'ar')
+    );
+
+  const topStudents: StudentRankingItem[] = scopedAccounts
+    .filter((a) => a.role === 'student')
+    .map((s) => {
+      const ext = s as AccountRecord & { recitedAyahs?: number; recitedPages?: number };
+      const recitedAyahs = Number(ext.recitedAyahs) || 0;
+      const recitedPages = Number(ext.recitedPages) || 0;
+      const attendanceActive = s.lastLoginDate === todayKey;
+      const mosqueName =
+        workspace.mosques.find((m) => m.id === s.mosqueId)?.name || 'غير محدد';
+      const halaqaNames = s.halaqaIds
+        .map((id) => workspace.halaqat.find((h) => h.id === id)?.name)
+        .filter(Boolean);
+      const halaqaName = halaqaNames.join('، ') || 'غير معيّنة';
+
+      const achievementScore =
+        recitedAyahs * 2 +
+        recitedPages * 20 +
+        (attendanceActive ? 25 : 0) +
+        (s.uid ? 10 : 0);
+
+      return {
+        accountId: s.id,
+        studentName: s.quadrupleName,
+        mosqueName,
+        halaqaName,
+        recitedAyahs,
+        recitedPages,
+        attendanceActive,
+        achievementScore,
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.achievementScore - a.achievementScore ||
+        (b.attendanceActive ? 1 : 0) - (a.attendanceActive ? 1 : 0) ||
+        a.studentName.localeCompare(b.studentName, 'ar')
+    );
+
+  return {
+    todayStats,
+    globalStats,
+    topHalaqat,
+    topStudents,
+  };
+}
+
+function sanitizeBookSegments(segments: BookTextSegment[]): BookTextSegment[] {
+  return segments.slice(0, 500).map((seg, idx) => {
+    const clean: BookTextSegment = {
+      id: String(seg.id || `seg_${idx}`).slice(0, 64),
+      text: String(seg.text || '').slice(0, 1200),
+      plainText: String(seg.plainText || seg.text || '').slice(0, 1200),
+      kind: seg.kind === 'ayah' ? 'ayah' : 'word',
+      box: [
+        Math.max(0, Math.min(1000, Math.round(Number(seg.box?.[0] ?? 0)))),
+        Math.max(0, Math.min(1000, Math.round(Number(seg.box?.[1] ?? 0)))),
+        Math.max(0, Math.min(1000, Math.round(Number(seg.box?.[2] ?? 0)))),
+        Math.max(0, Math.min(1000, Math.round(Number(seg.box?.[3] ?? 0)))),
+      ],
+    };
+    if (
+      clean.kind === 'ayah' &&
+      typeof seg.surahNumber === 'number' &&
+      seg.surahNumber >= 1 &&
+      seg.surahNumber <= 114
+    ) {
+      clean.surahNumber = Math.round(seg.surahNumber);
+    }
+    if (
+      clean.kind === 'ayah' &&
+      typeof seg.ayahNumber === 'number' &&
+      seg.ayahNumber >= 1 &&
+      seg.ayahNumber <= 286
+    ) {
+      clean.ayahNumber = Math.round(seg.ayahNumber);
+    }
+    if (clean.kind === 'ayah' && seg.surahName) {
+      clean.surahName = String(seg.surahName).trim().slice(0, 80);
+    }
+    return clean;
+  });
+}
+
+export async function listBooksInComplex(
+  workspace: ComplexWorkspaceData
+): Promise<BookRecord[]> {
+  try {
+    const snap = await getDocsFresh(
+      query(
+        collection(workspace.complexDb, 'books'),
+        where('complexId', '==', workspace.complex.id)
+      )
+    );
+    const items: BookRecord[] = [];
+    snap.forEach((d) => {
+      items.push(d.data() as BookRecord);
+    });
+    return items.sort((a, b) => {
+      const aSec = (a.updatedAt as { seconds?: number } | undefined)?.seconds || 0;
+      const bSec = (b.updatedAt as { seconds?: number } | undefined)?.seconds || 0;
+      return bSec - aSec;
+    });
+  } catch {
+    return [];
+  }
+}
+
+export async function loadBookPages(
+  workspace: ComplexWorkspaceData,
+  bookId: string
+): Promise<BookPageRecord[]> {
+  const snap = await getDocsFresh(
+    query(collection(workspace.complexDb, 'bookPages'), where('bookId', '==', bookId))
+  );
+  const pages: BookPageRecord[] = [];
+  snap.forEach((d) => {
+    pages.push(d.data() as BookPageRecord);
+  });
+  return pages.sort((a, b) => a.pageNumber - b.pageNumber);
+}
+
+export async function upsertBookRecord(
+  workspace: ComplexWorkspaceData,
+  book: BookRecord
+): Promise<void> {
+  const targetRef = doc(workspace.complexDb, 'books', book.id);
+  const existing = await getDocFresh(targetRef).catch(() => null);
+  const title = book.title.trim().slice(0, 160) || 'كتاب بدون عنوان';
+  const totalPages = Math.max(1, Math.min(2000, Math.round(book.totalPages)));
+  const uploadedPages = Math.max(0, Math.min(totalPages, Math.round(book.uploadedPages)));
+  const recognizedPages = Math.max(0, Math.min(totalPages, Math.round(book.recognizedPages)));
+
+  if (existing?.exists()) {
+    await updateDoc(targetRef, {
+      title,
+      totalPages,
+      uploadedPages,
+      recognizedPages,
+      status: book.status,
+      updatedAt: serverTimestamp(),
+    });
+  } else {
+    await setDoc(targetRef, {
+      id: book.id,
+      complexId: workspace.complex.id,
+      title,
+      fileName: book.fileName.trim().slice(0, 200) || 'book.pdf',
+      fileType: book.fileType,
+      totalPages,
+      uploadedPages,
+      recognizedPages,
+      status: book.status,
+      createdBy: book.createdBy || auth.currentUser?.uid || 'supervisor',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  }
+}
+
+export async function upsertBookPageRecord(
+  workspace: ComplexWorkspaceData,
+  page: BookPageRecord
+): Promise<void> {
+  const targetRef = doc(workspace.complexDb, 'bookPages', page.id);
+  const existing = await getDocFresh(targetRef).catch(() => null);
+  const cleanSegments = sanitizeBookSegments(page.segments);
+  const cleanFullText = String(page.fullText || '').slice(0, 25000);
+  const cleanWidth = Math.max(1, Math.min(10000, Math.round(page.width)));
+  const cleanHeight = Math.max(1, Math.min(10000, Math.round(page.height)));
+
+  if (existing?.exists()) {
+    await updateDoc(targetRef, {
+      imageDataUrl: page.imageDataUrl,
+      width: cleanWidth,
+      height: cleanHeight,
+      recognized: Boolean(page.recognized),
+      fullText: cleanFullText,
+      segments: cleanSegments,
+      updatedAt: serverTimestamp(),
+    });
+  } else {
+    await setDoc(targetRef, {
+      id: page.id,
+      bookId: page.bookId,
+      complexId: workspace.complex.id,
+      pageNumber: Math.max(1, Math.min(2000, Math.round(page.pageNumber))),
+      imageDataUrl: page.imageDataUrl,
+      width: cleanWidth,
+      height: cleanHeight,
+      recognized: Boolean(page.recognized),
+      fullText: cleanFullText,
+      segments: cleanSegments,
+      updatedAt: serverTimestamp(),
+    });
+  }
+}
+
+export async function renameBookInWorkspace(
+  workspace: ComplexWorkspaceData,
+  bookId: string,
+  newTitle: string
+): Promise<void> {
+  const clean = newTitle.trim().slice(0, 160);
+  if (!clean) {
+    throw new Error('يرجى إدخال عنوان صالح للكتاب.');
+  }
+  await updateDoc(doc(workspace.complexDb, 'books', bookId), {
+    title: clean,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function deleteBookFromWorkspace(
+  workspace: ComplexWorkspaceData,
+  bookId: string
+): Promise<void> {
+  const pagesSnap = await getDocs(
+    query(collection(workspace.complexDb, 'bookPages'), where('bookId', '==', bookId))
+  ).catch(() => null);
+  if (pagesSnap) {
+    for (const p of pagesSnap.docs) {
+      await deleteDoc(doc(workspace.complexDb, 'bookPages', p.id)).catch(() => {});
+    }
+  }
+  await deleteDoc(doc(workspace.complexDb, 'books', bookId));
 }

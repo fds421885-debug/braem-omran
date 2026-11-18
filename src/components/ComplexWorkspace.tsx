@@ -54,21 +54,41 @@ interface ComplexWorkspaceProps {
   connectedDbs: ConnectedDatabaseInfo[];
   onBack: () => void;
   onComplexRelocated: (complexId: string) => Promise<void> | void;
+  supervisorMode?: boolean;
+  initialWorkspace?: ComplexWorkspaceData | null;
+  restrictMosqueIds?: string[];
+  onWorkspaceMutated?: () => Promise<void> | void;
 }
 
 type WorkspaceTab = 'stats' | 'accounts' | 'mosques' | 'quick_links';
 type AccountSubTab = 'invites' | 'list';
+type TargetRoleOption = Exclude<UserRole, 'platform_admin'> | 'complex_supervisor';
+
+function getRoleDisplayLabel(acc: { role: UserRole; mosqueId?: string; mosqueIds?: string[] }): string {
+  if (
+    acc.role === 'supervisor' &&
+    !acc.mosqueId &&
+    (!acc.mosqueIds || acc.mosqueIds.length === 0)
+  ) {
+    return 'مشرف المجمع بالكامل';
+  }
+  return ROLE_LABELS[acc.role];
+}
 
 export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
   discovered,
   connectedDbs,
   onBack,
   onComplexRelocated,
+  supervisorMode = false,
+  initialWorkspace = null,
+  restrictMosqueIds,
+  onWorkspaceMutated,
 }) => {
-  const [workspace, setWorkspace] = useState<ComplexWorkspaceData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [workspace, setWorkspace] = useState<ComplexWorkspaceData | null>(initialWorkspace);
+  const [loading, setLoading] = useState(!initialWorkspace);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
-  const [tab, setTab] = useState<WorkspaceTab>('stats');
+  const [tab, setTab] = useState<WorkspaceTab>(supervisorMode ? 'accounts' : 'stats');
   const [feedback, setFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   // Accounts Subtab state (Registration Links & Members)
@@ -77,8 +97,10 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
   // Invite link state
   const [editingInviteToken, setEditingInviteToken] = useState<string | undefined>(undefined);
   const [inviteTitle, setInviteTitle] = useState('');
-  const [inviteRole, setInviteRole] = useState<Exclude<UserRole, 'platform_admin'>>('student');
-  const [inviteMosqueId, setInviteMosqueId] = useState('');
+  const [inviteTargetRole, setInviteTargetRole] = useState<TargetRoleOption>('student');
+  const [inviteMosqueId, setInviteMosqueId] = useState(
+    initialWorkspace?.mosques[0]?.id || ''
+  );
   const [inviteMosqueIds, setInviteMosqueIds] = useState<string[]>([]);
   const [inviteHalaqaIds, setInviteHalaqaIds] = useState<string[]>([]);
   const [inviteStartsAt, setInviteStartsAt] = useState('');
@@ -111,8 +133,8 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
   >('all');
   const [editingMember, setEditingMember] = useState<AccountRecord | null>(null);
   const [editMemberName, setEditMemberName] = useState('');
-  const [editMemberRole, setEditMemberRole] =
-    useState<Exclude<UserRole, 'platform_admin'>>('student');
+  const [editMemberTargetRole, setEditMemberTargetRole] =
+    useState<TargetRoleOption>('student');
   const [editMemberMosqueId, setEditMemberMosqueId] = useState('');
   const [editMemberMosqueIds, setEditMemberMosqueIds] = useState<string[]>([]);
   const [editMemberHalaqaIds, setEditMemberHalaqaIds] = useState<string[]>([]);
@@ -130,21 +152,38 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
     currentDbLabel: string;
   } | null>(null);
 
+  const isFirstInitialMount = useRef(Boolean(initialWorkspace));
+
   const refreshWorkspace = useCallback(async () => {
-    setLoading(true);
+    setLoading((prev) => (workspace ? prev : true));
     try {
       const data = await loadComplexWorkspace(discovered);
       setWorkspace(data);
-      const firstMosque = data.mosques[0]?.id || '';
+      const firstMosque =
+        (restrictMosqueIds && restrictMosqueIds.length > 0
+          ? data.mosques.find((m) => restrictMosqueIds.includes(m.id))?.id
+          : data.mosques[0]?.id) || '';
       setInviteMosqueId((prev) => prev || firstMosque);
+      await onWorkspaceMutated?.();
     } finally {
       setLoading(false);
     }
-  }, [discovered]);
+  }, [discovered, restrictMosqueIds, onWorkspaceMutated, workspace]);
 
   useEffect(() => {
-    refreshWorkspace();
-  }, [refreshWorkspace]);
+    if (isFirstInitialMount.current && initialWorkspace) {
+      isFirstInitialMount.current = false;
+      const firstMosque =
+        (restrictMosqueIds && restrictMosqueIds.length > 0
+          ? initialWorkspace.mosques.find((m) => restrictMosqueIds.includes(m.id))?.id
+          : initialWorkspace.mosques[0]?.id) || '';
+      setInviteMosqueId((prev) => prev || firstMosque);
+      setLoading(false);
+      return;
+    }
+    void refreshWorkspace();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [discovered]);
 
   useEffect(() => {
     return () => {
@@ -224,11 +263,34 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
     );
   }
 
-  const supervisors = workspace.accounts.filter((a) => a.role === 'supervisor');
-  const teachers = workspace.accounts.filter((a) => a.role === 'teacher');
-  const students = workspace.accounts.filter((a) => a.role === 'student');
+  const allowedMosqueSet =
+    restrictMosqueIds && restrictMosqueIds.length > 0 ? new Set(restrictMosqueIds) : null;
+  const visibleMosques = allowedMosqueSet
+    ? workspace.mosques.filter((m) => allowedMosqueSet.has(m.id))
+    : workspace.mosques;
+  const visibleHalaqat = allowedMosqueSet
+    ? workspace.halaqat.filter((h) => allowedMosqueSet.has(h.mosqueId))
+    : workspace.halaqat;
+  const visibleAccounts = allowedMosqueSet
+    ? workspace.accounts.filter(
+        (a) =>
+          allowedMosqueSet.has(a.mosqueId) ||
+          a.mosqueIds.some((id) => allowedMosqueSet.has(id))
+      )
+    : workspace.accounts;
+  const visibleInvites = allowedMosqueSet
+    ? workspace.inviteLinks.filter(
+        (lnk) =>
+          allowedMosqueSet.has(lnk.mosqueId) ||
+          lnk.mosqueIds.some((id) => allowedMosqueSet.has(id))
+      )
+    : workspace.inviteLinks;
 
-  const inviteMosqueHalaqat = workspace.halaqat.filter(
+  const supervisors = visibleAccounts.filter((a) => a.role === 'supervisor');
+  const teachers = visibleAccounts.filter((a) => a.role === 'teacher');
+  const students = visibleAccounts.filter((a) => a.role === 'student');
+
+  const inviteMosqueHalaqat = visibleHalaqat.filter(
     (h) => h.mosqueId === inviteMosqueId
   );
 
@@ -282,13 +344,27 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
       return;
     }
 
+    const actualRole: Exclude<UserRole, 'platform_admin'> =
+      inviteTargetRole === 'complex_supervisor' ? 'supervisor' : inviteTargetRole;
     const mIds =
-      inviteRole === 'supervisor'
+      inviteTargetRole === 'complex_supervisor'
+        ? []
+        : inviteTargetRole === 'supervisor'
         ? inviteMosqueIds
         : inviteMosqueId
         ? [inviteMosqueId]
         : [];
-    const primaryMosque = inviteRole === 'supervisor' ? mIds[0] || '' : inviteMosqueId;
+    const primaryMosque =
+      inviteTargetRole === 'complex_supervisor'
+        ? ''
+        : inviteTargetRole === 'supervisor'
+        ? mIds[0] || ''
+        : inviteMosqueId;
+
+    if (inviteTargetRole === 'supervisor' && mIds.length === 0) {
+      setFeedback({ type: 'err', text: 'يرجى تحديد مسجد واحد على الأقل لمشرف المسجد، أو اختر "مشرف المجمع بالكامل".' });
+      return;
+    }
 
     setBusyLabel('جاري حفظ رابط التسجيل...');
     try {
@@ -296,10 +372,11 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
         workspace,
         existingToken: editingInviteToken,
         title: trimmedTitle,
-        role: inviteRole,
+        role: actualRole,
         mosqueId: primaryMosque,
         mosqueIds: mIds,
-        halaqaIds: inviteRole === 'supervisor' ? [] : inviteHalaqaIds,
+        halaqaIds:
+          actualRole === 'supervisor' ? [] : inviteHalaqaIds,
         startsAtMs,
         endsAtMs,
         active: inviteActive,
@@ -320,7 +397,9 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
   const handleEditInviteLink = (link: InviteLinkRecord) => {
     setEditingInviteToken(link.token);
     setInviteTitle(link.title);
-    setInviteRole(link.role);
+    const isComplexWideSup =
+      link.role === 'supervisor' && !link.mosqueId && link.mosqueIds.length === 0;
+    setInviteTargetRole(isComplexWideSup ? 'complex_supervisor' : link.role);
     setInviteMosqueId(link.mosqueId);
     setInviteMosqueIds(link.mosqueIds);
     setInviteHalaqaIds(link.halaqaIds);
@@ -508,7 +587,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
     }
   };
 
-  const quickFilteredAccounts = workspace.accounts.filter((a) => {
+  const quickFilteredAccounts = visibleAccounts.filter((a) => {
     if (a.role === 'platform_admin') return false;
     if (quickRoleFilter !== 'all' && a.role !== quickRoleFilter) return false;
     if (quickMosqueFilter !== 'all') {
@@ -526,8 +605,10 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
     if (acc.role === 'platform_admin') return;
     setEditingMember(acc);
     setEditMemberName(acc.quadrupleName);
-    setEditMemberRole(acc.role);
-    const defaultMosqueId = acc.mosqueId || workspace.mosques[0]?.id || '';
+    const isComplexWide =
+      acc.role === 'supervisor' && !acc.mosqueId && acc.mosqueIds.length === 0;
+    setEditMemberTargetRole(isComplexWide ? 'complex_supervisor' : acc.role);
+    const defaultMosqueId = acc.mosqueId || visibleMosques[0]?.id || '';
     setEditMemberMosqueId(defaultMosqueId);
     setEditMemberMosqueIds(
       acc.mosqueIds.length > 0 ? acc.mosqueIds : acc.mosqueId ? [acc.mosqueId] : []
@@ -547,14 +628,23 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
       return;
     }
 
+    const actualRole: Exclude<UserRole, 'platform_admin'> =
+      editMemberTargetRole === 'complex_supervisor' ? 'supervisor' : editMemberTargetRole;
     const mIds =
-      editMemberRole === 'supervisor'
+      editMemberTargetRole === 'complex_supervisor'
+        ? []
+        : editMemberTargetRole === 'supervisor'
         ? editMemberMosqueIds
         : editMemberMosqueId
         ? [editMemberMosqueId]
         : [];
-    const primaryMosque = editMemberRole === 'supervisor' ? mIds[0] || '' : editMemberMosqueId;
-    const hIds = editMemberRole === 'supervisor' ? [] : editMemberHalaqaIds;
+    const primaryMosque =
+      editMemberTargetRole === 'complex_supervisor'
+        ? ''
+        : editMemberTargetRole === 'supervisor'
+        ? mIds[0] || ''
+        : editMemberMosqueId;
+    const hIds = actualRole === 'supervisor' ? [] : editMemberHalaqaIds;
 
     setSavingMember(true);
     try {
@@ -562,7 +652,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
         workspace,
         account: editingMember,
         quadrupleName: validation.normalized,
-        role: editMemberRole,
+        role: actualRole,
         mosqueId: primaryMosque,
         mosqueIds: mIds,
         halaqaIds: hIds,
@@ -609,7 +699,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
 
   const normalizedQuery = normalizeSearchText(memberSearch);
 
-  const filteredMemberList = workspace.accounts.filter((a) => {
+  const filteredMemberList = visibleAccounts.filter((a) => {
     if (memberRoleFilter !== 'all' && a.role !== memberRoleFilter) {
       return false;
     }
@@ -627,74 +717,116 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
     return haystack.includes(normalizedQuery);
   });
 
+  const workspaceTabsList = supervisorMode
+    ? [
+        { id: 'accounts' as WorkspaceTab, label: 'الحسابات والأعضاء', icon: Users },
+        { id: 'mosques' as WorkspaceTab, label: 'المساجد والحلقات', icon: Building2 },
+        { id: 'quick_links' as WorkspaceTab, label: 'روابط الدخول السريع', icon: KeyRound },
+      ]
+    : [
+        { id: 'stats' as WorkspaceTab, label: 'الإحصائيات', icon: BarChart3 },
+        { id: 'accounts' as WorkspaceTab, label: 'الحسابات', icon: Users },
+        { id: 'mosques' as WorkspaceTab, label: 'المساجد', icon: Building2 },
+        { id: 'quick_links' as WorkspaceTab, label: 'روابط الدخول السريع', icon: KeyRound },
+      ];
+
   return (
     <div className="space-y-6">
-      {/* Top Complex Header */}
-      <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-4 sm:p-6 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={onBack}
-            className="duo-btn-cream min-h-[44px] px-3.5 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer"
-          >
-            <ArrowRight className="w-4 h-4" />
-            <span>المجمعات</span>
-          </button>
-          <div className="flex flex-wrap items-center gap-2.5">
-            <div>
-              <h2 className="font-display text-lg sm:text-2xl font-extrabold text-[#4A220D]">
-                {workspace.complex?.name || discovered.name}
-              </h2>
-              <p className="text-xs font-medium text-[#7D4E35]">
-                {discovered.ownerDbLabel}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() =>
-                setTransferTarget({
-                  scope: 'complex',
-                  targetId: discovered.id,
-                  targetName: workspace.complex?.name || discovered.name,
-                  currentDbLabel: discovered.ownerDbLabel,
-                })
-              }
-              className="duo-btn-cream min-h-[38px] px-3 py-1.5 rounded-xl font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer"
-            >
-              <Database className="w-3.5 h-3.5 text-[#F56900]" />
-              <span>تغيير قاعدة المجمع</span>
-            </button>
+      {/* Top Complex Header (Admin sees DB + Back button; Supervisor sees clean sub-tabs bar) */}
+      {supervisorMode ? (
+        <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="font-display text-lg sm:text-xl font-extrabold text-[#4A220D]">
+              الحسابات والمساجد
+            </h2>
+            <p className="text-xs text-[#7D4E35]">
+              إدارة روابط التسجيل، الأعضاء، المساجد والحلقات، وروابط الدخول السريع للمجمع.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5 bg-[#FDF6EE] p-1.5 rounded-2xl border border-[#EADBC8]">
+            {workspaceTabsList.map((t) => {
+              const Icon = t.icon;
+              const active = tab === t.id;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setTab(t.id)}
+                  className={`min-h-[42px] px-3 sm:px-4 py-2 rounded-xl font-display text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors ${
+                    active
+                      ? 'bg-[#F56900] text-white'
+                      : 'text-[#7D4E35] hover:text-[#4A220D] hover:bg-white'
+                  }`}
+                >
+                  <Icon className="w-4 h-4 shrink-0" />
+                  <span>{t.label}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
-
-        {/* 4 Workspace Tabs */}
-        <div className="flex flex-wrap items-center gap-1.5 bg-[#FDF6EE] p-1.5 rounded-2xl border border-[#EADBC8]">
-          {[
-            { id: 'stats' as WorkspaceTab, label: 'الإحصائيات', icon: BarChart3 },
-            { id: 'accounts' as WorkspaceTab, label: 'الحسابات', icon: Users },
-            { id: 'mosques' as WorkspaceTab, label: 'المساجد', icon: Building2 },
-            { id: 'quick_links' as WorkspaceTab, label: 'روابط الدخول السريع', icon: KeyRound },
-          ].map((t) => {
-            const Icon = t.icon;
-            const active = tab === t.id;
-            return (
+      ) : (
+        <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-4 sm:p-6 flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={onBack}
+              className="duo-btn-cream min-h-[44px] px-3.5 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              <ArrowRight className="w-4 h-4" />
+              <span>المجمعات</span>
+            </button>
+            <div className="flex flex-wrap items-center gap-2.5">
+              <div>
+                <h2 className="font-display text-lg sm:text-2xl font-extrabold text-[#4A220D]">
+                  {workspace.complex?.name || discovered.name}
+                </h2>
+                <p className="text-xs font-medium text-[#7D4E35]">
+                  {discovered.ownerDbLabel}
+                </p>
+              </div>
               <button
-                key={t.id}
                 type="button"
-                onClick={() => setTab(t.id)}
-                className={`min-h-[42px] px-3 sm:px-4 py-2 rounded-xl font-display text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors ${
-                  active
-                    ? 'bg-[#F56900] text-white'
-                    : 'text-[#7D4E35] hover:text-[#4A220D] hover:bg-white'
-                }`}
+                onClick={() =>
+                  setTransferTarget({
+                    scope: 'complex',
+                    targetId: discovered.id,
+                    targetName: workspace.complex?.name || discovered.name,
+                    currentDbLabel: discovered.ownerDbLabel,
+                  })
+                }
+                className="duo-btn-cream min-h-[38px] px-3 py-1.5 rounded-xl font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer"
               >
-                <Icon className="w-4 h-4 shrink-0" />
-                <span>{t.label}</span>
+                <Database className="w-3.5 h-3.5 text-[#F56900]" />
+                <span>تغيير قاعدة المجمع</span>
               </button>
-            );
-          })}
+            </div>
+          </div>
+
+          {/* 4 Workspace Tabs */}
+          <div className="flex flex-wrap items-center gap-1.5 bg-[#FDF6EE] p-1.5 rounded-2xl border border-[#EADBC8]">
+            {workspaceTabsList.map((t) => {
+              const Icon = t.icon;
+              const active = tab === t.id;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setTab(t.id)}
+                  className={`min-h-[42px] px-3 sm:px-4 py-2 rounded-xl font-display text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors ${
+                    active
+                      ? 'bg-[#F56900] text-white'
+                      : 'text-[#7D4E35] hover:text-[#4A220D] hover:bg-white'
+                  }`}
+                >
+                  <Icon className="w-4 h-4 shrink-0" />
+                  <span>{t.label}</span>
+                </button>
+              );
+            })}
+          </div>
         </div>
-      </div>
+      )}
 
       {busyLabel && (
         <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-4">
@@ -861,9 +993,9 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                       الفئة المستهدفة
                     </label>
                     <select
-                      value={inviteRole}
+                      value={inviteTargetRole}
                       onChange={(e) => {
-                        setInviteRole(e.target.value as Exclude<UserRole, 'platform_admin'>);
+                        setInviteTargetRole(e.target.value as TargetRoleOption);
                         setInviteHalaqaIds([]);
                         setInviteMosqueIds([]);
                       }}
@@ -871,18 +1003,25 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                     >
                       <option value="student">طلاب</option>
                       <option value="teacher">معلمين</option>
-                      <option value="supervisor">مشرفين</option>
+                      <option value="supervisor">مشرف مسجد</option>
+                      {!allowedMosqueSet && (
+                        <option value="complex_supervisor">مشرف المجمع بالكامل</option>
+                      )}
                     </select>
                   </div>
                 </div>
 
-                {inviteRole === 'supervisor' ? (
+                {inviteTargetRole === 'complex_supervisor' ? (
+                  <div className="bg-[#FDF6EE] border border-[#EADBC8] rounded-2xl p-4 text-xs sm:text-sm text-[#4A220D] font-medium">
+                    يمنح هذا الرابط المسجِّل صلاحية <strong>مشرف المجمع بالكامل</strong> (جميع المساجد والحلقات) بمجرد إدخال اسمه الرباعي وتسجيل الدخول بحساب جوجل.
+                  </div>
+                ) : inviteTargetRole === 'supervisor' ? (
                   <div>
                     <p className="font-display text-xs font-bold text-[#4A220D] mb-2">
                       حدد المسجد أو المساجد لهذا المشرف:
                     </p>
                     <div className="flex flex-wrap gap-2">
-                      {workspace.mosques.map((m) => (
+                      {visibleMosques.map((m) => (
                         <button
                           key={m.id}
                           type="button"
@@ -914,7 +1053,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                         }}
                         className="w-full min-h-[46px] px-3.5 py-2 rounded-xl border-2 border-[#EADBC8] bg-white text-sm font-bold"
                       >
-                        {workspace.mosques.map((m) => (
+                        {visibleMosques.map((m) => (
                           <option key={m.id} value={m.id}>
                             {m.name}
                           </option>
@@ -924,7 +1063,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
 
                     <div>
                       <p className="font-display text-xs font-bold text-[#4A220D] mb-2">
-                        {inviteRole === 'teacher'
+                        {inviteTargetRole === 'teacher'
                           ? 'حدد حلقة أو حلقات المعلم:'
                           : 'حدد حلقة الطالب:'}
                       </p>
@@ -935,7 +1074,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                             type="button"
                             onClick={() =>
                               setInviteHalaqaIds((prev) =>
-                                inviteRole === 'teacher' ? toggleArrayItem(prev, h.id) : [h.id]
+                                inviteTargetRole === 'teacher' ? toggleArrayItem(prev, h.id) : [h.id]
                               )
                             }
                             className={`min-h-[40px] px-3.5 py-1.5 rounded-xl border-2 text-xs font-bold cursor-pointer ${
@@ -987,18 +1126,26 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                   <span>الرابط مفتوح ومفعل للتسجيل</span>
                 </label>
 
-                <div className="bg-[#FDF6EE] border border-[#EADBC8] rounded-2xl px-4 py-2.5 text-xs font-bold text-[#4A220D] flex flex-wrap items-center gap-2">
-                  <Database className="w-4 h-4 text-[#F56900] shrink-0" />
-                  <span>
-                    القاعدة المرتبطة بتسجيل الدخول وحفظ الحسابات لهذا الرابط:{' '}
-                    <strong className="text-[#46A302]">
-                      {getInviteTargetDbLabel(
-                        inviteRole === 'supervisor' ? inviteMosqueIds[0] || '' : inviteMosqueId,
-                        inviteRole === 'supervisor' ? [] : inviteHalaqaIds
-                      )}
-                    </strong>
-                  </span>
-                </div>
+                {!supervisorMode && (
+                  <div className="bg-[#FDF6EE] border border-[#EADBC8] rounded-2xl px-4 py-2.5 text-xs font-bold text-[#4A220D] flex flex-wrap items-center gap-2">
+                    <Database className="w-4 h-4 text-[#F56900] shrink-0" />
+                    <span>
+                      القاعدة المرتبطة بتسجيل الدخول وحفظ الحسابات لهذا الرابط:{' '}
+                      <strong className="text-[#46A302]">
+                        {getInviteTargetDbLabel(
+                          inviteTargetRole === 'complex_supervisor'
+                            ? ''
+                            : inviteTargetRole === 'supervisor'
+                            ? inviteMosqueIds[0] || ''
+                            : inviteMosqueId,
+                          inviteTargetRole === 'complex_supervisor' || inviteTargetRole === 'supervisor'
+                            ? []
+                            : inviteHalaqaIds
+                        )}
+                      </strong>
+                    </span>
+                  </div>
+                )}
 
                 <div>
                   <button
@@ -1013,13 +1160,13 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
               {/* Saved Invite Links */}
               <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 sm:p-6 space-y-3">
                 <h4 className="font-display text-base font-extrabold text-[#4A220D]">
-                  روابط التسجيل المنشأة ({workspace.inviteLinks.length})
+                  روابط التسجيل المنشأة ({visibleInvites.length})
                 </h4>
-                {workspace.inviteLinks.length === 0 ? (
+                {visibleInvites.length === 0 ? (
                   <p className="text-sm text-[#7D4E35]">لم يتم إنشاء روابط تسجيل بعد.</p>
                 ) : (
                   <div className="space-y-3">
-                    {workspace.inviteLinks.map((lnk) => {
+                    {visibleInvites.map((lnk) => {
                       const now = Date.now();
                       const expired = lnk.endsAtMs > 0 && now > lnk.endsAtMs;
                       const notStarted = lnk.startsAtMs > 0 && now < lnk.startsAtMs;
@@ -1041,11 +1188,13 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                               {lnk.title}
                             </p>
                             <p className="text-xs text-[#7D4E35]">
-                              {ROLE_LABELS[lnk.role]} · الحالة: <strong className="text-[#F56900]">{stateText}</strong>
+                              {getRoleDisplayLabel(lnk)} · الحالة: <strong className="text-[#F56900]">{stateText}</strong>
                             </p>
-                            <p className="text-[11px] font-bold text-[#46A302]">
-                              قاعدة الحفظ والدخول: {getInviteTargetDbLabel(lnk.mosqueId, lnk.halaqaIds)}
-                            </p>
+                            {!supervisorMode && (
+                              <p className="text-[11px] font-bold text-[#46A302]">
+                                قاعدة الحفظ والدخول: {getInviteTargetDbLabel(lnk.mosqueId, lnk.halaqaIds)}
+                              </p>
+                            )}
                           </div>
 
                           <div className="flex flex-wrap items-center gap-2">
@@ -1125,7 +1274,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
                 <div>
                   <h3 className="font-display text-lg font-extrabold text-[#4A220D]">
-                    أعضاء المجمع ({filteredMemberList.length} من {workspace.accounts.length})
+                    أعضاء المجمع ({filteredMemberList.length} من {visibleAccounts.length})
                   </h3>
                   <p className="text-xs text-[#7D4E35]">
                     ابحث بالاسم أو البريد أو الحلقة، أو عدّل/احذف العضو أو انسخ رابط الدخول السريع الخاص به.
@@ -1210,9 +1359,13 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                               )}
                             </td>
                             <td className="py-3 px-3 text-[#F56900] font-bold whitespace-nowrap">
-                              {ROLE_LABELS[acc.role]}
+                              {getRoleDisplayLabel(acc)}
                             </td>
-                            <td className="py-3 px-3 text-[#7D4E35]">{mNames || '—'}</td>
+                            <td className="py-3 px-3 text-[#7D4E35]">
+                              {acc.role === 'supervisor' && !acc.mosqueId && acc.mosqueIds.length === 0
+                                ? 'جميع المساجد'
+                                : mNames || '—'}
+                            </td>
                             <td className="py-3 px-3 text-[#7D4E35]">{hNames || '—'}</td>
                             <td className="py-3 px-3">
                               {acc.role === 'platform_admin' ? (
@@ -1276,31 +1429,33 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
       {/* TAB 3: Mosques, Halaqat, Supervisors & Full Transfers */}
       {tab === 'mosques' && (
         <div className="space-y-6">
-          {/* Add Mosque Bar */}
-          <form
-            onSubmit={handleAddMosque}
-            className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 flex flex-col sm:flex-row items-stretch sm:items-center gap-3"
-          >
-            <input
-              type="text"
-              value={newMosqueName}
-              onChange={(e) => setNewMosqueName(e.target.value)}
-              placeholder="اسم مسجد جديد لإضافته للمجمع..."
-              className="flex-1 min-h-[46px] px-4 py-2 rounded-2xl border-2 border-[#EADBC8] bg-[#FDF6EE]/60 text-sm"
-            />
-            <button
-              type="submit"
-              className="duo-btn-orange min-h-[46px] px-5 rounded-2xl font-display font-bold text-sm inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+          {/* Add Mosque Bar (only when not restricted to specific mosques) */}
+          {!allowedMosqueSet && (
+            <form
+              onSubmit={handleAddMosque}
+              className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 flex flex-col sm:flex-row items-stretch sm:items-center gap-3"
             >
-              <Plus className="w-4 h-4" />
-              <span>إضافة مسجد</span>
-            </button>
-          </form>
+              <input
+                type="text"
+                value={newMosqueName}
+                onChange={(e) => setNewMosqueName(e.target.value)}
+                placeholder="اسم مسجد جديد لإضافته للمجمع..."
+                className="flex-1 min-h-[46px] px-4 py-2 rounded-2xl border-2 border-[#EADBC8] bg-[#FDF6EE]/60 text-sm"
+              />
+              <button
+                type="submit"
+                className="duo-btn-orange min-h-[46px] px-5 rounded-2xl font-display font-bold text-sm inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+              >
+                <Plus className="w-4 h-4" />
+                <span>إضافة مسجد</span>
+              </button>
+            </form>
+          )}
 
           {/* Mosques Cards */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {workspace.mosques.map((m) => {
-              const mHalaqat = workspace.halaqat.filter((h) => h.mosqueId === m.id);
+            {visibleMosques.map((m) => {
+              const mHalaqat = visibleHalaqat.filter((h) => h.mosqueId === m.id);
               const mSups = supervisors.filter(
                 (a) => a.mosqueId === m.id || a.mosqueIds.includes(m.id)
               );
@@ -1344,31 +1499,35 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                           <p className="text-xs text-[#7D4E35]">
                             المشرفون: {mSups.map((s) => s.quadrupleName).join('، ') || 'غير معيّن'}
                           </p>
-                          <p className="text-[11px] font-bold text-[#F56900] mt-0.5">
-                            القاعدة:{' '}
-                            {workspace.mosqueConfigMap[m.id]
-                              ? getDbDisplayLabel(workspace.mosqueConfigMap[m.id]!)
-                              : discovered.ownerDbLabel}
-                          </p>
+                          {!supervisorMode && (
+                            <p className="text-[11px] font-bold text-[#F56900] mt-0.5">
+                              القاعدة:{' '}
+                              {workspace.mosqueConfigMap[m.id]
+                                ? getDbDisplayLabel(workspace.mosqueConfigMap[m.id]!)
+                                : discovered.ownerDbLabel}
+                            </p>
+                          )}
                         </div>
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setTransferTarget({
-                                scope: 'mosque',
-                                targetId: m.id,
-                                targetName: m.name,
-                                currentDbLabel: workspace.mosqueConfigMap[m.id]
-                                  ? getDbDisplayLabel(workspace.mosqueConfigMap[m.id]!)
-                                  : discovered.ownerDbLabel,
-                              })
-                            }
-                            className="min-h-[38px] px-2.5 py-1.5 rounded-xl border border-[#EADBC8] bg-[#FDF6EE] hover:border-[#F56900] text-xs font-bold text-[#4A220D] inline-flex items-center gap-1 cursor-pointer"
-                          >
-                            <Database className="w-3.5 h-3.5 text-[#F56900]" />
-                            <span>القاعدة</span>
-                          </button>
+                          {!supervisorMode && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setTransferTarget({
+                                  scope: 'mosque',
+                                  targetId: m.id,
+                                  targetName: m.name,
+                                  currentDbLabel: workspace.mosqueConfigMap[m.id]
+                                    ? getDbDisplayLabel(workspace.mosqueConfigMap[m.id]!)
+                                    : discovered.ownerDbLabel,
+                                })
+                              }
+                              className="min-h-[38px] px-2.5 py-1.5 rounded-xl border border-[#EADBC8] bg-[#FDF6EE] hover:border-[#F56900] text-xs font-bold text-[#4A220D] inline-flex items-center gap-1 cursor-pointer"
+                            >
+                              <Database className="w-3.5 h-3.5 text-[#F56900]" />
+                              <span>القاعدة</span>
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => {
@@ -1438,28 +1597,30 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                                 <span className="font-bold text-sm text-[#4A220D]">
                                   {h.name}
                                 </span>
-                                {hDbDiffersFromMosque && (
+                                {!supervisorMode && hDbDiffersFromMosque && (
                                   <span className="block text-[11px] font-bold text-[#46A302]">
                                     قاعدة مستقلة: {hDbLabel}
                                   </span>
                                 )}
                               </div>
                               <div className="flex items-center gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setTransferTarget({
-                                      scope: 'halaqa',
-                                      targetId: h.id,
-                                      targetName: h.name,
-                                      currentDbLabel: hDbLabel,
-                                    })
-                                  }
-                                  className="min-h-[32px] px-2.5 py-1 rounded-lg border border-[#EADBC8] bg-white hover:border-[#F56900] text-[11px] font-bold text-[#4A220D] inline-flex items-center gap-1 cursor-pointer"
-                                >
-                                  <Database className="w-3 h-3 text-[#F56900]" />
-                                  <span>تغيير القاعدة</span>
-                                </button>
+                                {!supervisorMode && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setTransferTarget({
+                                        scope: 'halaqa',
+                                        targetId: h.id,
+                                        targetName: h.name,
+                                        currentDbLabel: hDbLabel,
+                                      })
+                                    }
+                                    className="min-h-[32px] px-2.5 py-1 rounded-lg border border-[#EADBC8] bg-white hover:border-[#F56900] text-[11px] font-bold text-[#4A220D] inline-flex items-center gap-1 cursor-pointer"
+                                  >
+                                    <Database className="w-3 h-3 text-[#F56900]" />
+                                    <span>تغيير القاعدة</span>
+                                  </button>
+                                )}
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -1528,7 +1689,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                   className="w-full min-h-[44px] px-3 rounded-xl border-2 border-[#EADBC8] bg-white text-sm font-bold"
                 >
                   <option value="">-- اختر الحلقة --</option>
-                  {workspace.halaqat.map((h: HalaqaRecord) => {
+                  {visibleHalaqat.map((h: HalaqaRecord) => {
                     const srcMosque = workspace.mosques.find((m) => m.id === h.mosqueId);
                     return (
                       <option key={h.id} value={h.id}>
@@ -1549,7 +1710,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                   className="w-full min-h-[44px] px-3 rounded-xl border-2 border-[#EADBC8] bg-white text-sm font-bold"
                 >
                   <option value="">-- اختر المسجد الهدف --</option>
-                  {workspace.mosques.map((m) => (
+                  {visibleMosques.map((m) => (
                     <option key={m.id} value={m.id}>
                       {m.name}
                     </option>
@@ -1585,7 +1746,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                 <select
                   value={transferAccId}
                   onChange={(e) => {
-                    const acc = workspace.accounts.find((a) => a.id === e.target.value);
+                    const acc = visibleAccounts.find((a) => a.id === e.target.value);
                     setTransferAccId(e.target.value);
                     if (acc) {
                       setTransferAccMosqueId(acc.mosqueId);
@@ -1596,11 +1757,11 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                   className="w-full min-h-[44px] px-3 rounded-xl border-2 border-[#EADBC8] bg-white text-sm font-bold"
                 >
                   <option value="">-- اختر مشرف / معلم / طالب --</option>
-                  {workspace.accounts
+                  {visibleAccounts
                     .filter((a) => a.role !== 'platform_admin')
                     .map((a) => (
                       <option key={a.id} value={a.id}>
-                        {a.quadrupleName} ({ROLE_LABELS[a.role]})
+                        {a.quadrupleName} ({getRoleDisplayLabel(a)})
                       </option>
                     ))}
                 </select>
@@ -1611,10 +1772,10 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                   {selectedTransferAccount.role === 'supervisor' ? (
                     <div>
                       <p className="text-xs font-bold text-[#7D4E35] mb-2">
-                        المساجد التي يشرف عليها:
+                        المساجد التي يشرف عليها (اتركها فارغة لإشراف المجمع بالكامل):
                       </p>
                       <div className="flex flex-wrap gap-2">
-                        {workspace.mosques.map((m) => (
+                        {visibleMosques.map((m) => (
                           <button
                             key={m.id}
                             type="button"
@@ -1646,7 +1807,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                           }}
                           className="w-full min-h-[44px] px-3 rounded-xl border-2 border-[#EADBC8] bg-white text-sm font-bold"
                         >
-                          {workspace.mosques.map((m) => (
+                          {visibleMosques.map((m) => (
                             <option key={m.id} value={m.id}>
                               {m.name}
                             </option>
@@ -1659,7 +1820,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                           الحلقات الجديدة:
                         </p>
                         <div className="flex flex-wrap gap-2">
-                          {workspace.halaqat
+                          {visibleHalaqat
                             .filter((h) => h.mosqueId === transferAccMosqueId)
                             .map((h) => (
                               <button
@@ -1742,7 +1903,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                 className="w-full min-h-[44px] px-3 rounded-xl border-2 border-[#EADBC8] bg-white text-sm font-bold"
               >
                 <option value="all">كل المساجد</option>
-                {workspace.mosques.map((m) => (
+                {visibleMosques.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.name}
                   </option>
@@ -1758,7 +1919,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                 className="w-full min-h-[44px] px-3 rounded-xl border-2 border-[#EADBC8] bg-white text-sm font-bold"
               >
                 <option value="all">كل الحلقات</option>
-                {workspace.halaqat
+                {visibleHalaqat
                   .filter(
                     (h) => quickMosqueFilter === 'all' || h.mosqueId === quickMosqueFilter
                   )
@@ -1792,7 +1953,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                         {acc.quadrupleName}
                       </p>
                       <p className="text-xs text-[#7D4E35]">
-                        {ROLE_LABELS[acc.role]}
+                        {getRoleDisplayLabel(acc)}
                         {mName ? ` · ${mName}` : ''}
                         {hNames ? ` · ${hNames}` : ''}
                       </p>
@@ -1825,7 +1986,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
         </div>
       )}
 
-      {transferTarget && (
+      {!supervisorMode && transferTarget && (
         <DatabaseTransferModal
           workspace={workspace}
           scope={transferTarget.scope}
@@ -1904,11 +2065,14 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                   الصفة
                 </label>
                 <select
-                  value={editMemberRole}
+                  value={editMemberTargetRole}
                   onChange={(e) => {
-                    const nextRole = e.target.value as Exclude<UserRole, 'platform_admin'>;
-                    setEditMemberRole(nextRole);
-                    if (nextRole === 'supervisor') {
+                    const nextRole = e.target.value as TargetRoleOption;
+                    setEditMemberTargetRole(nextRole);
+                    if (nextRole === 'complex_supervisor') {
+                      setEditMemberHalaqaIds([]);
+                      setEditMemberMosqueIds([]);
+                    } else if (nextRole === 'supervisor') {
                       setEditMemberHalaqaIds([]);
                       if (editMemberMosqueIds.length === 0 && editMemberMosqueId) {
                         setEditMemberMosqueIds([editMemberMosqueId]);
@@ -1921,17 +2085,24 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                 >
                   <option value="student">طالب</option>
                   <option value="teacher">معلم</option>
-                  <option value="supervisor">مشرف</option>
+                  <option value="supervisor">مشرف مسجد</option>
+                  {!allowedMosqueSet && (
+                    <option value="complex_supervisor">مشرف المجمع بالكامل</option>
+                  )}
                 </select>
               </div>
 
-              {editMemberRole === 'supervisor' ? (
+              {editMemberTargetRole === 'complex_supervisor' ? (
+                <div className="bg-[#FDF6EE] border border-[#EADBC8] rounded-2xl p-3.5 text-xs font-bold text-[#4A220D]">
+                  يشرف هذا العضو على المجمع بالكامل (جميع المساجد والحلقات).
+                </div>
+              ) : editMemberTargetRole === 'supervisor' ? (
                 <div>
                   <p className="font-display text-xs font-bold text-[#4A220D] mb-2">
                     المساجد التي يشرف عليها:
                   </p>
                   <div className="flex flex-wrap gap-2">
-                    {workspace.mosques.map((m) => (
+                    {visibleMosques.map((m) => (
                       <button
                         key={m.id}
                         type="button"
@@ -1964,7 +2135,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                       className="w-full min-h-[46px] px-3.5 py-2 rounded-xl border-2 border-[#EADBC8] bg-white text-sm font-bold"
                     >
                       <option value="">-- بدون مسجد --</option>
-                      {workspace.mosques.map((m) => (
+                      {visibleMosques.map((m) => (
                         <option key={m.id} value={m.id}>
                           {m.name}
                         </option>
@@ -1974,10 +2145,10 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
 
                   <div>
                     <p className="font-display text-xs font-bold text-[#4A220D] mb-2">
-                      {editMemberRole === 'teacher' ? 'الحلقات:' : 'الحلقة:'}
+                      {editMemberTargetRole === 'teacher' ? 'الحلقات:' : 'الحلقة:'}
                     </p>
                     <div className="flex flex-wrap gap-2">
-                      {workspace.halaqat
+                      {visibleHalaqat
                         .filter((h) => h.mosqueId === editMemberMosqueId)
                         .map((h) => (
                           <button
@@ -1985,7 +2156,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                             type="button"
                             onClick={() =>
                               setEditMemberHalaqaIds((prev) =>
-                                editMemberRole === 'teacher'
+                                editMemberTargetRole === 'teacher'
                                   ? toggleArrayItem(prev, h.id)
                                   : [h.id]
                               )

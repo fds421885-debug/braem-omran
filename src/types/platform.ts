@@ -140,3 +140,140 @@ export interface ConnectedDatabaseInfo {
   config: ExternalFirebaseConfig | null;
 }
 
+export interface BookTextSegment {
+  id: string;
+  text: string;
+  plainText: string;
+  kind: 'ayah' | 'word';
+  box: [number, number, number, number]; // [ymin, xmin, ymax, xmax] 0..1000
+  surahNumber?: number;
+  ayahNumber?: number;
+  surahName?: string;
+}
+
+export interface BookRecord {
+  id: string;
+  complexId: string;
+  title: string;
+  fileName: string;
+  fileType: 'pdf' | 'image';
+  totalPages: number;
+  uploadedPages: number;
+  recognizedPages: number;
+  status: 'uploading' | 'processing' | 'paused' | 'ready' | 'error';
+  createdBy: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface BookPageRecord {
+  id: string;
+  bookId: string;
+  complexId: string;
+  pageNumber: number;
+  imageDataUrl: string;
+  width: number;
+  height: number;
+  recognized: boolean;
+  fullText: string;
+  segments: BookTextSegment[];
+  updatedAt?: unknown;
+}
+
+export interface NoorAlBayanStep {
+  part: string;
+  ruleLabel: string;
+  reading: string;
+}
+
+export interface QuranReciterInfo {
+  id: string;
+  name: string;
+  style: string;
+  everyAyahFolder: string;
+}
+
+export const QURAN_RECITERS: QuranReciterInfo[] = [
+  {
+    id: 'alafasy',
+    name: 'الشيخ مشاري راشد العفاسي',
+    style: 'مرتل',
+    everyAyahFolder: 'Alafasy_128kbps',
+  },
+  {
+    id: 'abdulbasit',
+    name: 'الشيخ عبد الباسط عبد الصمد',
+    style: 'مرتل',
+    everyAyahFolder: 'Abdul_Basit_Murattal_192kbps',
+  },
+  {
+    id: 'husary',
+    name: 'الشيخ محمود خليل الحصري',
+    style: 'مرتل تعليمي',
+    everyAyahFolder: 'Husary_128kbps',
+  },
+  {
+    id: 'minshawy',
+    name: 'الشيخ محمد صديق المنشاوي',
+    style: 'مرتل',
+    everyAyahFolder: 'Minshawy_Murattal_128kbps',
+  },
+  {
+    id: 'muaiqly',
+    name: 'الشيخ ماهر المعيقلي',
+    style: 'مرتل',
+    everyAyahFolder: 'MaherAlMuaiqly128kbps',
+  },
+  {
+    id: 'ghamadi',
+    name: 'الشيخ سعد الغامدي',
+    style: 'مرتل',
+    everyAyahFolder: 'Ghamadi_40kbps',
+  },
+  {
+    id: 'shuraym',
+    name: 'الشيخ سعود الشريم',
+    style: 'مرتل',
+    everyAyahFolder: 'Saood_ash-Shuraym_128kbps',
+  },
+  {
+    id: 'sudais',
+    name: 'الشيخ عبد الرحمن السديس',
+    style: 'مرتل',
+    everyAyahFolder: 'Abdurrahmaan_As-Sudais_192kbps',
+  },
+  {
+    id: 'dussary',
+    name: 'الشيخ ياسر الدوسري',
+    style: 'مرتل',
+    everyAyahFolder: 'Yasser_Ad-Dussary_128kbps',
+  },
+  {
+    id: 'ayyoub',
+    name: 'الشيخ محمد أيوب',
+    style: 'مرتل',
+    everyAyahFolder: 'Muhammad_Ayyoub_128kbps',
+  },
+];
+
+export interface HalaqaRankingItem {
+  halaqaId: string;
+  halaqaName: string;
+  mosqueName: string;
+  studentsCount: number;
+  teachersCount: number;
+  recitedAyahs: number;
+  recitedPages: number;
+  achievementScore: number;
+}
+
+export interface StudentRankingItem {
+  accountId: string;
+  studentName: string;
+  mosqueName: string;
+  halaqaName: string;
+  recitedAyahs: number;
+  recitedPages: number;
+  attendanceActive: boolean;
+  achievementScore: number;
+}

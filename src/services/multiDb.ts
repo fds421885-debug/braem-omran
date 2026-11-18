@@ -49,6 +49,12 @@ service cloud.firestore {
     match /stats/{id} {
       allow read, write: if true;
     }
+    match /books/{id} {
+      allow read, write: if true;
+    }
+    match /bookPages/{id} {
+      allow read, write: if true;
+    }
   }
 }`;
 
@@ -598,4 +604,25 @@ export function getTodayDateKey(): string {
   const m = String(now.getMonth() + 1).padStart(2, '0');
   const d = String(now.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
+}
+
+export function getReciterAyahAudioUrl(
+  everyAyahFolder: string,
+  surahNumber: number,
+  ayahNumber: number
+): string {
+  const s = String(Math.max(1, Math.min(114, Math.floor(surahNumber)))).padStart(3, '0');
+  const a = String(Math.max(1, Math.min(286, Math.floor(ayahNumber)))).padStart(3, '0');
+  return `https://everyayah.com/data/${everyAyahFolder}/${s}${a}.mp3`;
+}
+
+export function normalizeArabicText(value: string): string {
+  return value
+    .trim()
+    .replace(/[\u064B-\u065F\u0670\u06D6-\u06ED]/g, '')
+    .replace(/[أإآٱ]/g, 'ا')
+    .replace(/ى/g, 'ي')
+    .replace(/ة/g, 'ه')
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
 }

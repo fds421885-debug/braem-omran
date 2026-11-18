@@ -34,6 +34,14 @@ service cloud.firestore {
       );
     }
 
+    function isComplexSupervisor(cpxId) {
+      return isVerifiedUser()
+        && isValidId(cpxId)
+        && exists(/databases/$(database)/documents/accounts/$(request.auth.uid))
+        && get(/databases/$(database)/documents/accounts/$(request.auth.uid)).data.role == 'supervisor'
+        && get(/databases/$(database)/documents/accounts/$(request.auth.uid)).data.complexId == cpxId;
+    }
+
     function isBoundedStringList(arr, maxLen) {
       return arr is list
         && arr.size() <= maxLen
@@ -213,6 +221,54 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidBook(data, bookId) {
+      return data.keys().hasAll([
+          'id', 'complexId', 'title', 'fileName', 'fileType',
+          'totalPages', 'uploadedPages', 'recognizedPages', 'status',
+          'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'complexId', 'title', 'fileName', 'fileType',
+          'totalPages', 'uploadedPages', 'recognizedPages', 'status',
+          'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == bookId && isValidId(data.id)
+        && data.complexId is string && isValidId(data.complexId)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 200
+        && data.fileType in ['pdf', 'image']
+        && data.totalPages is int && data.totalPages >= 1 && data.totalPages <= 2000
+        && data.uploadedPages is int && data.uploadedPages >= 0 && data.uploadedPages <= 2000
+        && data.recognizedPages is int && data.recognizedPages >= 0 && data.recognizedPages <= 2000
+        && data.status in ['uploading', 'processing', 'paused', 'ready', 'error']
+        && data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBookPage(data, pageId) {
+      return data.keys().hasAll([
+          'id', 'bookId', 'complexId', 'pageNumber', 'imageDataUrl',
+          'width', 'height', 'recognized', 'fullText', 'segments', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'bookId', 'complexId', 'pageNumber', 'imageDataUrl',
+          'width', 'height', 'recognized', 'fullText', 'segments', 'updatedAt'
+        ])
+        && data.id is string && data.id == pageId && isValidId(data.id)
+        && data.bookId is string && isValidId(data.bookId)
+        && data.complexId is string && isValidId(data.complexId)
+        && data.pageNumber is int && data.pageNumber >= 1 && data.pageNumber <= 2000
+        && data.imageDataUrl is string && data.imageDataUrl.size() >= 1 && data.imageDataUrl.size() <= 750000
+        && data.width is int && data.width >= 1 && data.width <= 10000
+        && data.height is int && data.height >= 1 && data.height <= 10000
+        && data.recognized is bool
+        && data.fullText is string && data.fullText.size() <= 25000
+        && data.segments is list && data.segments.size() <= 500
+        && (data.segments.size() == 0 || data.segments[0] is map)
+        && data.updatedAt is timestamp;
+    }
+
     match /admins/{userId} {
       allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
       allow list: if false;
@@ -231,7 +287,11 @@ service cloud.firestore {
         && isValidNameIndex(incoming())
         && incoming().createdAt == request.time;
       allow update: if false;
-      allow delete: if isPlatformAdmin();
+      allow delete: if isPlatformAdmin() || (
+        isVerifiedUser()
+        && exists(/databases/$(database)/documents/accounts/$(request.auth.uid))
+        && get(/databases/$(database)/documents/accounts/$(request.auth.uid)).data.role == 'supervisor'
+      );
     }
 
     match /dbRegistry/{complexId} {
@@ -277,12 +337,20 @@ service cloud.firestore {
     match /mosques/{mosqueId} {
       allow get: if isSignedIn() && isValidId(mosqueId);
       allow list: if isSignedIn() && resource.data.active == true;
-      allow create: if isPlatformAdmin()
+      allow create: if (isPlatformAdmin() || isComplexSupervisor(incoming().complexId))
         && isValidId(mosqueId)
         && isValidMosque(incoming(), mosqueId)
+        && incoming().usesExternalDb == false
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isPlatformAdmin()
+      allow update: if (
+          isPlatformAdmin()
+          || (
+            isComplexSupervisor(existing().complexId)
+            && incoming().complexId == existing().complexId
+            && incoming().usesExternalDb == existing().usesExternalDb
+          )
+        )
         && isValidId(mosqueId)
         && isValidMosque(incoming(), mosqueId)
         && incoming().id == existing().id
@@ -295,12 +363,18 @@ service cloud.firestore {
     match /halaqat/{halaqaId} {
       allow get: if isSignedIn() && isValidId(halaqaId);
       allow list: if isSignedIn() && resource.data.active == true;
-      allow create: if isPlatformAdmin()
+      allow create: if (isPlatformAdmin() || isComplexSupervisor(incoming().complexId))
         && isValidId(halaqaId)
         && isValidHalaqa(incoming(), halaqaId)
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isPlatformAdmin()
+      allow update: if (
+          isPlatformAdmin()
+          || (
+            isComplexSupervisor(existing().complexId)
+            && incoming().complexId == existing().complexId
+          )
+        )
         && isValidId(halaqaId)
         && isValidHalaqa(incoming(), halaqaId)
         && incoming().id == existing().id
@@ -312,10 +386,16 @@ service cloud.firestore {
 
     match /accounts/{accountId} {
       allow get: if isSignedIn() && isValidId(accountId) && (
-        isPlatformAdmin() || existing().uid == request.auth.uid || existing().email == request.auth.token.email
+        isPlatformAdmin()
+        || existing().uid == request.auth.uid
+        || existing().email == request.auth.token.email
+        || (existing().complexId is string && isComplexSupervisor(existing().complexId))
       );
       allow list: if isSignedIn() && (
-        isPlatformAdmin() || resource.data.uid == request.auth.uid || resource.data.email == request.auth.token.email
+        isPlatformAdmin()
+        || resource.data.uid == request.auth.uid
+        || resource.data.email == request.auth.token.email
+        || (resource.data.complexId is string && isComplexSupervisor(resource.data.complexId))
       );
 
       allow create: if isVerifiedUser()
@@ -325,6 +405,10 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && (
           isPlatformAdmin()
+          || (
+            isComplexSupervisor(incoming().complexId)
+            && incoming().role in ['supervisor', 'teacher', 'student']
+          )
           || (
             incoming().uid == request.auth.uid
             && incoming().email == request.auth.token.email
@@ -349,6 +433,15 @@ service cloud.firestore {
         && (
           isPlatformAdmin()
           || (
+            isComplexSupervisor(existing().complexId)
+            && incoming().complexId == existing().complexId
+            && existing().role in ['supervisor', 'teacher', 'student']
+            && incoming().role in ['supervisor', 'teacher', 'student']
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'quadrupleName', 'nameHash', 'role', 'mosqueId', 'mosqueIds', 'halaqaIds', 'quickToken', 'updatedAt'
+            ])
+          )
+          || (
             existing().uid == ''
             && incoming().uid == request.auth.uid
             && incoming().email == request.auth.token.email
@@ -360,18 +453,31 @@ service cloud.firestore {
           )
         );
 
-      allow delete: if isPlatformAdmin() && isValidId(accountId);
+      allow delete: if isValidId(accountId) && (
+        isPlatformAdmin()
+        || (
+          existing().role in ['supervisor', 'teacher', 'student']
+          && existing().uid != request.auth.uid
+          && existing().complexId is string
+          && isComplexSupervisor(existing().complexId)
+        )
+      );
     }
 
     match /inviteLinks/{token} {
       allow get: if isValidId(token);
-      allow list: if isPlatformAdmin() && resource.data.active is bool;
-      allow create: if isPlatformAdmin()
+      allow list: if isSignedIn() && resource.data.active is bool && (
+        isPlatformAdmin() || isComplexSupervisor(resource.data.complexId)
+      );
+      allow create: if (isPlatformAdmin() || isComplexSupervisor(incoming().complexId))
         && isValidId(token)
         && isValidInviteLink(incoming(), token)
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isPlatformAdmin()
+      allow update: if (
+          isPlatformAdmin()
+          || (isComplexSupervisor(existing().complexId) && incoming().complexId == existing().complexId)
+        )
         && isValidId(token)
         && isValidInviteLink(incoming(), token)
         && incoming().token == existing().token
@@ -380,18 +486,25 @@ service cloud.firestore {
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'title', 'complexId', 'role', 'mosqueId', 'mosqueIds', 'halaqaIds', 'startsAtMs', 'endsAtMs', 'active', 'updatedAt'
         ]);
-      allow delete: if isPlatformAdmin() && isValidId(token);
+      allow delete: if isValidId(token) && (
+        isPlatformAdmin() || isComplexSupervisor(existing().complexId)
+      );
     }
 
     match /quickLinks/{token} {
       allow get: if isValidId(token);
-      allow list: if isPlatformAdmin() && resource.data.active is bool;
-      allow create: if isPlatformAdmin()
+      allow list: if isSignedIn() && resource.data.active is bool && (
+        isPlatformAdmin() || isComplexSupervisor(resource.data.complexId)
+      );
+      allow create: if (isPlatformAdmin() || isComplexSupervisor(incoming().complexId))
         && isValidId(token)
         && isValidQuickLink(incoming(), token)
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isPlatformAdmin()
+      allow update: if (
+          isPlatformAdmin()
+          || (isComplexSupervisor(existing().complexId) && incoming().complexId == existing().complexId)
+        )
         && isValidId(token)
         && isValidQuickLink(incoming(), token)
         && incoming().token == existing().token
@@ -400,12 +513,20 @@ service cloud.firestore {
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'accountId', 'quadrupleName', 'role', 'complexId', 'complexName', 'mosqueId', 'mosqueName', 'halaqaNames', 'active', 'updatedAt'
         ]);
-      allow delete: if isPlatformAdmin() && isValidId(token);
+      allow delete: if isValidId(token) && (
+        isPlatformAdmin() || isComplexSupervisor(existing().complexId)
+      );
     }
 
     match /stats/{statId} {
       allow get: if isSignedIn() && isValidId(statId);
-      allow list: if isPlatformAdmin() && resource.data.totalVisits is int;
+      allow list: if isSignedIn() && resource.data.totalVisits is int && (
+        isPlatformAdmin()
+        || (
+          exists(/databases/$(database)/documents/accounts/$(request.auth.uid))
+          && get(/databases/$(database)/documents/accounts/$(request.auth.uid)).data.role == 'supervisor'
+        )
+      );
       allow create: if isVerifiedUser()
         && isValidId(statId)
         && isValidStats(incoming())
@@ -433,6 +554,70 @@ service cloud.firestore {
           )
         );
       allow delete: if false;
+    }
+
+    match /books/{bookId} {
+      allow get: if isSignedIn() && isValidId(bookId) && (
+        isPlatformAdmin() || isComplexSupervisor(existing().complexId)
+      );
+      allow list: if isSignedIn() && (
+        isPlatformAdmin()
+        || (resource.data.complexId is string && isComplexSupervisor(resource.data.complexId))
+      );
+      allow create: if (isPlatformAdmin() || isComplexSupervisor(incoming().complexId))
+        && isValidId(bookId)
+        && isValidBook(incoming(), bookId)
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if (
+          isPlatformAdmin()
+          || (isComplexSupervisor(existing().complexId) && incoming().complexId == existing().complexId)
+        )
+        && isValidId(bookId)
+        && isValidBook(incoming(), bookId)
+        && incoming().id == existing().id
+        && incoming().complexId == existing().complexId
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'title', 'totalPages', 'uploadedPages', 'recognizedPages', 'status', 'updatedAt'
+        ]);
+      allow delete: if isValidId(bookId) && (
+        isPlatformAdmin() || isComplexSupervisor(existing().complexId)
+      );
+    }
+
+    match /bookPages/{pageId} {
+      allow get: if isSignedIn() && isValidId(pageId) && (
+        isPlatformAdmin() || isComplexSupervisor(existing().complexId)
+      );
+      allow list: if isSignedIn() && (
+        isPlatformAdmin()
+        || (resource.data.complexId is string && isComplexSupervisor(resource.data.complexId))
+      );
+      allow create: if (isPlatformAdmin() || isComplexSupervisor(incoming().complexId))
+        && isValidId(pageId)
+        && isValidBookPage(incoming(), pageId)
+        && incoming().updatedAt == request.time;
+      allow update: if (
+          isPlatformAdmin()
+          || (isComplexSupervisor(existing().complexId) && incoming().complexId == existing().complexId)
+        )
+        && isValidId(pageId)
+        && isValidBookPage(incoming(), pageId)
+        && incoming().id == existing().id
+        && incoming().bookId == existing().bookId
+        && incoming().complexId == existing().complexId
+        && incoming().pageNumber == existing().pageNumber
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'imageDataUrl', 'width', 'height', 'recognized', 'fullText', 'segments', 'updatedAt'
+        ]);
+      allow delete: if isValidId(pageId) && (
+        isPlatformAdmin() || isComplexSupervisor(existing().complexId)
+      );
     }
   }
 }

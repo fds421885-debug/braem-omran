@@ -276,9 +276,21 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                       <span>دعوة تسجيل: {inviteState.link.title}</span>
                     </div>
                     <p className="text-xs sm:text-sm font-bold text-[#4A220D]">
-                      الصفة: {ROLE_LABELS[inviteState.link.role]}
+                      الصفة:{' '}
+                      {inviteState.link.role === 'supervisor' &&
+                      !inviteState.link.mosqueId &&
+                      inviteState.link.mosqueIds.length === 0
+                        ? 'مشرف المجمع بالكامل'
+                        : ROLE_LABELS[inviteState.link.role]}
                       {inviteState.complexName ? ` · المجمع: ${inviteState.complexName}` : ''}
                     </p>
+                    {inviteState.link.role === 'supervisor' &&
+                      !inviteState.link.mosqueId &&
+                      inviteState.link.mosqueIds.length === 0 && (
+                        <p className="text-xs text-[#7D4E35]">
+                          النطاق: مشرف عام على جميع مساجد وحلقات المجمع
+                        </p>
+                      )}
                     {inviteState.mosqueNames.length > 0 && (
                       <p className="text-xs text-[#7D4E35]">
                         المسجد: {inviteState.mosqueNames.join('، ')}

@@ -215,6 +215,70 @@
         "recitedPages",
         "updatedAt"
       ]
+    },
+    "BookRecord": {
+      "title": "BookRecord",
+      "description": "Uploaded educational or Quranic book in a complex library with upload and AI recognition progress.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "complexId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "fileName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "fileType": { "type": "string", "enum": ["pdf", "image"] },
+        "totalPages": { "type": "integer" },
+        "uploadedPages": { "type": "integer" },
+        "recognizedPages": { "type": "integer" },
+        "status": { "type": "string", "enum": ["uploading", "processing", "paused", "ready", "error"] },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "complexId",
+        "title",
+        "fileName",
+        "fileType",
+        "totalPages",
+        "uploadedPages",
+        "recognizedPages",
+        "status",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "BookPageRecord": {
+      "title": "BookPageRecord",
+      "description": "Rendered book page image and recognized Arabic/Quranic interactive word segments.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "bookId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "complexId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "pageNumber": { "type": "integer" },
+        "imageDataUrl": { "type": "string", "minLength": 1, "maxLength": 700000 },
+        "width": { "type": "integer" },
+        "height": { "type": "integer" },
+        "recognized": { "type": "boolean" },
+        "fullText": { "type": "string", "maxLength": 25000 },
+        "segments": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "bookId",
+        "complexId",
+        "pageNumber",
+        "imageDataUrl",
+        "width",
+        "height",
+        "recognized",
+        "fullText",
+        "segments",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -257,6 +321,14 @@
     "/stats/{statId}": {
       "schema": { "$ref": "#/entities/DailyStatsRecord" },
       "description": "Daily login, visit, and Quran recitation stats."
+    },
+    "/books/{bookId}": {
+      "schema": { "$ref": "#/entities/BookRecord" },
+      "description": "Uploaded library books per Quranic complex."
+    },
+    "/bookPages/{pageId}": {
+      "schema": { "$ref": "#/entities/BookPageRecord" },
+      "description": "Rendered pages and OCR word/ayah segments for uploaded books."
     }
   }
 }

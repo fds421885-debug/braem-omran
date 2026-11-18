@@ -11,6 +11,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { ModernLoader } from './components/ModernLoader';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { RoleWelcomeView } from './components/RoleWelcomeView';
+import { SupervisorDashboard } from './components/SupervisorDashboard';
 import { auth as primaryAuth, db as primaryDb } from './firebase';
 import { getAuthForConfig } from './services/multiDb';
 import {
@@ -356,15 +357,26 @@ function AppContent() {
     return <AdminDashboard session={activeSession} />;
   }
 
+  const exitQuickSession = () => {
+    setActiveSession(null);
+    const url = new URL(window.location.href);
+    url.search = '';
+    window.history.replaceState({}, '', url.toString());
+  };
+
+  if (activeSession.account.role === 'supervisor') {
+    return (
+      <SupervisorDashboard
+        session={activeSession}
+        onExitQuickSession={exitQuickSession}
+      />
+    );
+  }
+
   return (
     <RoleWelcomeView
       session={activeSession}
-      onExitQuickSession={() => {
-        setActiveSession(null);
-        const url = new URL(window.location.href);
-        url.search = '';
-        window.history.replaceState({}, '', url.toString());
-      }}
+      onExitQuickSession={exitQuickSession}
     />
   );
 }
