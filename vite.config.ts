@@ -59,6 +59,7 @@ export default defineConfig(() => {
         workbox: {
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,jpg,woff,woff2}'],
+          navigateFallbackDenylist: [/^\/api\//, /\/pdfjs\//],
           runtimeCaching: [
             {
               urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
@@ -95,12 +96,49 @@ export default defineConfig(() => {
           type: 'module',
         },
       }),
-      // Copies src/assets into dist/ so URLs like
-      // "${BASE_URL}src/assets/images/..." still resolve
-      // in production builds, and creates 404.html for GitHub Pages SPA fallback.
+      // Serve pdfjs-dist worker, wasm (JBIG2/OpenJPEG/QCMS), cmaps, iccs, and standard_fonts
+      // in dev and bundle them into dist/pdfjs/ for 100% static hosts like GitHub Pages.
       {
-        name: 'copy-unbundled-src-assets-and-gh-pages-404',
-        apply: 'build',
+        name: 'serve-and-bundle-pdfjs-assets',
+        configureServer(server) {
+          const pdfjsRoot = path.resolve(__dirname, 'node_modules/pdfjs-dist');
+          server.middlewares.use((req, res, next) => {
+            const reqUrl = (req.url || '').split('?')[0];
+            const prefix = `${base}pdfjs/`;
+            const altPrefix = '/pdfjs/';
+            let relPath: string | null = null;
+            if (reqUrl.startsWith(prefix)) {
+              relPath = reqUrl.slice(prefix.length);
+            } else if (reqUrl.startsWith(altPrefix)) {
+              relPath = reqUrl.slice(altPrefix.length);
+            }
+            if (!relPath) {
+              next();
+              return;
+            }
+            const safeRel = path.normalize(relPath).replace(/^(\.\.(\/|\\|$))+/, '');
+            const candidate =
+              safeRel === 'pdf.worker.min.mjs'
+                ? path.join(pdfjsRoot, 'build/pdf.worker.min.mjs')
+                : path.join(pdfjsRoot, safeRel);
+            if (!fs.existsSync(candidate) || fs.statSync(candidate).isDirectory()) {
+              next();
+              return;
+            }
+            const ext = path.extname(candidate).toLowerCase();
+            const mimeMap: Record<string, string> = {
+              '.mjs': 'application/javascript; charset=utf-8',
+              '.js': 'application/javascript; charset=utf-8',
+              '.wasm': 'application/wasm',
+              '.bcmap': 'application/octet-stream',
+              '.pfb': 'application/octet-stream',
+              '.ttf': 'font/ttf',
+              '.icc': 'application/vnd.iccprofile',
+            };
+            res.setHeader('Content-Type', mimeMap[ext] || 'application/octet-stream');
+            fs.createReadStream(candidate).pipe(res);
+          });
+        },
         closeBundle(error?: Error): void {
           if (error) {
             return;
@@ -111,6 +149,27 @@ export default defineConfig(() => {
           if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
             fs.cpSync(srcAssets, distAssets, {recursive: true, force: true});
           }
+
+          // Copy pdfjs-dist runtime assets into dist/pdfjs/
+          const pdfjsRoot = path.resolve(__dirname, 'node_modules/pdfjs-dist');
+          const distPdfjs = path.resolve(distDir, 'pdfjs');
+          if (fs.existsSync(distDir) && fs.existsSync(pdfjsRoot)) {
+            fs.mkdirSync(distPdfjs, {recursive: true});
+            const workerSrc = path.join(pdfjsRoot, 'build/pdf.worker.min.mjs');
+            if (fs.existsSync(workerSrc)) {
+              fs.copyFileSync(workerSrc, path.join(distPdfjs, 'pdf.worker.min.mjs'));
+            }
+            for (const subDir of ['wasm', 'cmaps', 'standard_fonts', 'iccs']) {
+              const srcSub = path.join(pdfjsRoot, subDir);
+              if (fs.existsSync(srcSub)) {
+                fs.cpSync(srcSub, path.join(distPdfjs, subDir), {
+                  recursive: true,
+                  force: true,
+                });
+              }
+            }
+          }
+
           const indexHtml = path.resolve(distDir, 'index.html');
           const fallback404 = path.resolve(distDir, '404.html');
           if (fs.existsSync(indexHtml)) {

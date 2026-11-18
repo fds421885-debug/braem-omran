@@ -214,8 +214,12 @@ async function startServer() {
         })
       );
 
-      const rawJson = (result.text ?? '{}').trim();
-      const parsed = JSON.parse(rawJson) as RawPageAnalysisResponse;
+      const rawJson = (result.text ?? '{}')
+        .trim()
+        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/\s*```$/i, '')
+        .trim();
+      const parsed = JSON.parse(rawJson || '{}') as RawPageAnalysisResponse;
 
       const normalizedSegments = (parsed.segments || [])
         .filter((seg) => seg && typeof seg.text === 'string' && seg.text.trim().length > 0)

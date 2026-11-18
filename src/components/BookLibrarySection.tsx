@@ -180,6 +180,21 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
   const [audioDuration, setAudioDuration] = useState(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const activeObjectUrlRef = useRef<string | null>(null);
+  const speechStateRef = useRef<{
+    active: boolean;
+    text: string;
+    mode: AudioMode;
+    startedAtMs: number;
+    elapsedBeforePauseMs: number;
+    timerId: number | null;
+  }>({
+    active: false,
+    text: '',
+    mode: 'normal',
+    startedAtMs: 0,
+    elapsedBeforePauseMs: 0,
+    timerId: null,
+  });
 
   const loadBooksAndJobs = useCallback(async () => {
     setLoadingBooks(true);
@@ -210,7 +225,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [isRunningJob]);
 
-  // Clean up audio element & ObjectURLs on unmount
+  // Clean up audio element, SpeechSynthesis & ObjectURLs on unmount
   useEffect(() => {
     return () => {
       if (audioRef.current) {
@@ -219,6 +234,12 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
       }
       if (activeObjectUrlRef.current) {
         URL.revokeObjectURL(activeObjectUrlRef.current);
+      }
+      if (speechStateRef.current.timerId !== null) {
+        window.clearInterval(speechStateRef.current.timerId);
+      }
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
       }
     };
   }, []);
@@ -335,6 +356,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
             imageDataUrl: page.imageDataUrl,
             pageNumber: page.pageNumber,
             bookTitle: workingJob.title,
+            embeddedSegments: page.embeddedSegments,
           });
 
           const updatedPage: BookLocalPage = {
@@ -513,6 +535,13 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
     await runBookPipeline(job);
   };
 
+  const clearSpeechTimer = useCallback(() => {
+    if (speechStateRef.current.timerId !== null) {
+      window.clearInterval(speechStateRef.current.timerId);
+      speechStateRef.current.timerId = null;
+    }
+  }, []);
+
   const stopAndResetAudio = useCallback(() => {
     if (audioRef.current) {
       audioRef.current.pause();
@@ -522,12 +551,18 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
       URL.revokeObjectURL(activeObjectUrlRef.current);
       activeObjectUrlRef.current = null;
     }
+    clearSpeechTimer();
+    speechStateRef.current.active = false;
+    speechStateRef.current.elapsedBeforePauseMs = 0;
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
     setAudioPlaying(false);
     setAudioCurrentTime(0);
     setAudioDuration(0);
     setActiveAudioMode(null);
     setAudioError(null);
-  }, []);
+  }, [clearSpeechTimer]);
 
   const openBookReader = async (book: BookRecord) => {
     stopAndResetAudio();
@@ -564,6 +599,12 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
     url: string,
     isObjectUrl: boolean
   ) => {
+    clearSpeechTimer();
+    speechStateRef.current.active = false;
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+
     if (!audioRef.current) {
       audioRef.current = new Audio();
     }
@@ -603,6 +644,79 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
     await audio.play();
   };
 
+  const playBrowserSpeech = useCallback(
+    (mode: AudioMode, text: string) => {
+      if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+        setAudioError('متصفحك لا يدعم القراءة الصوتية التلقائية بدون خادم.');
+        return;
+      }
+
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = '';
+      }
+      clearSpeechTimer();
+      window.speechSynthesis.cancel();
+
+      const cleanText = text.trim();
+      const estimatedSeconds = Math.max(
+        1.5,
+        Math.round((cleanText.split(/\s+/).filter(Boolean).length * (mode === 'noor_albayan' ? 0.95 : 0.6)) * 10) / 10
+      );
+
+      const utterance = new SpeechSynthesisUtterance(cleanText);
+      const voices = window.speechSynthesis.getVoices();
+      const arabicVoice =
+        voices.find((v) => v.lang.toLowerCase().startsWith('ar-sa')) ||
+        voices.find((v) => v.lang.toLowerCase().startsWith('ar'));
+      if (arabicVoice) {
+        utterance.voice = arabicVoice;
+      }
+      utterance.lang = arabicVoice?.lang || 'ar-SA';
+      utterance.rate = mode === 'noor_albayan' ? 0.72 : 0.95;
+      utterance.pitch = 1.0;
+
+      speechStateRef.current.active = true;
+      speechStateRef.current.text = cleanText;
+      speechStateRef.current.mode = mode;
+      speechStateRef.current.elapsedBeforePauseMs = 0;
+      speechStateRef.current.startedAtMs = Date.now();
+
+      utterance.onstart = () => {
+        speechStateRef.current.startedAtMs = Date.now();
+        setAudioDuration(estimatedSeconds);
+        setAudioPlaying(true);
+        clearSpeechTimer();
+        speechStateRef.current.timerId = window.setInterval(() => {
+          const totalMs =
+            speechStateRef.current.elapsedBeforePauseMs +
+            (Date.now() - speechStateRef.current.startedAtMs);
+          setAudioCurrentTime(Math.min(estimatedSeconds, totalMs / 1000));
+        }, 120);
+      };
+
+      utterance.onend = () => {
+        clearSpeechTimer();
+        setAudioPlaying(false);
+        setAudioCurrentTime(estimatedSeconds);
+      };
+
+      utterance.onerror = (ev) => {
+        if (ev.error === 'canceled' || ev.error === 'interrupted') return;
+        clearSpeechTimer();
+        setAudioPlaying(false);
+        setAudioError('تعذّر تشغيل القارئ الصوتي في المتصفح.');
+      };
+
+      setActiveAudioMode(mode);
+      setAudioDuration(estimatedSeconds);
+      setAudioCurrentTime(0);
+      setAudioPlaying(true);
+      window.speechSynthesis.speak(utterance);
+    },
+    [clearSpeechTimer]
+  );
+
   const handlePlayNoorAlBayan = async () => {
     if (!selectedSegment) return;
     setAudioError(null);
@@ -635,6 +749,11 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
         text: speechScript,
         mode: 'noor_albayan',
       });
+
+      if (tts.engine === 'browser_speech') {
+        playBrowserSpeech('noor_albayan', tts.text);
+        return;
+      }
 
       await saveCachedAudioEntry({
         key: cacheKey,
@@ -672,6 +791,11 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
         text: selectedSegment.text,
         mode: 'normal',
       });
+
+      if (tts.engine === 'browser_speech') {
+        playBrowserSpeech('normal', tts.text);
+        return;
+      }
 
       await saveCachedAudioEntry({
         key: cacheKey,
@@ -718,12 +842,30 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
   };
 
   const handlePauseAudio = () => {
+    if (speechStateRef.current.active && typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.pause();
+      speechStateRef.current.elapsedBeforePauseMs +=
+        Date.now() - speechStateRef.current.startedAtMs;
+      clearSpeechTimer();
+      setAudioPlaying(false);
+      return;
+    }
     if (audioRef.current) {
       audioRef.current.pause();
     }
   };
 
   const handleResumeAudio = async () => {
+    if (speechStateRef.current.active && typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+        speechStateRef.current.startedAtMs = Date.now();
+        setAudioPlaying(true);
+      } else {
+        playBrowserSpeech(speechStateRef.current.mode, speechStateRef.current.text);
+      }
+      return;
+    }
     if (audioRef.current && audioRef.current.src) {
       await audioRef.current.play().catch(() => {
         setAudioError('تعذّر إكمال التشغيل؛ اضغط على أعد.');
@@ -732,6 +874,10 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
   };
 
   const handleRestartAudio = async () => {
+    if (speechStateRef.current.active) {
+      playBrowserSpeech(speechStateRef.current.mode, speechStateRef.current.text);
+      return;
+    }
     if (audioRef.current && audioRef.current.src) {
       audioRef.current.currentTime = 0;
       setAudioCurrentTime(0);
@@ -1305,7 +1451,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".pdf,application/pdf,image/*"
+                accept=".pdf,application/pdf,application/x-pdf,image/*"
                 onChange={handleSelectBookFile}
                 className="hidden"
               />
