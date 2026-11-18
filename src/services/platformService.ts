@@ -39,6 +39,7 @@ import {
   buildDbConnectionId,
   generateToken,
   generateValidId,
+  getAuthForConfig,
   getDbDisplayLabel,
   getFirestoreForConfig,
   getTodayDateKey,
@@ -343,14 +344,28 @@ export async function listAllComplexesAcrossDatabases(): Promise<DiscoveredCompl
   return Array.from(discoveredMap.values());
 }
 
-export async function isQuadrupleNameUniqueGlobally(quadrupleName: string): Promise<{
+export async function isQuadrupleNameUniqueGlobally(
+  quadrupleName: string,
+  priorityDb?: Firestore
+): Promise<{
   unique: boolean;
   nameHash: string;
 }> {
   const nameHash = await hashQuadrupleName(quadrupleName);
-  const targets = await getAllKnownDatabases();
+  if (priorityDb) {
+    try {
+      const idxSnap = await getDocFresh(doc(priorityDb, 'nameIndex', nameHash));
+      if (idxSnap.exists()) {
+        return { unique: false, nameHash };
+      }
+    } catch {
+      // Ignore if unreadable
+    }
+  }
 
+  const targets = await getAllKnownDatabases();
   for (const target of targets) {
+    if (priorityDb && target.db === priorityDb) continue;
     try {
       const idxSnap = await getDoc(doc(target.db, 'nameIndex', nameHash));
       if (idxSnap.exists()) {
@@ -368,7 +383,8 @@ async function enrichSessionLabels(
   account: AccountRecord,
   db: Firestore,
   dbLabel: string,
-  allowPrimaryLookup: boolean
+  allowPrimaryLookup: boolean,
+  authConfig: ExternalFirebaseConfig | null = null
 ): Promise<ActiveSession> {
   let complexName = '';
   let mosqueName = '';
@@ -436,69 +452,120 @@ async function enrichSessionLabels(
     mosqueNames,
     halaqaNames,
     dbSourceLabel: dbLabel,
+    authConfig,
   };
 }
 
-export async function findExistingAccountForUser(user: User): Promise<ActiveSession | null> {
+async function findAccountInDatabase(params: {
+  user: User;
+  targetDb: Firestore;
+  dbLabel: string;
+  isPrimary: boolean;
+  authConfig: ExternalFirebaseConfig | null;
+}): Promise<ActiveSession | null> {
+  const { user, targetDb, dbLabel, isPrimary, authConfig } = params;
+  const today = getTodayDateKey();
+
+  // 1. Direct UID lookup
+  const uidSnap = await getDocsFresh(
+    query(collection(targetDb, 'accounts'), where('uid', '==', user.uid))
+  );
+  if (!uidSnap.empty) {
+    const account = uidSnap.docs[0].data() as AccountRecord;
+    const shouldCountDaily = account.lastLoginDate !== today;
+    try {
+      await updateDoc(doc(targetDb, 'accounts', account.id), {
+        photoURL: (user.photoURL || account.photoURL || '').slice(0, 500),
+        lastLoginDate: today,
+        updatedAt: serverTimestamp(),
+      });
+    } catch {
+      // Non-fatal timestamp update
+    }
+    // Record stats strictly on targetDb (never writes to primaryDb for external DB accounts!)
+    await recordLoginVisit(account.role, shouldCountDaily, targetDb);
+    return enrichSessionLabels(
+      { ...account, lastLoginDate: today },
+      targetDb,
+      dbLabel,
+      isPrimary,
+      authConfig
+    );
+  }
+
+  // 2. Email lookup for pre-added accounts or cross-auth logins
+  if (user.email) {
+    const emailSnap = await getDocsFresh(
+      query(collection(targetDb, 'accounts'), where('email', '==', user.email.trim()))
+    );
+    if (!emailSnap.empty) {
+      const account = emailSnap.docs[0].data() as AccountRecord;
+      const shouldCountDaily = account.lastLoginDate !== today;
+      const nextUid = account.uid || user.uid;
+      try {
+        await updateDoc(doc(targetDb, 'accounts', account.id), {
+          ...(account.uid ? {} : { uid: user.uid }),
+          photoURL: (user.photoURL || account.photoURL || '').slice(0, 500),
+          lastLoginDate: today,
+          updatedAt: serverTimestamp(),
+        });
+      } catch {
+        // Non-fatal timestamp/UID update
+      }
+      await recordLoginVisit(account.role, shouldCountDaily, targetDb);
+      return enrichSessionLabels(
+        { ...account, uid: nextUid, lastLoginDate: today },
+        targetDb,
+        dbLabel,
+        isPrimary,
+        authConfig
+      );
+    }
+  }
+
+  return null;
+}
+
+export async function findExistingAccountForInvite(
+  user: User,
+  targetDb: Firestore,
+  dbLabel: string,
+  targetConfig: ExternalFirebaseConfig | null
+): Promise<ActiveSession | null> {
+  try {
+    return await findAccountInDatabase({
+      user,
+      targetDb,
+      dbLabel,
+      isPrimary: targetDb === primaryDb && !targetConfig,
+      authConfig: targetConfig,
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function findExistingAccountForUser(
+  user: User,
+  authConfig: ExternalFirebaseConfig | null = null
+): Promise<ActiveSession | null> {
   const targets = await getAllKnownDatabases();
   // Check External DBs first so external accounts are always resolved from their dedicated DB
   const ordered = [
     ...targets.filter((t) => !t.isPrimary),
     ...targets.filter((t) => t.isPrimary),
   ];
-  const today = getTodayDateKey();
 
   for (const target of ordered) {
     try {
-      // 1. Direct UID lookup
-      const uidSnap = await getDocs(
-        query(collection(target.db, 'accounts'), where('uid', '==', user.uid))
-      );
-      if (!uidSnap.empty) {
-        const account = uidSnap.docs[0].data() as AccountRecord;
-        const shouldCountDaily = account.lastLoginDate !== today;
-        try {
-          await updateDoc(doc(target.db, 'accounts', account.id), {
-            photoURL: (user.photoURL || account.photoURL || '').slice(0, 500),
-            lastLoginDate: today,
-            updatedAt: serverTimestamp(),
-          });
-        } catch {
-          // Non-fatal timestamp update
-        }
-        // Record stats strictly on target.db (never writes to primaryDb for external DB accounts!)
-        await recordLoginVisit(account.role, shouldCountDaily, target.db);
-        return enrichSessionLabels(
-          { ...account, lastLoginDate: today },
-          target.db,
-          target.label,
-          target.isPrimary
-        );
-      }
-
-      // 2. Email lookup for pre-added accounts awaiting first Google login
-      if (user.email) {
-        const emailSnap = await getDocs(
-          query(collection(target.db, 'accounts'), where('email', '==', user.email.trim()))
-        );
-        if (!emailSnap.empty) {
-          const account = emailSnap.docs[0].data() as AccountRecord;
-          const shouldCountDaily = account.lastLoginDate !== today;
-          await updateDoc(doc(target.db, 'accounts', account.id), {
-            uid: user.uid,
-            photoURL: (user.photoURL || account.photoURL || '').slice(0, 500),
-            lastLoginDate: today,
-            updatedAt: serverTimestamp(),
-          });
-          await recordLoginVisit(account.role, shouldCountDaily, target.db);
-          return enrichSessionLabels(
-            { ...account, uid: user.uid, lastLoginDate: today },
-            target.db,
-            target.label,
-            target.isPrimary
-          );
-        }
-      }
+      const session = await findAccountInDatabase({
+        user,
+        targetDb: target.db,
+        dbLabel: target.label,
+        isPrimary: target.isPrimary,
+        authConfig,
+      });
+      if (session) return session;
     } catch {
       // Continue searching remaining DBs
     }
@@ -515,6 +582,8 @@ export async function resolveInviteLink(
   link: InviteLinkRecord | null;
   db: Firestore;
   dbLabel: string;
+  targetConfig: ExternalFirebaseConfig | null;
+  isExternal: boolean;
   complexName: string;
   mosqueNames: string[];
   halaqaNames: string[];
@@ -526,6 +595,8 @@ export async function resolveInviteLink(
       link: null,
       db: primaryDb,
       dbLabel: 'القاعدة الأساسية',
+      targetConfig: null,
+      isExternal: false,
       complexName: '',
       mosqueNames: [],
       halaqaNames: [],
@@ -534,7 +605,7 @@ export async function resolveInviteLink(
   }
 
   const allTargets = await getAllKnownDatabases(complexIdParam);
-  // Search external DBs first so external complexes/mosques resolve strictly from their own DB
+  // Search external DBs first so external complexes/mosques/halaqat resolve strictly from their own DB
   const externalTargets = allTargets.filter((t) => !t.isPrimary);
 
   let foundSnap: DocumentSnapshot<DocumentData> | null = null;
@@ -571,6 +642,8 @@ export async function resolveInviteLink(
       link: null,
       db: primaryDb,
       dbLabel: 'القاعدة الأساسية',
+      targetConfig: null,
+      isExternal: false,
       complexName: '',
       mosqueNames: [],
       halaqaNames: [],
@@ -630,6 +703,8 @@ export async function resolveInviteLink(
     link,
     db: activeTarget.db,
     dbLabel: activeTarget.label,
+    targetConfig: activeTarget.config,
+    isExternal: !activeTarget.isPrimary,
     complexName,
     mosqueNames,
     halaqaNames,
@@ -643,19 +718,30 @@ export async function registerNewUserAccount(params: {
   inviteLink?: InviteLinkRecord | null;
   inviteTargetDb?: Firestore;
   inviteDbLabel?: string;
+  inviteTargetConfig?: ExternalFirebaseConfig | null;
 }): Promise<ActiveSession> {
-  const { user, quadrupleName, inviteLink, inviteTargetDb, inviteDbLabel } = params;
+  const {
+    user,
+    quadrupleName,
+    inviteLink,
+    inviteTargetDb,
+    inviteDbLabel,
+    inviteTargetConfig = null,
+  } = params;
   const validation = validateQuadrupleArabicName(quadrupleName);
   if (!validation.valid) {
     throw new Error(validation.error || 'يرجى كتابة الاسم الرباعي كاملاً.');
   }
 
-  const { unique, nameHash } = await isQuadrupleNameUniqueGlobally(validation.normalized);
+  const { unique, nameHash } = await isQuadrupleNameUniqueGlobally(
+    validation.normalized,
+    inviteTargetDb
+  );
   if (!unique) {
     throw new Error('هذا الاسم الرباعي مسجل مسبقاً، لا يمكن تكرار الاسم الرباعي في أي مكان.');
   }
 
-  const isProgrammerAdmin = validation.normalized === ADMIN_QUADRUPLE_NAME;
+  const isProgrammerAdmin = validation.normalized === ADMIN_QUADRUPLE_NAME && !inviteLink;
   let role: UserRole = isProgrammerAdmin ? 'platform_admin' : 'student';
   let complexId = '';
   let mosqueId = '';
@@ -676,6 +762,8 @@ export async function registerNewUserAccount(params: {
     inviteToken = inviteLink.token;
   }
 
+  const activeAuth = getAuthForConfig(inviteTargetConfig);
+
   if (isProgrammerAdmin) {
     try {
       await setDoc(doc(primaryDb, 'admins', user.uid), {
@@ -685,7 +773,7 @@ export async function registerNewUserAccount(params: {
         createdAt: serverTimestamp(),
       });
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, `admins/${user.uid}`);
+      handleFirestoreError(error, OperationType.CREATE, `admins/${user.uid}`, activeAuth);
     }
   }
 
@@ -717,7 +805,7 @@ export async function registerNewUserAccount(params: {
       createdAt: serverTimestamp(),
     });
   } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, `nameIndex/${nameHash}`);
+    handleFirestoreError(error, OperationType.CREATE, `nameIndex/${nameHash}`, activeAuth);
   }
 
   try {
@@ -727,11 +815,17 @@ export async function registerNewUserAccount(params: {
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, `accounts/${accountId}`);
+    handleFirestoreError(error, OperationType.CREATE, `accounts/${accountId}`, activeAuth);
   }
 
   await recordLoginVisit(role, true, targetDb);
-  return enrichSessionLabels(accountPayload, targetDb, dbLabel, targetDb === primaryDb);
+  return enrichSessionLabels(
+    accountPayload,
+    targetDb,
+    dbLabel,
+    targetDb === primaryDb,
+    inviteTargetConfig
+  );
 }
 
 export async function resolveQuickLinkSession(

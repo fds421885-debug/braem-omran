@@ -1,4 +1,5 @@
 import { deleteApp, initializeApp, type FirebaseApp } from 'firebase/app';
+import { getAuth, GoogleAuthProvider, type Auth } from 'firebase/auth';
 import {
   deleteDoc,
   doc,
@@ -8,10 +9,11 @@ import {
   setDoc,
   type Firestore,
 } from 'firebase/firestore';
-import { db as primaryDb } from '../firebase';
+import { auth as primaryAuth, db as primaryDb } from '../firebase';
 import type { ExternalFirebaseConfig } from '../types/platform';
 
 const externalAppCache = new Map<string, FirebaseApp>();
+const externalAuthCache = new Map<string, Auth>();
 const externalDbCache = new Map<string, Firestore>();
 
 export const EXTERNAL_DB_RECOMMENDED_RULES = `rules_version = '2';
@@ -157,6 +159,51 @@ export function parseFirebaseConfigInput(
   }
 }
 
+export function getAppForConfig(config: ExternalFirebaseConfig): FirebaseApp {
+  const appKey = `${config.projectId}__${config.appId}`;
+  let app = externalAppCache.get(appKey);
+  if (!app) {
+    app = initializeApp(
+      {
+        apiKey: config.apiKey,
+        authDomain: config.authDomain || `${config.projectId}.firebaseapp.com`,
+        projectId: config.projectId,
+        storageBucket: config.storageBucket,
+        messagingSenderId: config.messagingSenderId,
+        appId: config.appId,
+      },
+      `ext_${appKey.replace(/[^a-zA-Z0-9_]/g, '_')}`
+    );
+    externalAppCache.set(appKey, app);
+  }
+  return app;
+}
+
+export function getAuthForConfig(config?: ExternalFirebaseConfig | null): Auth {
+  if (!config || !config.projectId || !config.apiKey) {
+    return primaryAuth;
+  }
+
+  const appKey = `${config.projectId}__${config.appId}`;
+  const cachedAuth = externalAuthCache.get(appKey);
+  if (cachedAuth) {
+    return cachedAuth;
+  }
+
+  const app = getAppForConfig(config);
+  const extAuth = getAuth(app);
+  externalAuthCache.set(appKey, extAuth);
+  return extAuth;
+}
+
+export function createGoogleAuthProvider(): GoogleAuthProvider {
+  const provider = new GoogleAuthProvider();
+  provider.setCustomParameters({
+    prompt: 'select_account',
+  });
+  return provider;
+}
+
 export function getFirestoreForConfig(config?: ExternalFirebaseConfig | null): Firestore {
   if (!config || !config.projectId || !config.apiKey) {
     return primaryDb;
@@ -170,21 +217,7 @@ export function getFirestoreForConfig(config?: ExternalFirebaseConfig | null): F
     return cachedDb;
   }
 
-  let app = externalAppCache.get(cacheKey);
-  if (!app) {
-    app = initializeApp(
-      {
-        apiKey: config.apiKey,
-        authDomain: config.authDomain,
-        projectId: config.projectId,
-        storageBucket: config.storageBucket,
-        messagingSenderId: config.messagingSenderId,
-        appId: config.appId,
-      },
-      `ext_${cacheKey.replace(/[^a-zA-Z0-9_]/g, '_')}`
-    );
-    externalAppCache.set(cacheKey, app);
-  }
+  const app = getAppForConfig(config);
 
   const targetDbName =
     config.firestoreDatabaseId && config.firestoreDatabaseId !== '(default)'

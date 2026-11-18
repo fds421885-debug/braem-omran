@@ -120,6 +120,7 @@ export interface ActiveSession {
   mosqueNames?: string[];
   halaqaNames?: string[];
   dbSourceLabel?: string;
+  authConfig?: ExternalFirebaseConfig | null;
 }
 
 export const ROLE_LABELS: Record<UserRole, string> = {

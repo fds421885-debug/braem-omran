@@ -15,18 +15,14 @@ import {
   Link2,
   Lock,
   Plus,
-  Search,
   Trash2,
   Unlock,
-  UserPlus,
   Users,
 } from 'lucide-react';
-import { getDbDisplayLabel, validateQuadrupleArabicName } from '../services/multiDb';
+import { getDbDisplayLabel } from '../services/multiDb';
 import {
-  addAccountToWorkspace,
   addOrRenameHalaqaInWorkspace,
   addOrRenameMosqueInWorkspace,
-  bulkImportAccountsToWorkspace,
   deleteInviteLinkFromWorkspace,
   loadComplexWorkspace,
   saveInviteLinkToWorkspace,
@@ -57,7 +53,7 @@ interface ComplexWorkspaceProps {
 }
 
 type WorkspaceTab = 'stats' | 'accounts' | 'mosques' | 'quick_links';
-type AccountSubTab = 'list' | 'single' | 'bulk' | 'invites';
+type AccountSubTab = 'invites' | 'list';
 
 export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
   discovered,
@@ -71,21 +67,8 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
   const [tab, setTab] = useState<WorkspaceTab>('stats');
   const [feedback, setFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
-  // Accounts Subtab state
-  const [accountSubTab, setAccountSubTab] = useState<AccountSubTab>('single');
-  const [singleName, setSingleName] = useState('');
-  const [singleEmail, setSingleEmail] = useState('');
-  const [singleRole, setSingleRole] = useState<Exclude<UserRole, 'platform_admin'>>('student');
-  const [singleMosqueId, setSingleMosqueId] = useState('');
-  const [singleMosqueIds, setSingleMosqueIds] = useState<string[]>([]);
-  const [singleHalaqaIds, setSingleHalaqaIds] = useState<string[]>([]);
-
-  // Bulk import state
-  const [bulkLines, setBulkLines] = useState('');
-  const [bulkRole, setBulkRole] = useState<Exclude<UserRole, 'platform_admin'>>('student');
-  const [bulkMosqueId, setBulkMosqueId] = useState('');
-  const [bulkMosqueIds, setBulkMosqueIds] = useState<string[]>([]);
-  const [bulkHalaqaIds, setBulkHalaqaIds] = useState<string[]>([]);
+  // Accounts Subtab state (Registration Links & Members)
+  const [accountSubTab, setAccountSubTab] = useState<AccountSubTab>('invites');
 
   // Invite link state
   const [editingInviteToken, setEditingInviteToken] = useState<string | undefined>(undefined);
@@ -135,8 +118,6 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
       const data = await loadComplexWorkspace(discovered);
       setWorkspace(data);
       const firstMosque = data.mosques[0]?.id || '';
-      setSingleMosqueId((prev) => prev || firstMosque);
-      setBulkMosqueId((prev) => prev || firstMosque);
       setInviteMosqueId((prev) => prev || firstMosque);
     } finally {
       setLoading(false);
@@ -146,20 +127,6 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
   useEffect(() => {
     refreshWorkspace();
   }, [refreshWorkspace]);
-
-  const bulkLineAnalysis = useMemo(() => {
-    const lines = bulkLines
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter(Boolean);
-    let validCount = 0;
-    let invalidCount = 0;
-    for (const l of lines) {
-      if (validateQuadrupleArabicName(l).valid) validCount++;
-      else invalidCount++;
-    }
-    return { total: lines.length, validCount, invalidCount };
-  }, [bulkLines]);
 
   useEffect(() => {
     return () => {
@@ -243,77 +210,20 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
   const teachers = workspace.accounts.filter((a) => a.role === 'teacher');
   const students = workspace.accounts.filter((a) => a.role === 'student');
 
-  const singleMosqueHalaqat = workspace.halaqat.filter(
-    (h) => h.mosqueId === singleMosqueId
-  );
-  const bulkMosqueHalaqat = workspace.halaqat.filter(
-    (h) => h.mosqueId === bulkMosqueId
-  );
   const inviteMosqueHalaqat = workspace.halaqat.filter(
     (h) => h.mosqueId === inviteMosqueId
   );
 
-  const handleAddSingleAccount = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setFeedback(null);
-    setBusyLabel('جاري التحقق من الاسم وحفظ الحساب...');
-    try {
-      const mIds = singleRole === 'supervisor' ? singleMosqueIds : singleMosqueId ? [singleMosqueId] : [];
-      const primaryMosque = singleRole === 'supervisor' ? mIds[0] || '' : singleMosqueId;
-      await addAccountToWorkspace({
-        workspace,
-        quadrupleName: singleName,
-        role: singleRole,
-        email: singleEmail,
-        mosqueId: primaryMosque,
-        mosqueIds: mIds,
-        halaqaIds: singleRole === 'supervisor' ? [] : singleHalaqaIds,
-      });
-      setSingleName('');
-      setSingleEmail('');
-      setSingleHalaqaIds([]);
-      setFeedback({ type: 'ok', text: 'تمت إضافة الحساب بنجاح دون تكرار.' });
-      await refreshWorkspace();
-    } catch (err) {
-      setFeedback({
-        type: 'err',
-        text: err instanceof Error ? err.message : 'تعذرت إضافة الحساب.',
-      });
-    } finally {
-      setBusyLabel(null);
+  const getInviteTargetDbLabel = (mosqueId: string, halaqaIds: string[]): string => {
+    if (halaqaIds.length === 1 && workspace.halaqaDbMap[halaqaIds[0]]) {
+      const hConf = workspace.halaqaConfigMap[halaqaIds[0]];
+      return hConf ? `قاعدة منفصلة (${getDbDisplayLabel(hConf)})` : 'القاعدة الأساسية';
     }
-  };
-
-  const handleBulkImport = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setFeedback(null);
-    setBusyLabel('جاري فحص القائمة وإضافة الحسابات...');
-    try {
-      const mIds = bulkRole === 'supervisor' ? bulkMosqueIds : bulkMosqueId ? [bulkMosqueId] : [];
-      const primaryMosque = bulkRole === 'supervisor' ? mIds[0] || '' : bulkMosqueId;
-      const res = await bulkImportAccountsToWorkspace({
-        workspace,
-        rawLines: bulkLines,
-        role: bulkRole,
-        mosqueId: primaryMosque,
-        mosqueIds: mIds,
-        halaqaIds: bulkRole === 'supervisor' ? [] : bulkHalaqaIds,
-      });
-      if (res.addedCount > 0) setBulkLines('');
-      const msg =
-        res.skippedErrors.length > 0
-          ? `تمت إضافة ${res.addedCount} حساب، وتجاهل ${res.skippedErrors.length} سطر: ${res.skippedErrors.slice(0, 2).join(' | ')}`
-          : `تمت إضافة ${res.addedCount} حساب للجامع بنجاح.`;
-      setFeedback({ type: res.addedCount > 0 ? 'ok' : 'err', text: msg });
-      await refreshWorkspace();
-    } catch (err) {
-      setFeedback({
-        type: 'err',
-        text: err instanceof Error ? err.message : 'تعذّر استيراد القائمة.',
-      });
-    } finally {
-      setBusyLabel(null);
+    if (mosqueId && workspace.mosqueDbMap[mosqueId]) {
+      const mConf = workspace.mosqueConfigMap[mosqueId];
+      return mConf ? `قاعدة منفصلة (${getDbDisplayLabel(mConf)})` : 'القاعدة الأساسية';
     }
+    return discovered.ownerDbLabel;
   };
 
   const toLocalDateTimeInput = (ms: number): string => {
@@ -765,15 +675,13 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
         </div>
       )}
 
-      {/* TAB 2: Accounts (Manual, Bulk List, Invite Links, Members List) */}
+      {/* TAB 2: Accounts (Invite Links & Members List) */}
       {tab === 'accounts' && (
         <div className="space-y-6">
           <div className="flex flex-wrap items-center gap-2 bg-white p-2 rounded-2xl border-2 border-[#EADBC8]">
             {[
-              { id: 'single' as AccountSubTab, label: 'إضافة حساب يدوي', icon: UserPlus },
-              { id: 'bulk' as AccountSubTab, label: 'استيراد قائمة أسماء', icon: Users },
               { id: 'invites' as AccountSubTab, label: 'روابط التسجيل', icon: Link2 },
-              { id: 'list' as AccountSubTab, label: `الأعضاء (${workspace.accounts.length})`, icon: Search },
+              { id: 'list' as AccountSubTab, label: `الأعضاء (${workspace.accounts.length})`, icon: Users },
             ].map((st) => {
               const Icon = st.icon;
               return (
@@ -793,273 +701,6 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
               );
             })}
           </div>
-
-          {accountSubTab === 'single' && (
-            <form
-              onSubmit={handleAddSingleAccount}
-              className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 sm:p-6 space-y-4"
-            >
-              <h3 className="font-display text-lg font-extrabold text-[#4A220D]">
-                إضافة حساب وتصنيفه
-              </h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block font-display text-xs font-bold text-[#4A220D] mb-1.5">
-                    الاسم الرباعي (إلزامي وغير مكرر)
-                  </label>
-                  <input
-                    type="text"
-                    value={singleName}
-                    onChange={(e) => setSingleName(e.target.value)}
-                    placeholder="مثال: خالد عبدالله سالم الحربي"
-                    required
-                    className="w-full min-h-[46px] px-3.5 py-2 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE]/60 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block font-display text-xs font-bold text-[#4A220D] mb-1.5">
-                    بريد جوجل (اختياري للربط التلقائي عند الدخول)
-                  </label>
-                  <input
-                    type="email"
-                    dir="ltr"
-                    value={singleEmail}
-                    onChange={(e) => setSingleEmail(e.target.value)}
-                    placeholder="user@gmail.com"
-                    className="w-full min-h-[46px] px-3.5 py-2 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE]/60 text-sm"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block font-display text-xs font-bold text-[#4A220D] mb-1.5">
-                    الرتبة / التصنيف
-                  </label>
-                  <select
-                    value={singleRole}
-                    onChange={(e) => {
-                      setSingleRole(e.target.value as Exclude<UserRole, 'platform_admin'>);
-                      setSingleHalaqaIds([]);
-                      setSingleMosqueIds([]);
-                    }}
-                    className="w-full min-h-[46px] px-3.5 py-2 rounded-xl border-2 border-[#EADBC8] bg-white text-sm font-bold"
-                  >
-                    <option value="student">طالب</option>
-                    <option value="teacher">معلم</option>
-                    <option value="supervisor">مشرف</option>
-                  </select>
-                </div>
-
-                {singleRole !== 'supervisor' && (
-                  <div>
-                    <label className="block font-display text-xs font-bold text-[#4A220D] mb-1.5">
-                      المسجد
-                    </label>
-                    <select
-                      value={singleMosqueId}
-                      onChange={(e) => {
-                        setSingleMosqueId(e.target.value);
-                        setSingleHalaqaIds([]);
-                      }}
-                      className="w-full min-h-[46px] px-3.5 py-2 rounded-xl border-2 border-[#EADBC8] bg-white text-sm font-bold"
-                    >
-                      {workspace.mosques.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-              </div>
-
-              {singleRole === 'supervisor' ? (
-                <div>
-                  <p className="font-display text-xs font-bold text-[#4A220D] mb-2">
-                    اختر المسجد أو المساجد التي يشرف عليها:
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {workspace.mosques.map((m) => (
-                      <button
-                        key={m.id}
-                        type="button"
-                        onClick={() =>
-                          setSingleMosqueIds((prev) => toggleArrayItem(prev, m.id))
-                        }
-                        className={`min-h-[40px] px-3.5 py-1.5 rounded-xl border-2 text-xs font-bold cursor-pointer ${
-                          singleMosqueIds.includes(m.id)
-                            ? 'bg-[#F56900] border-[#C95200] text-white'
-                            : 'bg-[#FDF6EE] border-[#EADBC8] text-[#4A220D]'
-                        }`}
-                      >
-                        {m.name}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <div>
-                  <p className="font-display text-xs font-bold text-[#4A220D] mb-2">
-                    {singleRole === 'teacher'
-                      ? 'اختر حلقة أو حلقات المعلم:'
-                      : 'اختر حلقة الطالب:'}
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {singleMosqueHalaqat.map((h) => (
-                      <button
-                        key={h.id}
-                        type="button"
-                        onClick={() =>
-                          setSingleHalaqaIds((prev) =>
-                            singleRole === 'teacher' ? toggleArrayItem(prev, h.id) : [h.id]
-                          )
-                        }
-                        className={`min-h-[40px] px-3.5 py-1.5 rounded-xl border-2 text-xs font-bold cursor-pointer ${
-                          singleHalaqaIds.includes(h.id)
-                            ? 'bg-[#F56900] border-[#C95200] text-white'
-                            : 'bg-[#FDF6EE] border-[#EADBC8] text-[#4A220D]'
-                        }`}
-                      >
-                        {h.name}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              <button
-                type="submit"
-                className="duo-btn-orange min-h-[48px] px-6 py-2.5 rounded-2xl font-display font-extrabold text-sm cursor-pointer"
-              >
-                حفظ وإضافة الحساب
-              </button>
-            </form>
-          )}
-
-          {accountSubTab === 'bulk' && (
-            <form
-              onSubmit={handleBulkImport}
-              className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 sm:p-6 space-y-4"
-            >
-              <div>
-                <h3 className="font-display text-lg font-extrabold text-[#4A220D]">
-                  إضافة قائمة أسماء رباعية دفعة واحدة
-                </h3>
-                <p className="text-xs sm:text-sm text-[#7D4E35]">
-                  ضع كل اسم رباعي في سطر مستقل؛ يُشترط أن يكون رباعياً وألا يتكرر في قاعدة البيانات.
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block font-display text-xs font-bold text-[#4A220D] mb-1.5">
-                    رتبة الأسماء المستوردة
-                  </label>
-                  <select
-                    value={bulkRole}
-                    onChange={(e) => {
-                      setBulkRole(e.target.value as Exclude<UserRole, 'platform_admin'>);
-                      setBulkHalaqaIds([]);
-                      setBulkMosqueIds([]);
-                    }}
-                    className="w-full min-h-[46px] px-3.5 py-2 rounded-xl border-2 border-[#EADBC8] bg-white text-sm font-bold"
-                  >
-                    <option value="student">طلاب</option>
-                    <option value="teacher">معلمين</option>
-                    <option value="supervisor">مشرفين</option>
-                  </select>
-                </div>
-
-                {bulkRole !== 'supervisor' && (
-                  <div>
-                    <label className="block font-display text-xs font-bold text-[#4A220D] mb-1.5">
-                      الجامع / المسجد
-                    </label>
-                    <select
-                      value={bulkMosqueId}
-                      onChange={(e) => {
-                        setBulkMosqueId(e.target.value);
-                        setBulkHalaqaIds([]);
-                      }}
-                      className="w-full min-h-[46px] px-3.5 py-2 rounded-xl border-2 border-[#EADBC8] bg-white text-sm font-bold"
-                    >
-                      {workspace.mosques.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-              </div>
-
-              {bulkRole === 'supervisor' ? (
-                <div className="flex flex-wrap gap-2">
-                  {workspace.mosques.map((m) => (
-                    <button
-                      key={m.id}
-                      type="button"
-                      onClick={() =>
-                        setBulkMosqueIds((prev) => toggleArrayItem(prev, m.id))
-                      }
-                      className={`min-h-[40px] px-3.5 py-1.5 rounded-xl border-2 text-xs font-bold cursor-pointer ${
-                        bulkMosqueIds.includes(m.id)
-                          ? 'bg-[#F56900] border-[#C95200] text-white'
-                          : 'bg-[#FDF6EE] border-[#EADBC8] text-[#4A220D]'
-                      }`}
-                    >
-                      {m.name}
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <div className="flex flex-wrap gap-2">
-                  {bulkMosqueHalaqat.map((h) => (
-                    <button
-                      key={h.id}
-                      type="button"
-                      onClick={() =>
-                        setBulkHalaqaIds((prev) =>
-                          bulkRole === 'teacher' ? toggleArrayItem(prev, h.id) : [h.id]
-                        )
-                      }
-                      className={`min-h-[40px] px-3.5 py-1.5 rounded-xl border-2 text-xs font-bold cursor-pointer ${
-                        bulkHalaqaIds.includes(h.id)
-                          ? 'bg-[#F56900] border-[#C95200] text-white'
-                          : 'bg-[#FDF6EE] border-[#EADBC8] text-[#4A220D]'
-                      }`}
-                    >
-                      {h.name}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              <div>
-                <div className="flex items-center justify-between text-xs font-bold mb-1.5">
-                  <span className="text-[#4A220D]">قائمة الأسماء (كل اسم رباعي في سطر)</span>
-                  <span className="text-[#7D4E35] tabular-nums">
-                    صالح: {bulkLineAnalysis.validCount} · غير مكتمل: {bulkLineAnalysis.invalidCount}
-                  </span>
-                </div>
-                <textarea
-                  rows={6}
-                  value={bulkLines}
-                  onChange={(e) => setBulkLines(e.target.value)}
-                  placeholder={`محمد أحمد علي السالم\nيوسف خالد حسن العتيبي\nسعد فهد ناصر القحطاني`}
-                  className="w-full p-3.5 rounded-2xl border-2 border-[#EADBC8] bg-[#FDF6EE]/60 text-sm text-[#4A220D] focus:outline-none focus:border-[#F56900] focus:bg-white"
-                />
-              </div>
-
-              <button
-                type="submit"
-                className="duo-btn-orange min-h-[48px] px-6 py-2.5 rounded-2xl font-display font-extrabold text-sm cursor-pointer"
-              >
-                إضافة القائمة إلى الجامع
-              </button>
-            </form>
-          )}
 
           {accountSubTab === 'invites' && (
             <div className="space-y-6">
@@ -1227,6 +868,19 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                   <span>الرابط مفتوح ومفعل للتسجيل</span>
                 </label>
 
+                <div className="bg-[#FDF6EE] border border-[#EADBC8] rounded-2xl px-4 py-2.5 text-xs font-bold text-[#4A220D] flex flex-wrap items-center gap-2">
+                  <Database className="w-4 h-4 text-[#F56900] shrink-0" />
+                  <span>
+                    القاعدة المرتبطة بتسجيل الدخول وحفظ الحسابات لهذا الرابط:{' '}
+                    <strong className="text-[#46A302]">
+                      {getInviteTargetDbLabel(
+                        inviteRole === 'supervisor' ? inviteMosqueIds[0] || '' : inviteMosqueId,
+                        inviteRole === 'supervisor' ? [] : inviteHalaqaIds
+                      )}
+                    </strong>
+                  </span>
+                </div>
+
                 <div>
                   <button
                     type="submit"
@@ -1269,6 +923,9 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                             </p>
                             <p className="text-xs text-[#7D4E35]">
                               {ROLE_LABELS[lnk.role]} · الحالة: <strong className="text-[#F56900]">{stateText}</strong>
+                            </p>
+                            <p className="text-[11px] font-bold text-[#46A302]">
+                              قاعدة الحفظ والدخول: {getInviteTargetDbLabel(lnk.mosqueId, lnk.halaqaIds)}
                             </p>
                           </div>
 

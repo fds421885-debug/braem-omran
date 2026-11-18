@@ -11,19 +11,28 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { ModernLoader } from './components/ModernLoader';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { RoleWelcomeView } from './components/RoleWelcomeView';
-import { auth, db as primaryDb } from './firebase';
+import { auth as primaryAuth, db as primaryDb } from './firebase';
+import { getAuthForConfig } from './services/multiDb';
 import {
+  findExistingAccountForInvite,
   findExistingAccountForUser,
+  getAllKnownDatabases,
   resolveInviteLink,
   resolveQuickLinkSession,
+  type ResolvedDbTarget,
 } from './services/platformService';
-import type { ActiveSession, InviteLinkRecord } from './types/platform';
+import type {
+  ActiveSession,
+  ExternalFirebaseConfig,
+  InviteLinkRecord,
+} from './types/platform';
 
-interface InviteState {
+export interface InviteState {
   token: string;
   link: InviteLinkRecord | null;
   db: Firestore;
   dbLabel: string;
+  targetConfig: ExternalFirebaseConfig | null;
   complexName: string;
   mosqueNames: string[];
   halaqaNames: string[];
@@ -33,6 +42,9 @@ interface InviteState {
 function AppContent() {
   const [initializing, setInitializing] = useState(true);
   const [loadingLabel, setLoadingLabel] = useState('جاري تحميل منصة براعم عمران...');
+  const [bootstrapDone, setBootstrapDone] = useState(false);
+  const [hasQuickSession, setHasQuickSession] = useState(false);
+  const [inviteTokenParam, setInviteTokenParam] = useState<string | null>(null);
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
   const [inviteState, setInviteState] = useState<InviteState | null>(null);
@@ -50,6 +62,7 @@ function AppContent() {
         link: resolved.link,
         db: resolved.db || primaryDb,
         dbLabel: resolved.dbLabel,
+        targetConfig: resolved.targetConfig,
         complexName: resolved.complexName,
         mosqueNames: resolved.mosqueNames,
         halaqaNames: resolved.halaqaNames,
@@ -63,6 +76,7 @@ function AppContent() {
         link: null,
         db: primaryDb,
         dbLabel: 'القاعدة الأساسية',
+        targetConfig: null,
         complexName: '',
         mosqueNames: [],
         halaqaNames: [],
@@ -79,8 +93,7 @@ function AppContent() {
     const inviteToken = params.get('invite')?.trim() || null;
     const cpxParam = params.get('cpx')?.trim() || null;
     const msqParam = params.get('msq')?.trim() || null;
-
-    let unsubscribeAuth: (() => void) | undefined;
+    setInviteTokenParam(inviteToken);
 
     const bootstrap = async () => {
       // 1. Direct Quick Login Link flow (?quick=...)
@@ -90,7 +103,9 @@ function AppContent() {
           const quickSession = await resolveQuickLinkSession(quickToken, cpxParam, msqParam);
           if (quickSession) {
             setActiveSession(quickSession);
+            setHasQuickSession(true);
             setInitializing(false);
+            setBootstrapDone(true);
             return;
           }
           setQuickLinkError('رابط الدخول السريع غير صالح أو تم إيقافه.');
@@ -100,15 +115,44 @@ function AppContent() {
       }
 
       // 2. Invite Registration Link resolution (?invite=...)
-      let latestInviteStatus: InviteState['status'] | null = null;
       if (inviteToken) {
         setLoadingLabel('جاري التحقق من رابط التسجيل...');
-        const resolved = await refreshInviteResolution(inviteToken, cpxParam, msqParam);
-        latestInviteStatus = resolved.status;
+        await refreshInviteResolution(inviteToken, cpxParam, msqParam);
       }
 
-      // 3. Google Auth listener
-      unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
+      setBootstrapDone(true);
+    };
+
+    bootstrap();
+  }, []);
+
+  const inviteConfigKey = inviteState?.targetConfig
+    ? `${inviteState.targetConfig.projectId}__${inviteState.targetConfig.appId}__${
+        inviteState.targetConfig.firestoreDatabaseId || '(default)'
+      }`
+    : 'primary';
+  const inviteStatusKey = inviteState?.status || 'none';
+
+  useEffect(() => {
+    if (!bootstrapDone || hasQuickSession) return;
+
+    let cancelled = false;
+    let resolutionSeq = 0;
+    const unsubscribers: Array<() => void> = [];
+
+    // Case A: Invite Link flow -> bind Auth strictly to the invite target's Firebase Auth
+    if (inviteTokenParam) {
+      if (!inviteState || inviteState.status !== 'valid') {
+        setFirebaseUser(null);
+        setActiveSession(null);
+        setInitializing(false);
+        return;
+      }
+
+      const targetAuth = getAuthForConfig(inviteState.targetConfig);
+      const unsub = onAuthStateChanged(targetAuth, async (user) => {
+        const seq = ++resolutionSeq;
+        if (cancelled) return;
         setFirebaseUser(user);
         if (!user) {
           setActiveSession(null);
@@ -116,27 +160,147 @@ function AppContent() {
           return;
         }
 
-        setLoadingLabel('جاري البحث عن حسابك في القواعد المرتبطة...');
+        setLoadingLabel('جاري التحقق من حسابك في قاعدة المجمع...');
         setInitializing(true);
         try {
-          const found = await findExistingAccountForUser(user);
-          if (!found && inviteToken && latestInviteStatus === 'not_found') {
-            const rechecked = await refreshInviteResolution(inviteToken, cpxParam, msqParam);
-            latestInviteStatus = rechecked.status;
+          const found = await findExistingAccountForInvite(
+            user,
+            inviteState.db,
+            inviteState.dbLabel,
+            inviteState.targetConfig
+          );
+          if (!cancelled && seq === resolutionSeq) {
+            setActiveSession(found);
           }
-          setActiveSession(found);
         } finally {
-          setInitializing(false);
+          if (!cancelled && seq === resolutionSeq) {
+            setInitializing(false);
+          }
         }
       });
+
+      return () => {
+        cancelled = true;
+        unsub();
+      };
+    }
+
+    // Case B: Normal launch -> listen to Primary Auth + all connected External DB Auths
+    const setupMultiAuthListeners = async () => {
+      const targets = await getAllKnownDatabases();
+      if (cancelled) return;
+
+      type AuthBucket = {
+        user: User | null;
+        targets: ResolvedDbTarget[];
+        ready: boolean;
+      };
+
+      const buckets = new Map<string, AuthBucket>();
+      buckets.set('primary', { user: null, targets: [], ready: false });
+
+      const externalTargetsByAuthKey = new Map<string, ResolvedDbTarget[]>();
+      for (const t of targets) {
+        if (t.isPrimary || !t.config) continue;
+        const authKey = `${t.config.projectId}__${t.config.appId}`;
+        const existing = externalTargetsByAuthKey.get(authKey) || [];
+        existing.push(t);
+        externalTargetsByAuthKey.set(authKey, existing);
+        buckets.set(authKey, { user: null, targets: existing, ready: false });
+      }
+
+      const evaluateAuthStates = async () => {
+        const allReady = Array.from(buckets.values()).every((b) => b.ready);
+        if (!allReady) return;
+
+        const seq = ++resolutionSeq;
+        const primaryBucket = buckets.get('primary');
+        const primaryUser = primaryBucket?.user || null;
+
+        if (primaryUser) {
+          setLoadingLabel('جاري البحث عن حسابك في القواعد المرتبطة...');
+          setInitializing(true);
+          try {
+            const found = await findExistingAccountForUser(primaryUser, null);
+            if (cancelled || seq !== resolutionSeq) return;
+            if (found) {
+              setFirebaseUser(primaryUser);
+              setActiveSession(found);
+              setInitializing(false);
+              return;
+            }
+          } catch {
+            // Fall through to check external buckets or prompt Step 2
+          }
+        }
+
+        // Check external Auth instances (e.g. student signed in directly on complex's Firebase project)
+        for (const [key, bucket] of buckets.entries()) {
+          if (key === 'primary' || !bucket.user || bucket.targets.length === 0) continue;
+          for (const target of bucket.targets) {
+            setLoadingLabel('جاري تحميل حسابك من قاعدة المجمع...');
+            setInitializing(true);
+            try {
+              const found = await findExistingAccountForInvite(
+                bucket.user,
+                target.db,
+                target.label,
+                target.config
+              );
+              if (cancelled || seq !== resolutionSeq) return;
+              if (found) {
+                setFirebaseUser(bucket.user);
+                setActiveSession(found);
+                setInitializing(false);
+                return;
+              }
+            } catch {
+              // Continue checking remaining targets
+            }
+          }
+        }
+
+        if (cancelled || seq !== resolutionSeq) return;
+        setFirebaseUser(primaryUser);
+        setActiveSession(null);
+        setInitializing(false);
+      };
+
+      unsubscribers.push(
+        onAuthStateChanged(primaryAuth, (user) => {
+          const bucket = buckets.get('primary');
+          if (bucket) {
+            bucket.user = user;
+            bucket.ready = true;
+          }
+          void evaluateAuthStates();
+        })
+      );
+
+      for (const [authKey, authTargets] of externalTargetsByAuthKey.entries()) {
+        const extAuth = getAuthForConfig(authTargets[0]?.config);
+        unsubscribers.push(
+          onAuthStateChanged(extAuth, (user) => {
+            const bucket = buckets.get(authKey);
+            if (bucket) {
+              bucket.user = user;
+              bucket.ready = true;
+            }
+            void evaluateAuthStates();
+          })
+        );
+      }
     };
 
-    bootstrap();
+    void setupMultiAuthListeners();
 
     return () => {
-      if (unsubscribeAuth) unsubscribeAuth();
+      cancelled = true;
+      for (const unsub of unsubscribers) {
+        unsub();
+      }
     };
-  }, []);
+  }, [bootstrapDone, hasQuickSession, inviteTokenParam, inviteConfigKey, inviteStatusKey]);
 
   if (initializing) {
     return <ModernLoader fullScreen label={loadingLabel} />;

@@ -11,15 +11,16 @@ import {
   UserCheck,
 } from 'lucide-react';
 import type { Firestore } from 'firebase/firestore';
-import { auth, googleProvider } from '../firebase';
-import { validateQuadrupleArabicName } from '../services/multiDb';
 import {
-  findExistingAccountForUser,
-  registerNewUserAccount,
-} from '../services/platformService';
+  createGoogleAuthProvider,
+  getAuthForConfig,
+  validateQuadrupleArabicName,
+} from '../services/multiDb';
+import { registerNewUserAccount } from '../services/platformService';
 import {
   ROLE_LABELS,
   type ActiveSession,
+  type ExternalFirebaseConfig,
   type InviteLinkRecord,
 } from '../types/platform';
 import { MascotImage } from './MascotImage';
@@ -31,6 +32,7 @@ interface InviteState {
   link: InviteLinkRecord | null;
   db: Firestore;
   dbLabel: string;
+  targetConfig: ExternalFirebaseConfig | null;
   complexName: string;
   mosqueNames: string[];
   halaqaNames: string[];
@@ -96,23 +98,28 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     setLoadingLabel('جاري تسجيل الدخول بحساب جوجل...');
 
     try {
-      const result = await signInWithPopup(auth, googleProvider);
+      const targetAuth = getAuthForConfig(inviteState?.targetConfig);
+      await signInWithPopup(targetAuth, createGoogleAuthProvider());
       setLoadingLabel('جاري التحقق من بيانات الحساب...');
-      const existingSession = await findExistingAccountForUser(result.user);
-      if (existingSession) {
-        onSessionReady(existingSession);
-      }
-      // If null, App updates pendingGoogleUser so Step 2 (Quadruple Name) appears cleanly
+      // onAuthStateChanged in App.tsx handles account lookup & transitions cleanly
     } catch (err: unknown) {
       const code = (err as { code?: string })?.code || '';
       if (code === 'auth/popup-closed-by-user') {
         setError('تم إغلاق نافذة تسجيل الدخول قبل إتمام العملية.');
       } else if (code === 'auth/popup-blocked') {
         setError('يرجى السماح بالنوافذ المنبثقة لإتمام تسجيل الدخول بحساب جوجل.');
+      } else if (code === 'auth/unauthorized-domain') {
+        setError(
+          `النطاق (${window.location.hostname}) غير مضاف في Authorized domains داخل إعدادات Authentication بقاعدة المجمع.`
+        );
+      } else if (
+        code === 'auth/operation-not-allowed' ||
+        code === 'auth/configuration-not-found'
+      ) {
+        setError('تسجيل الدخول بحساب جوجل غير مفعّل في إعدادات Authentication لقاعدة المجمع.');
       } else {
         setError('تعذّر تسجيل الدخول بحساب جوجل، يرجى المحاولة مرة أخرى.');
       }
-    } finally {
       setLoadingLabel(null);
     }
   };
@@ -135,6 +142,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         inviteLink: inviteState?.link || null,
         inviteTargetDb: inviteState?.db,
         inviteDbLabel: inviteState?.dbLabel,
+        inviteTargetConfig: inviteState?.targetConfig || null,
       });
       onSessionReady(session);
     } catch (err: unknown) {
@@ -151,7 +159,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   const handleSwitchAccount = async () => {
     setError(null);
     setQuadrupleName('');
-    await signOut(auth);
+    const targetAuth = getAuthForConfig(inviteState?.targetConfig);
+    await signOut(targetAuth);
   };
 
   return (
@@ -280,6 +289,9 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                         الحلقة: {inviteState.halaqaNames.join('، ')}
                       </p>
                     )}
+                    <p className="text-[11px] font-bold text-[#46A302]">
+                      الربط المباشر: {inviteState.dbLabel}
+                    </p>
                   </div>
                 )}
 

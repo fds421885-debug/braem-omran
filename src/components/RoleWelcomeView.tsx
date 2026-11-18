@@ -1,7 +1,7 @@
 import React from 'react';
 import { signOut } from 'firebase/auth';
 import { CheckCircle2, LogOut } from 'lucide-react';
-import { auth } from '../firebase';
+import { getAuthForConfig } from '../services/multiDb';
 import type { ActiveSession } from '../types/platform';
 import { MascotImage } from './MascotImage';
 import { PWAInstallButton } from './PWAInstallButton';
@@ -37,7 +37,7 @@ export const RoleWelcomeView: React.FC<RoleWelcomeViewProps> = ({
       onExitQuickSession();
       return;
     }
-    await signOut(auth);
+    await signOut(getAuthForConfig(session.authConfig));
   };
 
   return (
