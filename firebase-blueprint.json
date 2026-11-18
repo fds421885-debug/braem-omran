@@ -1,0 +1,262 @@
+{
+  "entities": {
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Trusted platform programmer/super-admin record keyed by Auth UID.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "quadrupleName": { "type": "string", "minLength": 3, "maxLength": 100 },
+        "email": { "type": "string", "format": "email", "minLength": 3, "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "quadrupleName", "email", "createdAt"]
+    },
+    "NameIndexRecord": {
+      "title": "NameIndexRecord",
+      "description": "Unique index keyed by SHA-256 hash of normalized quadruple Arabic name to prevent duplicates.",
+      "type": "object",
+      "properties": {
+        "accountId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["accountId", "createdBy", "createdAt"]
+    },
+    "DbRegistryEntry": {
+      "title": "DbRegistryEntry",
+      "description": "Discovery pointer for complexes and mosques linked to external Firebase databases.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "hasExternalDb": { "type": "boolean" },
+        "firebaseConfigJson": { "type": "string", "maxLength": 2500 },
+        "mosqueConfigsJson": { "type": "string", "maxLength": 8000 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "hasExternalDb", "firebaseConfigJson", "mosqueConfigsJson", "active", "createdAt", "updatedAt"]
+    },
+    "ComplexRecord": {
+      "title": "ComplexRecord",
+      "description": "Quranic complex containing mosques and halaqat.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "usesExternalDb": { "type": "boolean" },
+        "active": { "type": "boolean" },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "usesExternalDb", "active", "createdBy", "createdAt", "updatedAt"]
+    },
+    "MosqueRecord": {
+      "title": "MosqueRecord",
+      "description": "Mosque belonging to a Quranic complex.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "complexId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "usesExternalDb": { "type": "boolean" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "complexId", "name", "usesExternalDb", "active", "createdAt", "updatedAt"]
+    },
+    "HalaqaRecord": {
+      "title": "HalaqaRecord",
+      "description": "Study circle (halaqa) inside a mosque.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "complexId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "mosqueId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "complexId", "mosqueId", "name", "active", "createdAt", "updatedAt"]
+    },
+    "AccountRecord": {
+      "title": "AccountRecord",
+      "description": "Member account classified as platform_admin, supervisor, teacher, or student.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "uid": { "type": "string", "maxLength": 128 },
+        "quadrupleName": { "type": "string", "minLength": 3, "maxLength": 100 },
+        "nameHash": { "type": "string", "minLength": 8, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "maxLength": 160 },
+        "photoURL": { "type": "string", "maxLength": 500 },
+        "role": { "type": "string", "enum": ["platform_admin", "supervisor", "teacher", "student"] },
+        "complexId": { "type": "string", "maxLength": 128 },
+        "mosqueId": { "type": "string", "maxLength": 128 },
+        "mosqueIds": { "type": "array" },
+        "halaqaIds": { "type": "array" },
+        "inviteToken": { "type": "string", "maxLength": 128 },
+        "quickToken": { "type": "string", "maxLength": 128 },
+        "lastLoginDate": { "type": "string", "maxLength": 32 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "uid",
+        "quadrupleName",
+        "nameHash",
+        "email",
+        "photoURL",
+        "role",
+        "complexId",
+        "mosqueId",
+        "mosqueIds",
+        "halaqaIds",
+        "inviteToken",
+        "quickToken",
+        "lastLoginDate",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "InviteLinkRecord": {
+      "title": "InviteLinkRecord",
+      "description": "Time-bounded registration invite link scoped to role, mosque(s), and halaqa(t).",
+      "type": "object",
+      "properties": {
+        "token": { "type": "string", "minLength": 8, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 2, "maxLength": 140 },
+        "complexId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "role": { "type": "string", "enum": ["supervisor", "teacher", "student"] },
+        "mosqueId": { "type": "string", "maxLength": 128 },
+        "mosqueIds": { "type": "array" },
+        "halaqaIds": { "type": "array" },
+        "startsAtMs": { "type": "integer" },
+        "endsAtMs": { "type": "integer" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "token",
+        "title",
+        "complexId",
+        "role",
+        "mosqueId",
+        "mosqueIds",
+        "halaqaIds",
+        "startsAtMs",
+        "endsAtMs",
+        "active",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "QuickLinkRecord": {
+      "title": "QuickLinkRecord",
+      "description": "Direct quick-login link token mapped to an account.",
+      "type": "object",
+      "properties": {
+        "token": { "type": "string", "minLength": 8, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "accountId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "quadrupleName": { "type": "string", "minLength": 3, "maxLength": 100 },
+        "role": { "type": "string", "enum": ["supervisor", "teacher", "student"] },
+        "complexId": { "type": "string", "maxLength": 128 },
+        "complexName": { "type": "string", "maxLength": 120 },
+        "mosqueId": { "type": "string", "maxLength": 128 },
+        "mosqueName": { "type": "string", "maxLength": 120 },
+        "halaqaNames": { "type": "array" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "token",
+        "accountId",
+        "quadrupleName",
+        "role",
+        "complexId",
+        "complexName",
+        "mosqueId",
+        "mosqueName",
+        "halaqaNames",
+        "active",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "DailyStatsRecord": {
+      "title": "DailyStatsRecord",
+      "description": "Daily and cumulative platform statistics.",
+      "type": "object",
+      "properties": {
+        "dateKey": { "type": "string", "minLength": 4, "maxLength": 32 },
+        "studentLogins": { "type": "integer" },
+        "teacherLogins": { "type": "integer" },
+        "supervisorLogins": { "type": "integer" },
+        "totalVisits": { "type": "integer" },
+        "recitedAyahs": { "type": "integer" },
+        "recitedPages": { "type": "integer" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "dateKey",
+        "studentLogins",
+        "teacherLogins",
+        "supervisorLogins",
+        "totalVisits",
+        "recitedAyahs",
+        "recitedPages",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Trusted programmer/platform admin UID registry."
+    },
+    "/nameIndex/{nameHash}": {
+      "schema": { "$ref": "#/entities/NameIndexRecord" },
+      "description": "Unique quadruple-name hash lock preventing duplicate names."
+    },
+    "/dbRegistry/{complexId}": {
+      "schema": { "$ref": "#/entities/DbRegistryEntry" },
+      "description": "Discovery registry linking complexes/mosques to external Firebase configs."
+    },
+    "/complexes/{complexId}": {
+      "schema": { "$ref": "#/entities/ComplexRecord" },
+      "description": "Quranic complexes stored on the target database."
+    },
+    "/mosques/{mosqueId}": {
+      "schema": { "$ref": "#/entities/MosqueRecord" },
+      "description": "Mosques inside a Quranic complex."
+    },
+    "/halaqat/{halaqaId}": {
+      "schema": { "$ref": "#/entities/HalaqaRecord" },
+      "description": "Halaqat inside a mosque."
+    },
+    "/accounts/{accountId}": {
+      "schema": { "$ref": "#/entities/AccountRecord" },
+      "description": "Member accounts classified by role, mosque, and halaqat."
+    },
+    "/inviteLinks/{token}": {
+      "schema": { "$ref": "#/entities/InviteLinkRecord" },
+      "description": "Scheduled registration links."
+    },
+    "/quickLinks/{token}": {
+      "schema": { "$ref": "#/entities/QuickLinkRecord" },
+      "description": "Direct quick-login tokens."
+    },
+    "/stats/{statId}": {
+      "schema": { "$ref": "#/entities/DailyStatsRecord" },
+      "description": "Daily login, visit, and Quran recitation stats."
+    }
+  }
+}

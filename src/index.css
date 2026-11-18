@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Cairo", system-ui, sans-serif;
+  --font-sans: "Tajawal", "Cairo", system-ui, sans-serif;
+
+  --color-fox-orange: #F56900;
+  --color-fox-orange-hover: #FF7812;
+  --color-fox-orange-dark: #C95200;
+  --color-fox-cream: #FDF6EE;
+  --color-fox-cream-deep: #F7EBDD;
+  --color-fox-sand: #EADBC8;
+  --color-fox-espresso: #4A220D;
+  --color-fox-cocoa: #7D4E35;
+  --color-fox-coral: #D95338;
+  --color-duo-green: #58CC02;
+  --color-duo-green-dark: #46A302;
+  --color-duo-amber: #FFA900;
+  --color-duo-amber-dark: #D98A00;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: var(--font-display);
+  }
+}
+
+/* Tactile Duolingo-style 3D button utility */
+.duo-btn-orange {
+  background-color: #F56900;
+  color: #FFFFFF;
+  border: 2px solid #C95200;
+  border-bottom-width: 5px;
+  transition: transform 140ms cubic-bezier(0.16, 1, 0.3, 1), background-color 140ms ease, border-bottom-width 140ms ease;
+}
+.duo-btn-orange:hover:not(:disabled) {
+  background-color: #FF7812;
+}
+.duo-btn-orange:active:not(:disabled) {
+  transform: translateY(3px);
+  border-bottom-width: 2px;
+}
+
+.duo-btn-cream {
+  background-color: #FFFFFF;
+  color: #4A220D;
+  border: 2px solid #EADBC8;
+  border-bottom-width: 5px;
+  transition: transform 140ms cubic-bezier(0.16, 1, 0.3, 1), background-color 140ms ease, border-bottom-width 140ms ease;
+}
+.duo-btn-cream:hover:not(:disabled) {
+  background-color: #FDF6EE;
+}
+.duo-btn-cream:active:not(:disabled) {
+  transform: translateY(3px);
+  border-bottom-width: 2px;
+}
+
+.duo-btn-green {
+  background-color: #58CC02;
+  color: #FFFFFF;
+  border: 2px solid #46A302;
+  border-bottom-width: 5px;
+  transition: transform 140ms cubic-bezier(0.16, 1, 0.3, 1), background-color 140ms ease, border-bottom-width 140ms ease;
+}
+.duo-btn-green:hover:not(:disabled) {
+  background-color: #61DC05;
+}
+.duo-btn-green:active:not(:disabled) {
+  transform: translateY(3px);
+  border-bottom-width: 2px;
+}
+
+@keyframes foxFloat {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+.animate-fox-float {
+  animation: foxFloat 3.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fox-float {
+    animation: none;
+  }
+}

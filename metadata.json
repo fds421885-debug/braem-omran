@@ -1,0 +1,8 @@
+{
+  "name": "براعم عمران",
+  "description": "منصة براعم عمران التعليمية التفاعلية بتصميم حيوي دافئ وقابلة للتثبيت على جميع الأجهزة.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
