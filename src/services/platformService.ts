@@ -4,13 +4,20 @@ import {
   deleteDoc,
   doc,
   getDoc,
+  getDocFromServer,
   getDocs,
+  getDocsFromServer,
   query,
   serverTimestamp,
   setDoc,
   updateDoc,
   where,
+  type DocumentData,
+  type DocumentReference,
+  type DocumentSnapshot,
   type Firestore,
+  type Query,
+  type QuerySnapshot,
 } from 'firebase/firestore';
 import { auth, db as primaryDb, handleFirestoreError, OperationType } from '../firebase';
 import {
@@ -173,7 +180,29 @@ export async function removeExternalDatabaseConnection(registryDocId: string): P
   await deleteDoc(doc(primaryDb, 'dbRegistry', registryDocId));
 }
 
-export async function getAllKnownDatabases(): Promise<ResolvedDbTarget[]> {
+async function getDocFresh(
+  ref: DocumentReference<DocumentData>
+): Promise<DocumentSnapshot<DocumentData>> {
+  try {
+    return await getDocFromServer(ref);
+  } catch {
+    return await getDoc(ref);
+  }
+}
+
+async function getDocsFresh(
+  q: Query<DocumentData>
+): Promise<QuerySnapshot<DocumentData>> {
+  try {
+    return await getDocsFromServer(q);
+  } catch {
+    return await getDocs(q);
+  }
+}
+
+export async function getAllKnownDatabases(
+  fallbackComplexId?: string | null
+): Promise<ResolvedDbTarget[]> {
   const targets: ResolvedDbTarget[] = [
     {
       id: 'primary',
@@ -187,52 +216,70 @@ export async function getAllKnownDatabases(): Promise<ResolvedDbTarget[]> {
 
   const seenKeys = new Set<string>(['primary']);
 
+  const appendEntry = (entry: DbRegistryEntry) => {
+    if (entry.hasExternalDb) {
+      const conf = safeParseConfigJson(entry.firebaseConfigJson);
+      if (conf) {
+        const key = dbKeyFromConfig(conf);
+        if (!seenKeys.has(key)) {
+          seenKeys.add(key);
+          targets.push({
+            id: entry.id,
+            key,
+            label: `قاعدة منفصلة (${getDbDisplayLabel(conf)})`,
+            isPrimary: false,
+            db: getFirestoreForConfig(conf),
+            config: conf,
+          });
+        }
+      }
+    }
+
+    // Backwards compatibility for any legacy per-mosque configs inside older entries
+    const legacyMosques = safeParseMosqueConfigs(entry.mosqueConfigsJson);
+    for (const mConf of Object.values(legacyMosques)) {
+      if (!mConf || !mConf.projectId || !mConf.apiKey) continue;
+      const mKey = dbKeyFromConfig(mConf);
+      if (!seenKeys.has(mKey)) {
+        seenKeys.add(mKey);
+        targets.push({
+          id: entry.id,
+          key: mKey,
+          label: `قاعدة منفصلة (${getDbDisplayLabel(mConf)})`,
+          isPrimary: false,
+          db: getFirestoreForConfig(mConf),
+          config: mConf,
+        });
+      }
+    }
+  };
+
   try {
-    const snap = await getDocs(
+    const snap = await getDocsFresh(
       query(collection(primaryDb, 'dbRegistry'), where('active', '==', true))
     );
 
     snap.forEach((docSnap) => {
-      const entry = docSnap.data() as DbRegistryEntry;
-
-      if (entry.hasExternalDb) {
-        const conf = safeParseConfigJson(entry.firebaseConfigJson);
-        if (conf) {
-          const key = dbKeyFromConfig(conf);
-          if (!seenKeys.has(key)) {
-            seenKeys.add(key);
-            targets.push({
-              id: entry.id,
-              key,
-              label: `قاعدة منفصلة (${getDbDisplayLabel(conf)})`,
-              isPrimary: false,
-              db: getFirestoreForConfig(conf),
-              config: conf,
-            });
-          }
-        }
-      }
-
-      // Backwards compatibility for any legacy per-mosque configs inside older entries
-      const legacyMosques = safeParseMosqueConfigs(entry.mosqueConfigsJson);
-      for (const mConf of Object.values(legacyMosques)) {
-        if (!mConf || !mConf.projectId || !mConf.apiKey) continue;
-        const mKey = dbKeyFromConfig(mConf);
-        if (!seenKeys.has(mKey)) {
-          seenKeys.add(mKey);
-          targets.push({
-            id: entry.id,
-            key: mKey,
-            label: `قاعدة منفصلة (${getDbDisplayLabel(mConf)})`,
-            isPrimary: false,
-            db: getFirestoreForConfig(mConf),
-            config: mConf,
-          });
-        }
-      }
+      appendEntry(docSnap.data() as DbRegistryEntry);
     });
   } catch {
-    // Primary registry unreadable if unauthenticated
+    // Fallback below if fallbackComplexId is provided
+  }
+
+  if (fallbackComplexId) {
+    try {
+      const directSnap = await getDocFresh(
+        doc(primaryDb, 'dbRegistry', fallbackComplexId)
+      );
+      if (directSnap.exists()) {
+        const entry = directSnap.data() as DbRegistryEntry;
+        if (entry.active !== false) {
+          appendEntry(entry);
+        }
+      }
+    } catch {
+      // Ignore missing or restricted direct registry pointer
+    }
   }
 
   return targets;
@@ -461,7 +508,7 @@ export async function findExistingAccountForUser(user: User): Promise<ActiveSess
 }
 
 export async function resolveInviteLink(
-  token: string,
+  rawToken: string,
   complexIdParam?: string | null,
   _mosqueIdParam?: string | null
 ): Promise<{
@@ -473,16 +520,29 @@ export async function resolveInviteLink(
   halaqaNames: string[];
   status: 'valid' | 'not_found' | 'closed' | 'not_started' | 'expired';
 }> {
-  const allTargets = await getAllKnownDatabases();
-  // Search external DBs first, then primaryDb (strictly never falling back to primaryDb for an external complex!)
+  const token = rawToken.trim();
+  if (!token) {
+    return {
+      link: null,
+      db: primaryDb,
+      dbLabel: 'القاعدة الأساسية',
+      complexName: '',
+      mosqueNames: [],
+      halaqaNames: [],
+      status: 'not_found',
+    };
+  }
+
+  const allTargets = await getAllKnownDatabases(complexIdParam);
+  // Search external DBs first so external complexes/mosques resolve strictly from their own DB
   const externalTargets = allTargets.filter((t) => !t.isPrimary);
 
-  let foundSnap: Awaited<ReturnType<typeof getDoc>> | null = null;
+  let foundSnap: DocumentSnapshot<DocumentData> | null = null;
   let activeTarget: ResolvedDbTarget | null = null;
 
   for (const t of externalTargets) {
     try {
-      const candidate = await getDoc(doc(t.db, 'inviteLinks', token));
+      const candidate = await getDocFresh(doc(t.db, 'inviteLinks', token));
       if (candidate.exists()) {
         foundSnap = candidate;
         activeTarget = t;
@@ -493,33 +553,15 @@ export async function resolveInviteLink(
     }
   }
 
-  // Only check primaryDb if NOT found on external DBs AND complexIdParam doesn't live on an external DB
   if (!foundSnap) {
-    let complexLivesExternally = false;
-    if (complexIdParam) {
-      for (const t of externalTargets) {
-        try {
-          const cSnap = await getDoc(doc(t.db, 'complexes', complexIdParam));
-          if (cSnap.exists()) {
-            complexLivesExternally = true;
-            break;
-          }
-        } catch {
-          // ignore
-        }
-      }
-    }
-
-    if (!complexLivesExternally) {
-      const primaryTarget = allTargets.find((t) => t.isPrimary);
-      if (primaryTarget) {
-        const candidate = await getDoc(doc(primaryTarget.db, 'inviteLinks', token)).catch(
-          () => null
-        );
-        if (candidate?.exists()) {
-          foundSnap = candidate;
-          activeTarget = primaryTarget;
-        }
+    const primaryTarget = allTargets.find((t) => t.isPrimary);
+    if (primaryTarget) {
+      const candidate = await getDocFresh(
+        doc(primaryTarget.db, 'inviteLinks', token)
+      ).catch(() => null);
+      if (candidate?.exists()) {
+        foundSnap = candidate;
+        activeTarget = primaryTarget;
       }
     }
   }
@@ -536,7 +578,16 @@ export async function resolveInviteLink(
     };
   }
 
-  const link = foundSnap.data() as InviteLinkRecord;
+  const rawLink = foundSnap.data() as InviteLinkRecord;
+  const link: InviteLinkRecord = {
+    ...rawLink,
+    mosqueIds: Array.isArray(rawLink.mosqueIds) ? rawLink.mosqueIds : [],
+    halaqaIds: Array.isArray(rawLink.halaqaIds) ? rawLink.halaqaIds : [],
+    startsAtMs: Number(rawLink.startsAtMs) || 0,
+    endsAtMs: Number(rawLink.endsAtMs) || 0,
+    active: rawLink.active !== false,
+  };
+
   const now = Date.now();
   let status: 'valid' | 'closed' | 'not_started' | 'expired' = 'valid';
   if (!link.active) {
@@ -684,19 +735,22 @@ export async function registerNewUserAccount(params: {
 }
 
 export async function resolveQuickLinkSession(
-  token: string,
+  rawToken: string,
   complexIdParam?: string | null,
   _mosqueIdParam?: string | null
 ): Promise<ActiveSession | null> {
-  const allTargets = await getAllKnownDatabases();
+  const token = rawToken.trim();
+  if (!token) return null;
+
+  const allTargets = await getAllKnownDatabases(complexIdParam);
   const externalTargets = allTargets.filter((t) => !t.isPrimary);
 
-  let foundSnap: Awaited<ReturnType<typeof getDoc>> | null = null;
+  let foundSnap: DocumentSnapshot<DocumentData> | null = null;
   let activeTarget: ResolvedDbTarget | null = null;
 
   for (const t of externalTargets) {
     try {
-      const candidate = await getDoc(doc(t.db, 'quickLinks', token));
+      const candidate = await getDocFresh(doc(t.db, 'quickLinks', token));
       if (candidate.exists()) {
         foundSnap = candidate;
         activeTarget = t;
@@ -708,38 +762,21 @@ export async function resolveQuickLinkSession(
   }
 
   if (!foundSnap) {
-    let complexLivesExternally = false;
-    if (complexIdParam) {
-      for (const t of externalTargets) {
-        try {
-          const cSnap = await getDoc(doc(t.db, 'complexes', complexIdParam));
-          if (cSnap.exists()) {
-            complexLivesExternally = true;
-            break;
-          }
-        } catch {
-          // ignore
-        }
-      }
-    }
-
-    if (!complexLivesExternally) {
-      const primaryTarget = allTargets.find((t) => t.isPrimary);
-      if (primaryTarget) {
-        const candidate = await getDoc(doc(primaryTarget.db, 'quickLinks', token)).catch(
-          () => null
-        );
-        if (candidate?.exists()) {
-          foundSnap = candidate;
-          activeTarget = primaryTarget;
-        }
+    const primaryTarget = allTargets.find((t) => t.isPrimary);
+    if (primaryTarget) {
+      const candidate = await getDocFresh(
+        doc(primaryTarget.db, 'quickLinks', token)
+      ).catch(() => null);
+      if (candidate?.exists()) {
+        foundSnap = candidate;
+        activeTarget = primaryTarget;
       }
     }
   }
 
   if (!foundSnap || !activeTarget) return null;
   const quick = foundSnap.data() as QuickLinkRecord;
-  if (!quick.active) return null;
+  if (quick.active === false) return null;
 
   const syntheticAccount: AccountRecord = {
     id: quick.accountId,
@@ -1708,23 +1745,44 @@ export async function saveInviteLinkToWorkspace(params: {
     mosqueId: params.mosqueId,
     mosqueIds: params.mosqueIds,
     halaqaIds: params.halaqaIds,
-    startsAtMs: params.startsAtMs,
-    endsAtMs: params.endsAtMs,
-    active: params.active,
+    startsAtMs: Number.isFinite(params.startsAtMs) ? Math.max(0, Math.round(params.startsAtMs)) : 0,
+    endsAtMs: Number.isFinite(params.endsAtMs) ? Math.max(0, Math.round(params.endsAtMs)) : 0,
+    active: Boolean(params.active),
   };
 
   if (params.existingToken) {
-    await updateDoc(doc(targetDb, 'inviteLinks', token), {
-      title: payload.title,
-      role: payload.role,
-      mosqueId: payload.mosqueId,
-      mosqueIds: payload.mosqueIds,
-      halaqaIds: payload.halaqaIds,
-      startsAtMs: payload.startsAtMs,
-      endsAtMs: payload.endsAtMs,
-      active: payload.active,
-      updatedAt: serverTimestamp(),
-    });
+    const targetRef = doc(targetDb, 'inviteLinks', token);
+    const targetSnap = await getDocFresh(targetRef).catch(() => null);
+    if (targetSnap?.exists()) {
+      await updateDoc(targetRef, {
+        title: payload.title,
+        role: payload.role,
+        mosqueId: payload.mosqueId,
+        mosqueIds: payload.mosqueIds,
+        halaqaIds: payload.halaqaIds,
+        startsAtMs: payload.startsAtMs,
+        endsAtMs: payload.endsAtMs,
+        active: payload.active,
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await setDoc(targetRef, {
+        ...payload,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    // Ensure no stale copy remains on another DB in the workspace
+    const candidateDbs = new Set<Firestore>([
+      params.workspace.complexDb,
+      ...Object.values(params.workspace.mosqueDbMap),
+      ...Object.values(params.workspace.halaqaDbMap),
+    ]);
+    for (const dbInstance of candidateDbs) {
+      if (dbInstance === targetDb) continue;
+      await deleteDoc(doc(dbInstance, 'inviteLinks', token)).catch(() => {});
+    }
   } else {
     await setDoc(doc(targetDb, 'inviteLinks', token), {
       ...payload,
@@ -1736,12 +1794,38 @@ export async function saveInviteLinkToWorkspace(params: {
   return payload;
 }
 
+export async function toggleInviteLinkActiveState(
+  workspace: ComplexWorkspaceData,
+  link: InviteLinkRecord,
+  active: boolean
+): Promise<InviteLinkRecord> {
+  return saveInviteLinkToWorkspace({
+    workspace,
+    existingToken: link.token,
+    title: link.title,
+    role: link.role,
+    mosqueId: link.mosqueId,
+    mosqueIds: link.mosqueIds,
+    halaqaIds: link.halaqaIds,
+    startsAtMs: link.startsAtMs,
+    endsAtMs: link.endsAtMs,
+    active,
+  });
+}
+
 export async function deleteInviteLinkFromWorkspace(
   workspace: ComplexWorkspaceData,
   link: InviteLinkRecord
 ): Promise<void> {
-  const targetDb = resolveTargetDbForEntity(workspace, link.mosqueId, link.halaqaIds);
-  await deleteDoc(doc(targetDb, 'inviteLinks', link.token));
+  const candidateDbs = new Set<Firestore>([
+    resolveTargetDbForEntity(workspace, link.mosqueId, link.halaqaIds),
+    workspace.complexDb,
+    ...Object.values(workspace.mosqueDbMap),
+    ...Object.values(workspace.halaqaDbMap),
+  ]);
+  for (const targetDb of candidateDbs) {
+    await deleteDoc(doc(targetDb, 'inviteLinks', link.token)).catch(() => {});
+  }
 }
 
 export async function syncQuickLinkForAccount(

@@ -6,6 +6,7 @@ import {
   CalendarClock,
   CheckCircle2,
   LogOut,
+  RefreshCw,
   ShieldCheck,
   UserCheck,
 } from 'lucide-react';
@@ -39,6 +40,7 @@ interface InviteState {
 interface AuthScreenProps {
   pendingGoogleUser: User | null;
   inviteState: InviteState | null;
+  onRetryInvite?: () => Promise<void> | void;
   onSessionReady: (session: ActiveSession) => void;
 }
 
@@ -48,29 +50,43 @@ const LOGIN_FOX_PATH = `${BASE_URL}assets/aistudio/1794991269553_f447925b.jpg`;
 export const AuthScreen: React.FC<AuthScreenProps> = ({
   pendingGoogleUser,
   inviteState,
+  onRetryInvite,
   onSessionReady,
 }) => {
   const [quadrupleName, setQuadrupleName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loadingLabel, setLoadingLabel] = useState<string | null>(null);
+  const [retryingInvite, setRetryingInvite] = useState(false);
 
   const nameStatus = validateQuadrupleArabicName(quadrupleName);
 
   const inviteBlocked =
     inviteState !== null && inviteState.status !== 'valid';
 
-  const getInviteBlockedMessage = () => {
-    if (!inviteState) return '';
+  const getInviteBlockedInfo = (): { title: string; message: string } => {
+    if (!inviteState) return { title: '', message: '' };
     switch (inviteState.status) {
       case 'not_started':
-        return 'لم يبدأ وقت التسجيل لهذا الرابط بعد.';
+        return {
+          title: 'التسجيل لم يبدأ بعد',
+          message: 'لم يبدأ وقت التسجيل لهذا الرابط بعد، يرجى المحاولة عند بدء الموعد المحدد.',
+        };
       case 'expired':
-        return 'انتهى وقت التسجيل المحدد وأُغلق هذا الرابط نهائياً.';
+        return {
+          title: 'انتهى وقت التسجيل',
+          message: 'انتهى وقت التسجيل المحدد وأُغلق هذا الرابط نهائياً.',
+        };
       case 'closed':
-        return 'تم إغلاق رابط التسجيل هذا من قِبل المشرف.';
+        return {
+          title: 'رابط التسجيل مغلق',
+          message: 'تم إغلاق رابط التسجيل هذا من قِبل المشرف.',
+        };
       case 'not_found':
       default:
-        return 'رابط التسجيل غير موجود أو غير صالح.';
+        return {
+          title: 'رابط التسجيل غير موجود',
+          message: 'تعذّر العثور على رابط التسجيل؛ تأكد من نسخ الرابط كاملاً أو تواصل مع المشرف.',
+        };
     }
   };
 
@@ -200,11 +216,37 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                   <CalendarClock className="w-8 h-8" />
                 </div>
                 <h1 className="font-display text-2xl font-extrabold text-[#4A220D]">
-                  رابط التسجيل مغلق
+                  {getInviteBlockedInfo().title}
                 </h1>
                 <p className="text-sm sm:text-base font-medium text-[#7D4E35]">
-                  {getInviteBlockedMessage()}
+                  {getInviteBlockedInfo().message}
                 </p>
+                {onRetryInvite && (
+                  <div className="pt-2">
+                    <button
+                      type="button"
+                      disabled={retryingInvite}
+                      onClick={async () => {
+                        setRetryingInvite(true);
+                        try {
+                          await onRetryInvite();
+                        } finally {
+                          setRetryingInvite(false);
+                        }
+                      }}
+                      className="duo-btn-cream min-h-[44px] px-5 py-2 rounded-2xl font-display font-bold text-sm inline-flex items-center gap-2 cursor-pointer disabled:opacity-60"
+                    >
+                      <RefreshCw
+                        className={`w-4 h-4 text-[#F56900] ${
+                          retryingInvite ? 'animate-spin' : ''
+                        }`}
+                      />
+                      <span>
+                        {retryingInvite ? 'جاري التحقق...' : 'إعادة التحقق من الرابط'}
+                      </span>
+                    </button>
+                  </div>
+                )}
               </div>
             ) : !pendingGoogleUser ? (
               /* Step 1: Google Sign-In ONLY */

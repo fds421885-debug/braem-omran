@@ -236,7 +236,7 @@ service cloud.firestore {
 
     match /dbRegistry/{complexId} {
       allow get: if isValidId(complexId);
-      allow list: if isSignedIn() && resource.data.active == true;
+      allow list: if resource.data.active == true;
       allow create: if isPlatformAdmin()
         && isValidId(complexId)
         && isValidDbRegistry(incoming(), complexId)

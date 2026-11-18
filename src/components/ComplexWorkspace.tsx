@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertCircle,
   ArrowRight,
@@ -12,9 +13,11 @@ import {
   Edit3,
   KeyRound,
   Link2,
+  Lock,
   Plus,
   Search,
   Trash2,
+  Unlock,
   UserPlus,
   Users,
 } from 'lucide-react';
@@ -28,6 +31,7 @@ import {
   loadComplexWorkspace,
   saveInviteLinkToWorkspace,
   syncQuickLinkForAccount,
+  toggleInviteLinkActiveState,
   transferAccountAssignment,
   transferEntireHalaqa,
   type ComplexWorkspaceData,
@@ -116,6 +120,8 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
   const [quickHalaqaFilter, setQuickHalaqaFilter] = useState<string>('all');
   const [memberSearch, setMemberSearch] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [copyToast, setCopyToast] = useState<string | null>(null);
+  const copyTimerRef = useRef<number | null>(null);
   const [transferTarget, setTransferTarget] = useState<{
     scope: DbTransferScope;
     targetId: string;
@@ -155,12 +161,69 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
     return { total: lines.length, validCount, invalidCount };
   }, [bulkLines]);
 
-  const copyText = async (key: string, text: string) => {
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
+
+  const fallbackExecCopy = (text: string): boolean => {
     try {
-      await navigator.clipboard.writeText(text);
-      setCopiedId(key);
-      setTimeout(() => setCopiedId(null), 2200);
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.top = '-9999px';
+      textarea.style.left = '-9999px';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      textarea.setSelectionRange(0, text.length);
+      const ok = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      return ok;
     } catch {
+      return false;
+    }
+  };
+
+  const showCopiedSuccess = (key: string, toastMessage: string) => {
+    if (copyTimerRef.current) {
+      window.clearTimeout(copyTimerRef.current);
+    }
+    setCopiedId(key);
+    setCopyToast(toastMessage);
+    setFeedback({ type: 'ok', text: toastMessage });
+    copyTimerRef.current = window.setTimeout(() => {
+      setCopiedId(null);
+      setCopyToast(null);
+      copyTimerRef.current = null;
+    }, 3000);
+  };
+
+  const copyText = async (
+    key: string,
+    text: string,
+    toastMessage = 'تم النسخ بنجاح'
+  ) => {
+    let copied = false;
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      try {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      } catch {
+        copied = fallbackExecCopy(text);
+      }
+    } else {
+      copied = fallbackExecCopy(text);
+    }
+
+    if (copied) {
+      showCopiedSuccess(key, toastMessage);
+    } else {
       setFeedback({ type: 'err', text: 'تعذّر النسخ للحافظة.' });
     }
   };
@@ -253,16 +316,39 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
     }
   };
 
+  const toLocalDateTimeInput = (ms: number): string => {
+    if (!ms || ms <= 0) return '';
+    const d = new Date(ms);
+    if (Number.isNaN(d.getTime())) return '';
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
+      d.getHours()
+    )}:${pad(d.getMinutes())}`;
+  };
+
+  const resetInviteForm = () => {
+    setEditingInviteToken(undefined);
+    setInviteTitle('');
+    setInviteHalaqaIds([]);
+    setInviteMosqueIds([]);
+    setInviteStartsAt('');
+    setInviteEndsAt('');
+    setInviteActive(true);
+  };
+
   const handleSaveInviteLink = async (e: React.FormEvent) => {
     e.preventDefault();
     setFeedback(null);
-    if (!inviteTitle.trim()) {
-      setFeedback({ type: 'err', text: 'يرجى كتابة عنوان رابط التسجيل.' });
+    const trimmedTitle = inviteTitle.trim();
+    if (trimmedTitle.length < 2) {
+      setFeedback({ type: 'err', text: 'يرجى كتابة عنوان واضح للرابط (حرفان على الأقل).' });
       return;
     }
 
-    const startsAtMs = inviteStartsAt ? new Date(inviteStartsAt).getTime() : 0;
-    const endsAtMs = inviteEndsAt ? new Date(inviteEndsAt).getTime() : 0;
+    const rawStarts = inviteStartsAt ? new Date(inviteStartsAt).getTime() : 0;
+    const rawEnds = inviteEndsAt ? new Date(inviteEndsAt).getTime() : 0;
+    const startsAtMs = Number.isFinite(rawStarts) ? rawStarts : 0;
+    const endsAtMs = Number.isFinite(rawEnds) ? rawEnds : 0;
     if (startsAtMs > 0 && endsAtMs > 0 && endsAtMs <= startsAtMs) {
       setFeedback({ type: 'err', text: 'يجب أن يكون وقت النهاية بعد وقت البداية.' });
       return;
@@ -281,7 +367,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
       await saveInviteLinkToWorkspace({
         workspace,
         existingToken: editingInviteToken,
-        title: inviteTitle,
+        title: trimmedTitle,
         role: inviteRole,
         mosqueId: primaryMosque,
         mosqueIds: mIds,
@@ -290,13 +376,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
         endsAtMs,
         active: inviteActive,
       });
-      setEditingInviteToken(undefined);
-      setInviteTitle('');
-      setInviteHalaqaIds([]);
-      setInviteMosqueIds([]);
-      setInviteStartsAt('');
-      setInviteEndsAt('');
-      setInviteActive(true);
+      resetInviteForm();
       setFeedback({ type: 'ok', text: 'تم حفظ رابط التسجيل بنجاح.' });
       await refreshWorkspace();
     } catch (err) {
@@ -316,14 +396,48 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
     setInviteMosqueId(link.mosqueId);
     setInviteMosqueIds(link.mosqueIds);
     setInviteHalaqaIds(link.halaqaIds);
-    setInviteStartsAt(
-      link.startsAtMs ? new Date(link.startsAtMs).toISOString().slice(0, 16) : ''
-    );
-    setInviteEndsAt(
-      link.endsAtMs ? new Date(link.endsAtMs).toISOString().slice(0, 16) : ''
-    );
+    setInviteStartsAt(toLocalDateTimeInput(link.startsAtMs));
+    setInviteEndsAt(toLocalDateTimeInput(link.endsAtMs));
     setInviteActive(link.active);
     setAccountSubTab('invites');
+  };
+
+  const handleToggleInviteActive = async (link: InviteLinkRecord) => {
+    const nextActive = !link.active;
+    setFeedback(null);
+    try {
+      const updated = await toggleInviteLinkActiveState(workspace, link, nextActive);
+      setWorkspace((prev) =>
+        prev
+          ? {
+              ...prev,
+              inviteLinks: prev.inviteLinks.map((item) =>
+                item.token === updated.token ? updated : item
+              ),
+            }
+          : prev
+      );
+      setFeedback({
+        type: 'ok',
+        text: nextActive
+          ? `تم فتح وتفعيل رابط "${link.title}" بنجاح.`
+          : `تم إغلاق رابط "${link.title}" بنجاح.`,
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'تعذّر تحديث حالة الرابط.',
+      });
+    }
+  };
+
+  const buildQuickLoginUrl = (token: string, mosqueId?: string) => {
+    const url = new URL(window.location.href);
+    url.search = '';
+    url.searchParams.set('quick', token);
+    url.searchParams.set('cpx', discovered.id);
+    if (mosqueId) url.searchParams.set('msq', mosqueId);
+    return url.toString();
   };
 
   const handleCopyInviteUrl = (link: InviteLinkRecord) => {
@@ -332,22 +446,61 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
     url.searchParams.set('invite', link.token);
     url.searchParams.set('cpx', discovered.id);
     if (link.mosqueId) url.searchParams.set('msq', link.mosqueId);
-    copyText(`inv_${link.token}`, url.toString());
+    void copyText(`inv_${link.token}`, url.toString(), 'تم النسخ بنجاح');
+  };
+
+  const mergeQuickLinkIntoWorkspace = (
+    accountId: string,
+    quick: Awaited<ReturnType<typeof syncQuickLinkForAccount>>
+  ) => {
+    setWorkspace((prev) => {
+      if (!prev) return prev;
+      const nextAccounts = prev.accounts.map((acc) =>
+        acc.id === accountId ? { ...acc, quickToken: quick.token } : acc
+      );
+      const exists = prev.quickLinks.some((q) => q.token === quick.token);
+      const nextQuickLinks = exists
+        ? prev.quickLinks.map((q) => (q.token === quick.token ? quick : q))
+        : [...prev.quickLinks, quick];
+      return {
+        ...prev,
+        accounts: nextAccounts,
+        quickLinks: nextQuickLinks,
+      };
+    });
   };
 
   const handleCopyQuickUrl = async (account: AccountRecord) => {
-    setBusyLabel('جاري تجهيز رابط الدخول السريع...');
+    if (account.quickToken) {
+      const quickUrl = buildQuickLoginUrl(account.quickToken, account.mosqueId);
+      // انسخ فوراً ضمن نقرة المستخدم حتى يظهر "تم النسخ بنجاح" مباشرة دون إعادة تحميل الصفحة
+      await copyText(
+        `qk_${account.id}`,
+        quickUrl,
+        `تم النسخ بنجاح — ${account.quadrupleName}`
+      );
+      syncQuickLinkForAccount(workspace, account)
+        .then((quick) => mergeQuickLinkIntoWorkspace(account.id, quick))
+        .catch(() => {
+          // الرابط موجود ومفعل بالفعل في قاعدة البيانات
+        });
+      return;
+    }
+
     try {
       const quick = await syncQuickLinkForAccount(workspace, account);
-      const url = new URL(window.location.href);
-      url.search = '';
-      url.searchParams.set('quick', quick.token);
-      url.searchParams.set('cpx', discovered.id);
-      if (account.mosqueId) url.searchParams.set('msq', account.mosqueId);
-      await copyText(`qk_${account.id}`, url.toString());
-      await refreshWorkspace();
-    } finally {
-      setBusyLabel(null);
+      mergeQuickLinkIntoWorkspace(account.id, quick);
+      const quickUrl = buildQuickLoginUrl(quick.token, account.mosqueId);
+      await copyText(
+        `qk_${account.id}`,
+        quickUrl,
+        `تم النسخ بنجاح — ${account.quadrupleName}`
+      );
+    } catch (err) {
+      setFeedback({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'تعذّر تجهيز ونسخ رابط الدخول السريع.',
+      });
     }
   };
 
@@ -921,10 +1074,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                   {editingInviteToken && (
                     <button
                       type="button"
-                      onClick={() => {
-                        setEditingInviteToken(undefined);
-                        setInviteTitle('');
-                      }}
+                      onClick={resetInviteForm}
                       className="text-xs font-bold text-[#D95338] cursor-pointer"
                     >
                       إلغاء التعديل
@@ -1126,17 +1276,42 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                             <button
                               type="button"
                               onClick={() => handleCopyInviteUrl(lnk)}
-                              className="duo-btn-cream min-h-[40px] px-3 py-1.5 rounded-xl font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer"
+                              className={`min-h-[40px] px-3 py-1.5 rounded-xl font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer transition-colors ${
+                                copiedId === `inv_${lnk.token}`
+                                  ? 'duo-btn-green'
+                                  : 'duo-btn-cream'
+                              }`}
                             >
                               {copiedId === `inv_${lnk.token}` ? (
                                 <>
-                                  <Check className="w-3.5 h-3.5 text-[#58CC02]" />
-                                  <span>تم النسخ</span>
+                                  <Check className="w-3.5 h-3.5" />
+                                  <span>تم النسخ بنجاح</span>
                                 </>
                               ) : (
                                 <>
                                   <Copy className="w-3.5 h-3.5 text-[#F56900]" />
                                   <span>نسخ الرابط</span>
+                                </>
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleInviteActive(lnk)}
+                              className={`min-h-[40px] px-3 py-1.5 rounded-xl border text-xs font-bold inline-flex items-center gap-1 cursor-pointer ${
+                                lnk.active
+                                  ? 'border-[#EADBC8] bg-white text-[#7D4E35] hover:bg-[#FDF6EE]'
+                                  : 'border-[#58CC02] bg-[#58CC02]/10 text-[#46A302]'
+                              }`}
+                            >
+                              {lnk.active ? (
+                                <>
+                                  <Lock className="w-3.5 h-3.5" />
+                                  <span>إغلاق</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Unlock className="w-3.5 h-3.5" />
+                                  <span>فتح الرابط</span>
                                 </>
                               )}
                             </button>
@@ -1757,12 +1932,14 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                     <button
                       type="button"
                       onClick={() => handleCopyQuickUrl(acc)}
-                      className="duo-btn-orange min-h-[44px] px-4 py-2 rounded-xl font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+                      className={`min-h-[44px] px-4 py-2 rounded-xl font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap transition-colors ${
+                        copiedId === `qk_${acc.id}` ? 'duo-btn-green' : 'duo-btn-orange'
+                      }`}
                     >
                       {copiedId === `qk_${acc.id}` ? (
                         <>
                           <Check className="w-4 h-4" />
-                          <span>تم نسخ رابط الدخول السريع</span>
+                          <span>تم النسخ بنجاح</span>
                         </>
                       ) : (
                         <>
@@ -1803,6 +1980,21 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
           }}
         />
       )}
+      {copyToast &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            role="status"
+            aria-live="polite"
+            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[120] max-w-[92vw] pointer-events-none"
+          >
+            <div className="bg-[#46A302] text-white border-2 border-[#58CC02] rounded-2xl px-5 py-3 shadow-xl flex items-center gap-2.5 font-display font-extrabold text-sm sm:text-base max-w-full">
+              <CheckCircle2 className="w-5 h-5 shrink-0" />
+              <span className="truncate">{copyToast}</span>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 };
