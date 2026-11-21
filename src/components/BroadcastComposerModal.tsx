@@ -1,10 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlertCircle,
+  CalendarClock,
   Check,
   CheckCircle2,
+  Clock,
   Copy,
+  Edit3,
   Megaphone,
   Send,
   ShieldAlert,
@@ -15,7 +18,9 @@ import {
 import {
   BroadcastRulesPermissionError,
   deactivateBroadcastMessage,
+  deleteBroadcastMessage,
   listRecentBroadcasts,
+  rescheduleBroadcastMessage,
   sendBroadcastMessage,
 } from '../services/notificationService';
 import type { DiscoveredComplex } from '../services/platformService';
@@ -86,6 +91,55 @@ const BROADCAST_RULES_SNIPPET = `    function isValidBroadcast(data, broadcastId
       allow delete: if isPlatformAdmin() && isValidId(broadcastId);
     }`;
 
+function toLocalDateInput(ms: number): string {
+  const d = new Date(ms);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function toLocalTimeInput(ms: number): string {
+  const d = new Date(ms);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+function combineDateAndTimeToMs(dateStr: string, timeStr: string): number | null {
+  if (!dateStr || !timeStr) return null;
+  const parsed = new Date(`${dateStr}T${timeStr}`);
+  const ms = parsed.getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function formatArabicScheduleLabel(ms: number): string {
+  try {
+    return new Intl.DateTimeFormat('ar-SA', {
+      weekday: 'long',
+      day: 'numeric',
+      month: 'long',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(ms));
+  } catch {
+    return new Date(ms).toLocaleString('ar-SA');
+  }
+}
+
+function formatRemainingDelay(targetMs: number, nowMs: number): string {
+  const diffMin = Math.max(1, Math.round((targetMs - nowMs) / 60000));
+  if (diffMin < 60) return `بعد ${diffMin} دقيقة`;
+  const hours = Math.floor(diffMin / 60);
+  const remMin = diffMin % 60;
+  if (hours < 24) {
+    return remMin > 0 ? `بعد ${hours} س و${remMin} د` : `بعد ${hours} ساعة`;
+  }
+  const days = Math.floor(hours / 24);
+  const remHours = hours % 24;
+  return remHours > 0 ? `بعد ${days} يوم و${remHours} س` : `بعد ${days} يوم`;
+}
+
 export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
   senderName,
   createdBy,
@@ -100,7 +154,18 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
     'student',
   ]);
   const [targetComplexId, setTargetComplexId] = useState('all');
+
+  const [deliveryMode, setDeliveryMode] = useState<'now' | 'scheduled'>('now');
+  const [scheduleDate, setScheduleDate] = useState(() =>
+    toLocalDateInput(Date.now() + 60 * 60 * 1000)
+  );
+  const [scheduleTime, setScheduleTime] = useState(() =>
+    toLocalTimeInput(Date.now() + 60 * 60 * 1000)
+  );
+  const [editingScheduledId, setEditingScheduledId] = useState<string | null>(null);
+
   const [sending, setSending] = useState(false);
+  const [busyActionId, setBusyActionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [needsRulesHelp, setNeedsRulesHelp] = useState(false);
   const [copiedRules, setCopiedRules] = useState(false);
@@ -108,12 +173,14 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
 
   const [history, setHistory] = useState<BroadcastMessageRecord[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const loadHistory = async () => {
     setLoadingHistory(true);
     try {
       const items = await listRecentBroadcasts();
-      setHistory(items.filter((m) => m.active).slice(0, 10));
+      setHistory(items.filter((m) => m.active));
+      setNowMs(Date.now());
     } finally {
       setLoadingHistory(false);
     }
@@ -121,7 +188,31 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
 
   useEffect(() => {
     void loadHistory();
+    const timer = window.setInterval(() => setNowMs(Date.now()), 20000);
+    return () => window.clearInterval(timer);
   }, []);
+
+  const scheduledMessages = useMemo(
+    () =>
+      history
+        .filter((m) => m.active && m.createdAtMs > nowMs)
+        .sort((a, b) => a.createdAtMs - b.createdAtMs),
+    [history, nowMs]
+  );
+
+  const sentActiveMessages = useMemo(
+    () =>
+      history
+        .filter((m) => m.active && m.createdAtMs <= nowMs)
+        .sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0))
+        .slice(0, 10),
+    [history, nowMs]
+  );
+
+  const scheduledTimestampMs = useMemo(
+    () => combineDateAndTimeToMs(scheduleDate, scheduleTime),
+    [scheduleDate, scheduleTime]
+  );
 
   const allSelected = ALL_TARGET_ROLES.every((r) => selectedRoles.includes(r));
 
@@ -141,6 +232,20 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
     }
   };
 
+  const applySchedulePreset = (targetMs: number) => {
+    setError(null);
+    setDeliveryMode('scheduled');
+    setScheduleDate(toLocalDateInput(targetMs));
+    setScheduleTime(toLocalTimeInput(targetMs));
+  };
+
+  const handleTomorrowAt = (hour24: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    d.setHours(hour24, 0, 0, 0);
+    applySchedulePreset(d.getTime());
+  };
+
   const handleCopyRulesSnippet = async () => {
     try {
       await navigator.clipboard.writeText(BROADCAST_RULES_SNIPPET);
@@ -149,6 +254,12 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
     } catch {
       setCopiedRules(false);
     }
+  };
+
+  const resetComposer = () => {
+    setTitle('');
+    setBody('');
+    setEditingScheduledId(null);
   };
 
   const handleSend = async (e: React.FormEvent) => {
@@ -166,6 +277,15 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
       return;
     }
 
+    let publishAtMs: number | undefined;
+    if (deliveryMode === 'scheduled') {
+      if (!scheduledTimestampMs || scheduledTimestampMs <= Date.now() + 30 * 1000) {
+        setError('يرجى اختيار تاريخ ووقت مستقبلي صحيح للرسالة المجدولة (بعد دقيقة على الأقل).');
+        return;
+      }
+      publishAtMs = scheduledTimestampMs;
+    }
+
     const pickedComplex = complexes.find((c) => c.id === targetComplexId);
     const targetComplexName =
       targetComplexId === 'all' ? 'جميع المجمعات' : pickedComplex?.name || 'المجمع المحدد';
@@ -180,13 +300,34 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
         targetComplexName,
         senderName,
         createdBy,
+        scheduledAtMs: publishAtMs,
       });
 
-      setBody('');
-      setTitle('');
-      setSuccessMsg(
-        'تم إرسال الرسالة بنجاح! ستظهر الآن فوراً داخل التطبيق وفوق شاشة الهاتف لدى جميع المستهدفين.'
-      );
+      if (editingScheduledId) {
+        await deleteBroadcastMessage(editingScheduledId).catch(() =>
+          deactivateBroadcastMessage(editingScheduledId).catch(() => {})
+        );
+      }
+
+      const wasEditing = Boolean(editingScheduledId);
+      resetComposer();
+
+      if (publishAtMs) {
+        setSuccessMsg(
+          wasEditing
+            ? `تم تحديث جدولة الرسالة بنجاح! ستصل تلقائياً في موعدها (${formatArabicScheduleLabel(
+                publishAtMs
+              )}).`
+            : `تمت جدولة الرسالة بنجاح! ستظهر وتُرسل إشعاراتها تلقائياً في ${formatArabicScheduleLabel(
+                publishAtMs
+              )} دون الحاجة لتحديث الصفحة.`
+        );
+      } else {
+        setSuccessMsg(
+          'تم إرسال الرسالة بنجاح! ستظهر الآن فوراً داخل التطبيق وفوق شاشة الهاتف لدى جميع المستهدفين.'
+        );
+      }
+
       await loadHistory();
     } catch (err: unknown) {
       if (err instanceof BroadcastRulesPermissionError) {
@@ -200,14 +341,66 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
     }
   };
 
+  const handleLoadScheduledForEdit = (item: BroadcastMessageRecord) => {
+    setError(null);
+    setSuccessMsg(null);
+    setEditingScheduledId(item.id);
+    setTitle(item.title);
+    setBody(item.body);
+    setSelectedRoles(item.targetRoles.length > 0 ? [...item.targetRoles] : [...ALL_TARGET_ROLES]);
+    setTargetComplexId(item.targetComplexId || 'all');
+    setDeliveryMode('scheduled');
+    const targetMs = item.createdAtMs > Date.now() ? item.createdAtMs : Date.now() + 3600000;
+    setScheduleDate(toLocalDateInput(targetMs));
+    setScheduleTime(toLocalTimeInput(targetMs));
+  };
+
+  const handleSendScheduledNow = async (item: BroadcastMessageRecord) => {
+    setError(null);
+    setSuccessMsg(null);
+    setBusyActionId(item.id);
+    try {
+      await rescheduleBroadcastMessage(item, Date.now());
+      if (editingScheduledId === item.id) {
+        resetComposer();
+      }
+      setSuccessMsg('تم إرسال الرسالة المجدولة فوراً إلى جميع المستهدفين!');
+      await loadHistory();
+    } catch {
+      setError('تعذّر إرسال الرسالة المجدولة الآن.');
+    } finally {
+      setBusyActionId(null);
+    }
+  };
+
+  const handleCancelScheduled = async (id: string) => {
+    setBusyActionId(id);
+    try {
+      await deleteBroadcastMessage(id).catch(() => deactivateBroadcastMessage(id));
+      if (editingScheduledId === id) {
+        resetComposer();
+      }
+      setHistory((prev) => prev.filter((item) => item.id !== id));
+    } catch {
+      setError('تعذّر إلغاء الرسالة المجدولة.');
+    } finally {
+      setBusyActionId(null);
+    }
+  };
+
   const handleDeactivate = async (id: string) => {
+    setBusyActionId(id);
     try {
       await deactivateBroadcastMessage(id);
       setHistory((prev) => prev.filter((item) => item.id !== id));
     } catch {
       setError('تعذّر إيقاف الرسالة.');
+    } finally {
+      setBusyActionId(null);
     }
   };
+
+  const minDateStr = toLocalDateInput(Date.now());
 
   const modalNode = (
     <div
@@ -232,10 +425,10 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
                 id="programmer-message-title"
                 className="font-display text-lg sm:text-xl font-extrabold text-[#4A220D] truncate"
               >
-                إرسال رسالة وإشعار فوري
+                إرسال وجدولة الرسائل والإشعارات
               </h2>
               <p className="text-xs font-bold text-[#7D4E35]">
-                تصل فوراً بدون تحديث للصفحة وكإشعار أعلى الهاتف عند التفعيل
+                إرسال فوري أو جدولة لوقت محدد تصل تلقائياً داخل المنصة وفوق شاشة الهاتف
               </p>
             </div>
           </div>
@@ -253,6 +446,24 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
         {/* Body */}
         <div className="overflow-y-auto p-5 sm:p-6 space-y-6">
           <form onSubmit={handleSend} className="space-y-4">
+            {editingScheduledId && (
+              <div className="rounded-2xl bg-[#FFF4E6] border-2 border-[#F56900] px-4 py-3 flex items-center justify-between gap-3">
+                <span className="font-display text-xs sm:text-sm font-extrabold text-[#4A220D]">
+                  جاري تعديل رسالة مجدولة
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    resetComposer();
+                    setDeliveryMode('now');
+                  }}
+                  className="duo-btn-cream min-h-[36px] px-3 py-1 rounded-xl font-display text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  إلغاء التعديل
+                </button>
+              </div>
+            )}
+
             {/* Multi-role selector + All toggle */}
             <div className="bg-[#FDF6EE] border-2 border-[#EADBC8] rounded-2xl p-4 space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -264,7 +475,7 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
                 <button
                   type="button"
                   onClick={handleToggleAll}
-                  className={`min-h-[36px] px-3 py-1 rounded-xl font-display text-xs font-extrabold inline-flex items-center gap-1.5 cursor-pointer transition-colors border-2 ${
+                  className={`min-h-[36px] px-3 py-1 rounded-xl font-display text-xs font-extrabold inline-flex items-center gap-1.5 cursor-pointer transition-colors border-2 whitespace-nowrap shrink-0 ${
                     allSelected
                       ? 'bg-[#58CC02] border-[#46A302] text-white'
                       : 'bg-white border-[#EADBC8] text-[#4A220D] hover:border-[#F56900]'
@@ -284,7 +495,7 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
                       type="button"
                       onClick={() => toggleRole(roleKey)}
                       aria-pressed={active}
-                      className={`min-h-[48px] px-3 py-2 rounded-2xl border-2 font-display text-xs sm:text-sm font-extrabold inline-flex items-center justify-center gap-1.5 cursor-pointer transition-all ${
+                      className={`min-h-[48px] px-3 py-2 rounded-2xl border-2 font-display text-xs sm:text-sm font-extrabold inline-flex items-center justify-center gap-1.5 cursor-pointer transition-all whitespace-nowrap shrink-0 ${
                         active
                           ? 'bg-[#F56900] border-[#C95200] text-white border-b-4'
                           : 'bg-white border-[#EADBC8] text-[#7D4E35] hover:border-[#F56900] hover:text-[#4A220D]'
@@ -306,7 +517,7 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
               </div>
             </div>
 
-            {/* Target Complex Scope */}
+            {/* Target Complex Scope & Title */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label
@@ -369,6 +580,126 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
               />
             </div>
 
+            {/* Delivery Mode & Schedule Picker */}
+            <div className="bg-[#FDF6EE] border-2 border-[#EADBC8] rounded-2xl p-4 space-y-3.5">
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setError(null);
+                    setDeliveryMode('now');
+                  }}
+                  className={`min-h-[44px] px-3 py-2 rounded-xl border-2 font-display text-xs sm:text-sm font-extrabold inline-flex items-center justify-center gap-1.5 cursor-pointer transition-all whitespace-nowrap ${
+                    deliveryMode === 'now'
+                      ? 'bg-[#58CC02] border-[#46A302] text-white border-b-4'
+                      : 'bg-white border-[#EADBC8] text-[#7D4E35] hover:border-[#F56900] hover:text-[#4A220D]'
+                  }`}
+                >
+                  <Send className="w-4 h-4 shrink-0" />
+                  <span>إرسال فوري الآن</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setError(null);
+                    setDeliveryMode('scheduled');
+                  }}
+                  className={`min-h-[44px] px-3 py-2 rounded-xl border-2 font-display text-xs sm:text-sm font-extrabold inline-flex items-center justify-center gap-1.5 cursor-pointer transition-all whitespace-nowrap ${
+                    deliveryMode === 'scheduled'
+                      ? 'bg-[#F56900] border-[#C95200] text-white border-b-4'
+                      : 'bg-white border-[#EADBC8] text-[#7D4E35] hover:border-[#F56900] hover:text-[#4A220D]'
+                  }`}
+                >
+                  <CalendarClock className="w-4 h-4 shrink-0" />
+                  <span>جدولة لوقت محدد</span>
+                </button>
+              </div>
+
+              {deliveryMode === 'scheduled' && (
+                <div className="space-y-3 pt-1">
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => applySchedulePreset(Date.now() + 60 * 60 * 1000)}
+                      className="duo-btn-cream min-h-[40px] px-3 py-1.5 rounded-xl font-display text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      بعد ساعة
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => applySchedulePreset(Date.now() + 3 * 60 * 60 * 1000)}
+                      className="duo-btn-cream min-h-[40px] px-3 py-1.5 rounded-xl font-display text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      بعد ٣ ساعات
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleTomorrowAt(8)}
+                      className="duo-btn-cream min-h-[40px] px-3 py-1.5 rounded-xl font-display text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      غداً ٨:٠٠ ص
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleTomorrowAt(16)}
+                      className="duo-btn-cream min-h-[40px] px-3 py-1.5 rounded-xl font-display text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      غداً ٤:٠٠ م
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label
+                        htmlFor="broadcast-schedule-date"
+                        className="block font-display text-xs font-extrabold text-[#4A220D] mb-1.5"
+                      >
+                        تاريخ الإرسال
+                      </label>
+                      <input
+                        id="broadcast-schedule-date"
+                        type="date"
+                        dir="ltr"
+                        min={minDateStr}
+                        value={scheduleDate}
+                        onChange={(e) => setScheduleDate(e.target.value)}
+                        required={deliveryMode === 'scheduled'}
+                        className="w-full min-h-[46px] px-3.5 rounded-2xl border-2 border-[#EADBC8] bg-white text-sm font-bold text-[#4A220D] tabular-nums focus:outline-none focus:border-[#F56900]"
+                      />
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor="broadcast-schedule-time"
+                        className="block font-display text-xs font-extrabold text-[#4A220D] mb-1.5"
+                      >
+                        وقت الإرسال
+                      </label>
+                      <input
+                        id="broadcast-schedule-time"
+                        type="time"
+                        dir="ltr"
+                        value={scheduleTime}
+                        onChange={(e) => setScheduleTime(e.target.value)}
+                        required={deliveryMode === 'scheduled'}
+                        className="w-full min-h-[46px] px-3.5 rounded-2xl border-2 border-[#EADBC8] bg-white text-sm font-bold text-[#4A220D] tabular-nums focus:outline-none focus:border-[#F56900]"
+                      />
+                    </div>
+                  </div>
+
+                  {scheduledTimestampMs && (
+                    <p className="text-xs font-bold text-[#7D4E35] tabular-nums">
+                      موعد النشر التلقائي: {formatArabicScheduleLabel(scheduledTimestampMs)}
+                      {scheduledTimestampMs > nowMs
+                        ? ` · ${formatRemainingDelay(scheduledTimestampMs, nowMs)}`
+                        : ' · الوقت المحدد في الماضي، اختر وقتاً قادماً'}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+
             {error && (
               <div
                 role="alert"
@@ -429,8 +760,23 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
                 disabled={sending}
                 className="duo-btn-orange flex-1 min-h-[50px] px-6 rounded-2xl font-display font-extrabold text-sm sm:text-base inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
               >
-                <Send className="w-4 h-4 shrink-0" />
-                <span>{sending ? 'جاري الإرسال...' : 'أرسل'}</span>
+                {deliveryMode === 'scheduled' ? (
+                  <>
+                    <CalendarClock className="w-4 h-4 shrink-0" />
+                    <span>
+                      {sending
+                        ? 'جاري الجدولة...'
+                        : editingScheduledId
+                          ? 'حفظ تعديل الجدولة'
+                          : 'جدولة الرسالة'}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4 shrink-0" />
+                    <span>{sending ? 'جاري الإرسال...' : 'أرسل'}</span>
+                  </>
+                )}
               </button>
               <button
                 type="button"
@@ -442,21 +788,93 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
             </div>
           </form>
 
+          {/* Scheduled Queue */}
+          {scheduledMessages.length > 0 && (
+            <div className="pt-4 border-t-2 border-[#F7EBDD] space-y-3">
+              <h3 className="font-display text-sm font-extrabold text-[#4A220D] flex items-center gap-2">
+                <CalendarClock className="w-4 h-4 text-[#F56900]" />
+                <span>الرسائل المجدولة بانتظار موعدها ({scheduledMessages.length})</span>
+              </h3>
+
+              <div className="space-y-2.5 max-h-64 overflow-y-auto">
+                {scheduledMessages.map((item) => {
+                  const isBusy = busyActionId === item.id;
+                  return (
+                    <div
+                      key={item.id}
+                      className="bg-[#FFF9F2] border-2 border-[#F56900]/35 rounded-2xl p-3.5 space-y-2.5"
+                    >
+                      <div className="min-w-0 space-y-1">
+                        <p className="font-display text-xs sm:text-sm font-extrabold text-[#4A220D] truncate">
+                          {item.title}
+                        </p>
+                        <p className="text-xs text-[#7D4E35] line-clamp-2">{item.body}</p>
+                        <p className="text-xs font-bold text-[#F56900] tabular-nums flex flex-wrap items-center gap-1.5">
+                          <Clock className="w-3.5 h-3.5 shrink-0" />
+                          <span>{formatArabicScheduleLabel(item.createdAtMs)}</span>
+                          <span aria-hidden="true">·</span>
+                          <span>{formatRemainingDelay(item.createdAtMs, nowMs)}</span>
+                        </p>
+                        <p className="text-xs text-[#7D4E35]">
+                          {item.targetRoles.map((r) => BROADCAST_ROLE_LABELS[r]).join(' · ')} ·{' '}
+                          {item.targetComplexName}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => void handleSendScheduledNow(item)}
+                          className="duo-btn-green min-h-[40px] px-3 py-1.5 rounded-xl font-display text-xs font-extrabold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
+                        >
+                          <Send className="w-3.5 h-3.5 shrink-0" />
+                          <span>إرسال الآن</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => handleLoadScheduledForEdit(item)}
+                          className="duo-btn-cream min-h-[40px] px-3 py-1.5 rounded-xl font-display text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
+                        >
+                          <Edit3 className="w-3.5 h-3.5 text-[#F56900] shrink-0" />
+                          <span>تعديل الموعد</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => void handleCancelScheduled(item.id)}
+                          title="إلغاء الجدولة وحذف الرسالة"
+                          className="min-h-[40px] px-3 py-1.5 rounded-xl border border-[#EADBC8] bg-white hover:border-[#D95338] text-[#D95338] font-display text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                          <span>إلغاء</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Active Sent Broadcasts */}
           <div className="pt-4 border-t-2 border-[#F7EBDD] space-y-3">
             <h3 className="font-display text-sm font-extrabold text-[#4A220D]">
-              الرسائل النشطة حالياً ({history.length})
+              الرسائل المرسلة والنشطة حالياً ({sentActiveMessages.length})
             </h3>
 
             {loadingHistory ? (
               <p className="text-xs text-[#7D4E35]">جاري تحميل الرسائل المرسلة...</p>
-            ) : history.length === 0 ? (
+            ) : sentActiveMessages.length === 0 ? (
               <p className="text-xs text-[#7D4E35] bg-[#FDF6EE] border border-[#EADBC8] rounded-2xl p-3 text-center">
                 لا توجد رسائل نشطة مرسلة بعد.
               </p>
             ) : (
               <div className="space-y-2.5 max-h-56 overflow-y-auto">
-                {history.map((item) => (
+                {sentActiveMessages.map((item) => (
                   <div
                     key={item.id}
                     className="bg-[#FDF6EE] border border-[#EADBC8] rounded-2xl p-3 flex items-start justify-between gap-3"
@@ -466,17 +884,18 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
                         {item.title}
                       </p>
                       <p className="text-xs text-[#7D4E35] line-clamp-2">{item.body}</p>
-                      <p className="text-[11px] font-bold text-[#F56900]">
+                      <p className="text-xs font-bold text-[#F56900] tabular-nums">
                         {item.targetRoles.map((r) => BROADCAST_ROLE_LABELS[r]).join(' · ')} ·{' '}
-                        {item.targetComplexName}
+                        {item.targetComplexName} · {formatArabicScheduleLabel(item.createdAtMs)}
                       </p>
                     </div>
 
                     <button
                       type="button"
+                      disabled={busyActionId === item.id}
                       onClick={() => void handleDeactivate(item.id)}
                       title="إيقاف عرض هذه الرسالة"
-                      className="min-w-[38px] min-h-[38px] rounded-xl border border-[#EADBC8] bg-white hover:border-[#D95338] text-[#D95338] flex items-center justify-center shrink-0 cursor-pointer"
+                      className="min-w-[40px] min-h-[40px] rounded-xl border border-[#EADBC8] bg-white hover:border-[#D95338] text-[#D95338] flex items-center justify-center shrink-0 cursor-pointer disabled:opacity-60"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>

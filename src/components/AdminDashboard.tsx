@@ -799,7 +799,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
       {messageModalOpen && (
         <BroadcastComposerModal
           senderName={session.account.quadrupleName}
-          createdBy={session.account.uid || session.account.id}
+          createdBy={auth.currentUser?.uid || session.account.uid || session.account.id}
           complexes={complexes}
           onClose={() => setMessageModalOpen(false)}
         />

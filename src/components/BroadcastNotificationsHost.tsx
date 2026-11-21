@@ -7,6 +7,7 @@ import {
   getDismissedBroadcastIds,
   getNotificationPermissionState,
   getOsNotifiedBroadcastIds,
+  isBroadcastDue,
   markBroadcastDismissed,
   markBroadcastOsNotified,
   playBroadcastChime,
@@ -64,7 +65,7 @@ export const BroadcastNotificationsHost: React.FC<BroadcastNotificationsHostProp
   const openSpecificBroadcastById = async (broadcastId: string) => {
     if (!broadcastId) return;
     const inLive = liveMessages.find((m) => m.id === broadcastId);
-    if (inLive) {
+    if (inLive && isBroadcastDue(inLive)) {
       setForcedMessage(inLive);
       return;
     }
@@ -72,7 +73,7 @@ export const BroadcastNotificationsHost: React.FC<BroadcastNotificationsHostProp
       ? getFirestoreForConfig(session.authConfig)
       : null;
     const fetched = await fetchBroadcastById(broadcastId, sessionDb);
-    if (fetched) {
+    if (fetched && isBroadcastDue(fetched)) {
       setForcedMessage(fetched);
     }
   };

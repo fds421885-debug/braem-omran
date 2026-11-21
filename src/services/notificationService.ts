@@ -1,5 +1,6 @@
 import {
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -273,31 +274,44 @@ export function mergeBroadcastSources(
   return Array.from(map.values()).sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
 }
 
-export function filterBroadcastsForRecipient(
-  items: BroadcastMessageRecord[],
-  recipient: {
-    role: string;
-    complexId?: string;
-  }
-): BroadcastMessageRecord[] {
+export function isBroadcastDue(
+  item: Pick<BroadcastMessageRecord, 'active' | 'createdAtMs'>,
+  nowMs = Date.now()
+): boolean {
+  if (!item.active) return false;
+  return !item.createdAtMs || item.createdAtMs <= nowMs;
+}
+
+function matchesRecipientScope(
+  item: BroadcastMessageRecord,
+  recipient: { role: string; complexId?: string }
+): boolean {
   if (
     recipient.role !== 'supervisor' &&
     recipient.role !== 'teacher' &&
     recipient.role !== 'student'
   ) {
-    return [];
+    return false;
   }
   const role = recipient.role as BroadcastTargetRole;
   const userComplexId = recipient.complexId || '';
+  if (!item.active) return false;
+  if (!item.targetRoles.includes(role)) return false;
+  if (!item.targetComplexId || item.targetComplexId === 'all') return true;
+  if (!userComplexId) return true;
+  return item.targetComplexId === userComplexId;
+}
 
+export function filterBroadcastsForRecipient(
+  items: BroadcastMessageRecord[],
+  recipient: {
+    role: string;
+    complexId?: string;
+  },
+  nowMs = Date.now()
+): BroadcastMessageRecord[] {
   return items
-    .filter((item) => {
-      if (!item.active) return false;
-      if (!item.targetRoles.includes(role)) return false;
-      if (!item.targetComplexId || item.targetComplexId === 'all') return true;
-      if (!userComplexId) return true;
-      return item.targetComplexId === userComplexId;
-    })
+    .filter((item) => matchesRecipientScope(item, recipient) && isBroadcastDue(item, nowMs))
     .sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
 }
 
@@ -309,6 +323,7 @@ export async function sendBroadcastMessage(params: {
   targetComplexName: string;
   senderName: string;
   createdBy: string;
+  scheduledAtMs?: number;
 }): Promise<BroadcastMessageRecord> {
   const cleanBody = params.body.trim();
   if (!cleanBody) {
@@ -321,6 +336,13 @@ export async function sendBroadcastMessage(params: {
 
   const id = generateValidId('msg');
   const nowMs = Date.now();
+  const publishAtMs =
+    typeof params.scheduledAtMs === 'number' &&
+    Number.isFinite(params.scheduledAtMs) &&
+    params.scheduledAtMs > nowMs
+      ? Math.round(params.scheduledAtMs)
+      : nowMs;
+
   const payload = {
     id,
     title: (params.title.trim() || 'رسالة من إدارة المنصة').slice(0, 160),
@@ -331,7 +353,7 @@ export async function sendBroadcastMessage(params: {
     senderName: (params.senderName.trim() || 'المبرمج').slice(0, 100),
     createdBy: params.createdBy,
     active: true,
-    createdAtMs: nowMs,
+    createdAtMs: publishAtMs,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   };
@@ -401,6 +423,47 @@ export async function deactivateBroadcastMessage(broadcastId: string): Promise<v
   }
 }
 
+export async function deleteBroadcastMessage(broadcastId: string): Promise<void> {
+  await deleteDoc(doc(primaryDb, 'broadcasts', broadcastId));
+  try {
+    const knownDbs = await getAllKnownDatabases();
+    await Promise.all(
+      knownDbs
+        .filter((d) => !d.isPrimary)
+        .map((d) =>
+          deleteDoc(doc(d.db, 'broadcasts', broadcastId)).catch(() =>
+            updateDoc(doc(d.db, 'broadcasts', broadcastId), {
+              active: false,
+              updatedAt: serverTimestamp(),
+            }).catch(() => {})
+          )
+        )
+    );
+  } catch {
+    // Non-fatal
+  }
+}
+
+export async function rescheduleBroadcastMessage(
+  existing: BroadcastMessageRecord,
+  nextPublishAtMs: number
+): Promise<BroadcastMessageRecord> {
+  const created = await sendBroadcastMessage({
+    title: existing.title,
+    body: existing.body,
+    targetRoles: existing.targetRoles,
+    targetComplexId: existing.targetComplexId,
+    targetComplexName: existing.targetComplexName,
+    senderName: existing.senderName,
+    createdBy: existing.createdBy,
+    scheduledAtMs: nextPublishAtMs > Date.now() ? nextPublishAtMs : undefined,
+  });
+  await deleteBroadcastMessage(existing.id).catch(() =>
+    deactivateBroadcastMessage(existing.id).catch(() => {})
+  );
+  return created;
+}
+
 export async function fetchBroadcastById(
   broadcastId: string,
   sessionDb?: Firestore | null
@@ -438,11 +501,40 @@ export function subscribeToBroadcastsForSession(
 
   let primaryList: BroadcastMessageRecord[] = [];
   let externalList: BroadcastMessageRecord[] = [];
+  let dueTimerId: number | null = null;
+  let disposed = false;
+
+  const scheduleNextDueTrigger = (merged: BroadcastMessageRecord[], nowMs: number) => {
+    if (dueTimerId !== null) {
+      window.clearTimeout(dueTimerId);
+      dueTimerId = null;
+    }
+    if (disposed) return;
+
+    const upcomingTimes = merged
+      .filter(
+        (item) =>
+          matchesRecipientScope(item, { role, complexId }) &&
+          item.createdAtMs > nowMs
+      )
+      .map((item) => item.createdAtMs);
+
+    if (upcomingTimes.length === 0) return;
+    const earliestMs = Math.min(...upcomingTimes);
+    const delayMs = Math.max(250, Math.min(earliestMs - nowMs + 250, 2147483647));
+    dueTimerId = window.setTimeout(() => {
+      if (!disposed) {
+        emitCombined();
+      }
+    }, delayMs);
+  };
 
   const emitCombined = () => {
+    const nowMs = Date.now();
     const merged = mergeBroadcastSources(primaryList, externalList);
-    const filtered = filterBroadcastsForRecipient(merged, { role, complexId });
+    const filtered = filterBroadcastsForRecipient(merged, { role, complexId }, nowMs);
     onMessagesChange(filtered);
+    scheduleNextDueTrigger(merged, nowMs);
   };
 
   const qPrimary = query(collection(primaryDb, 'broadcasts'), where('active', '==', true));
@@ -477,6 +569,11 @@ export function subscribeToBroadcastsForSession(
   }
 
   return () => {
+    disposed = true;
+    if (dueTimerId !== null) {
+      window.clearTimeout(dueTimerId);
+      dueTimerId = null;
+    }
     unsubPrimary();
     if (unsubExternal) unsubExternal();
   };
