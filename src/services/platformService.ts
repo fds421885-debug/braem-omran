@@ -23,6 +23,7 @@ import { auth, db as primaryDb, handleFirestoreError, OperationType } from '../f
 import {
   ADMIN_QUADRUPLE_NAME,
   COMPLEX_FEATURE_TAB_LABELS,
+  TAB_SHARD_MAX_BYTES,
   type AccountRecord,
   type ActiveSession,
   type AttendanceEntry,
@@ -31,6 +32,7 @@ import {
   type BookPageRecord,
   type BookRecord,
   type BookTextSegment,
+  type BookWordAudioRecord,
   type ComplexFeatureTabKey,
   type ComplexRecord,
   type ConnectedDatabaseInfo,
@@ -44,9 +46,12 @@ import {
   type MosqueRecord,
   type QuickLinkRecord,
   type StudentRankingItem,
+  type TabDbPoolMap,
+  type TabDbShard,
   type UserRole,
   type WeekDayKey,
 } from '../types/platform';
+import { shrinkWavBase64ForDb } from './bookStorage';
 import {
   buildDbConnectionId,
   generateToken,
@@ -105,6 +110,7 @@ export interface ComplexWorkspaceData {
   halaqaConfigMap: Record<string, ExternalFirebaseConfig | null>;
   tabDbMap: Partial<Record<ComplexFeatureTabKey, Firestore>>;
   tabConfigMap: Partial<Record<ComplexFeatureTabKey, ExternalFirebaseConfig | null>>;
+  tabPools: TabDbPoolMap;
   complexDb: Firestore;
 }
 
@@ -250,10 +256,16 @@ export async function getAllKnownDatabases(
       }
     }
 
-    // Backwards compatibility for legacy per-mosque configs AND per-tab external routes
+    // Backwards compatibility for legacy per-mosque configs, per-tab routes, AND multi-shard pools
     const rawMap = safeParseMosqueConfigs(entry.mosqueConfigsJson) as Record<string, unknown>;
     const candidateConfigs: ExternalFirebaseConfig[] = [];
-    if (
+    if (Array.isArray(rawMap?.shards)) {
+      for (const sh of rawMap.shards as Array<{ config?: ExternalFirebaseConfig }>) {
+        if (sh && sh.config && typeof sh.config === 'object') {
+          candidateConfigs.push(sh.config);
+        }
+      }
+    } else if (
       rawMap &&
       typeof rawMap.tabConfigs === 'object' &&
       rawMap.tabConfigs !== null
@@ -1606,12 +1618,137 @@ export async function deleteDiscoveredComplex(discovered: DiscoveredComplex): Pr
     }
   }
 
-  // Clean up any legacy per-complex registry doc or per-tab routes pointer if present
+  // Clean up any legacy per-complex registry doc, per-tab routes pointer, or multi-shard pool docs
   await deleteDoc(doc(primaryDb, 'dbRegistry', discovered.id)).catch(() => {});
   await deleteDoc(doc(primaryDb, 'dbRegistry', `${TAB_ROUTE_DOC_PREFIX}${discovered.id}`)).catch(() => {});
+  for (const tk of ALL_FEATURE_TAB_KEYS) {
+    await deleteDoc(doc(primaryDb, 'dbRegistry', buildTabPoolDocId(discovered.id, tk))).catch(() => {});
+  }
 }
 
 const TAB_ROUTE_DOC_PREFIX = 'tabroutes_';
+const TAB_POOL_DOC_PREFIX = 'tabpool_';
+const ALL_FEATURE_TAB_KEYS: ComplexFeatureTabKey[] = [
+  'attendance',
+  'library',
+  'curricula',
+  'accounts_invites',
+  'mosques_halaqat',
+];
+
+function buildTabPoolDocId(complexId: string, tabKey: ComplexFeatureTabKey): string {
+  return `${TAB_POOL_DOC_PREFIX}${complexId}_${tabKey}`.slice(0, 128);
+}
+
+function getLocalShardMirrorKey(complexId: string, tabKey: ComplexFeatureTabKey): string {
+  return `braem_tabpool_stats_${complexId}_${tabKey}`;
+}
+
+function readLocalShardMirror(
+  complexId: string,
+  tabKey: ComplexFeatureTabKey
+): Record<string, { usedBytes: number; docsCount: number; status: TabDbShard['status'] }> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(getLocalShardMirrorKey(complexId, tabKey));
+    if (!raw) return {};
+    return JSON.parse(raw) as Record<
+      string,
+      { usedBytes: number; docsCount: number; status: TabDbShard['status'] }
+    >;
+  } catch {
+    return {};
+  }
+}
+
+function writeLocalShardMirror(
+  complexId: string,
+  tabKey: ComplexFeatureTabKey,
+  shards: TabDbShard[]
+): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const map: Record<
+      string,
+      { usedBytes: number; docsCount: number; status: TabDbShard['status'] }
+    > = {};
+    for (const sh of shards) {
+      map[sh.id] = {
+        usedBytes: sh.usedBytes,
+        docsCount: sh.docsCount,
+        status: sh.status,
+      };
+    }
+    window.localStorage.setItem(getLocalShardMirrorKey(complexId, tabKey), JSON.stringify(map));
+  } catch {
+    // Non-fatal storage full / private mode
+  }
+}
+
+export function estimateRecordBytes(payload: unknown): number {
+  try {
+    const str = JSON.stringify(payload);
+    const bytes =
+      typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(str).length : str.length * 2;
+    return bytes + 128; // Include Firestore index & timestamp metadata overhead
+  } catch {
+    return 1024;
+  }
+}
+
+function normalizeShardPoolInvariants(shards: TabDbShard[]): TabDbShard[] {
+  const cleaned = shards
+    .filter((s) => Boolean(s && s.config && s.config.projectId && s.config.apiKey && s.config.appId))
+    .map((s) => {
+      const maxBytes = Number(s.maxBytes) > 0 ? Number(s.maxBytes) : TAB_SHARD_MAX_BYTES;
+      const usedBytes = Math.max(0, Number(s.usedBytes) || 0);
+      const docsCount = Math.max(0, Number(s.docsCount) || 0);
+      const status: TabDbShard['status'] =
+        usedBytes >= maxBytes
+          ? 'full'
+          : s.status === 'full' || s.status === 'active' || s.status === 'standby'
+          ? s.status
+          : 'standby';
+      return {
+        ...s,
+        id: s.id || buildDbConnectionId(s.config),
+        label: s.label || getDbDisplayLabel(s.config),
+        usedBytes,
+        maxBytes,
+        docsCount,
+        status,
+        createdAtMs: Number(s.createdAtMs) || Date.now(),
+      };
+    });
+
+  // Ensure strictly at most ONE non-full shard is 'active'
+  let activeAssigned = false;
+  for (const sh of cleaned) {
+    if (sh.status === 'full') continue;
+    if (sh.status === 'active' && !activeAssigned) {
+      activeAssigned = true;
+    } else {
+      sh.status = 'standby';
+    }
+  }
+  if (!activeAssigned) {
+    const firstAvailable = cleaned.find((s) => s.status !== 'full');
+    if (firstAvailable) {
+      firstAvailable.status = 'active';
+    }
+  }
+  return cleaned;
+}
+
+function isQuotaOrFullError(err: unknown): boolean {
+  const code = String((err as { code?: string })?.code || '').toLowerCase();
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    code.includes('resource-exhausted') ||
+    msg.includes('resource-exhausted') ||
+    msg.includes('quota')
+  );
+}
 
 export async function loadComplexTabRoutes(
   complexId: string
@@ -1640,6 +1777,140 @@ export async function loadComplexTabRoutes(
   }
 }
 
+export async function loadComplexTabPools(complexId: string): Promise<TabDbPoolMap> {
+  const pools: TabDbPoolMap = {};
+  const [legacyRoutes, ...poolSnaps] = await Promise.all([
+    loadComplexTabRoutes(complexId),
+    ...ALL_FEATURE_TAB_KEYS.map((tk) =>
+      getDocFresh(doc(primaryDb, 'dbRegistry', buildTabPoolDocId(complexId, tk))).catch(() => null)
+    ),
+  ]);
+
+  ALL_FEATURE_TAB_KEYS.forEach((tk, idx) => {
+    const snap = poolSnaps[idx];
+    let shards: TabDbShard[] = [];
+    if (snap?.exists()) {
+      try {
+        const data = snap.data() as DbRegistryEntry;
+        if (data.mosqueConfigsJson) {
+          const parsed = JSON.parse(data.mosqueConfigsJson) as { shards?: TabDbShard[] };
+          if (Array.isArray(parsed.shards)) {
+            shards = parsed.shards;
+          }
+        }
+      } catch {
+        // Fallback below
+      }
+    }
+
+    if (shards.length === 0 && legacyRoutes[tk]) {
+      const legacyConf = legacyRoutes[tk]!;
+      shards = [
+        {
+          id: buildDbConnectionId(legacyConf),
+          label: getDbDisplayLabel(legacyConf),
+          config: legacyConf,
+          usedBytes: 0,
+          maxBytes: TAB_SHARD_MAX_BYTES,
+          docsCount: 0,
+          status: 'active',
+          createdAtMs: Date.now(),
+        },
+      ];
+    }
+
+    if (shards.length > 0) {
+      // Merge local usage ledger (keeps rollover accuracy across supervisor/teacher sessions)
+      const localMirror = readLocalShardMirror(complexId, tk);
+      const merged = shards.map((sh) => {
+        const sid = sh.id || buildDbConnectionId(sh.config);
+        const loc = localMirror[sid];
+        if (!loc) return sh;
+        const bestUsed = Math.max(Number(sh.usedBytes) || 0, Number(loc.usedBytes) || 0);
+        const bestDocs = Math.max(Number(sh.docsCount) || 0, Number(loc.docsCount) || 0);
+        const bestStatus: TabDbShard['status'] =
+          bestUsed >= (sh.maxBytes || TAB_SHARD_MAX_BYTES)
+            ? 'full'
+            : sh.status === 'full' || loc.status === 'full'
+            ? 'full'
+            : sh.status;
+        return {
+          ...sh,
+          id: sid,
+          usedBytes: bestUsed,
+          docsCount: bestDocs,
+          status: bestStatus,
+        };
+      });
+      pools[tk] = normalizeShardPoolInvariants(merged);
+    }
+  });
+
+  return pools;
+}
+
+export async function saveComplexTabPool(
+  complexId: string,
+  tabKey: ComplexFeatureTabKey,
+  shards: TabDbShard[]
+): Promise<TabDbShard[]> {
+  const normalized = normalizeShardPoolInvariants(shards);
+  const docId = buildTabPoolDocId(complexId, tabKey);
+  const regRef = doc(primaryDb, 'dbRegistry', docId);
+  writeLocalShardMirror(complexId, tabKey, normalized);
+
+  if (normalized.length === 0) {
+    await deleteDoc(regRef).catch(() => {});
+    return [];
+  }
+
+  // Strip optional empty fields cleanly to maximize how many shards fit in one registry entry
+  const compactShards = normalized.map((s) => ({
+    ...s,
+    config: {
+      apiKey: s.config.apiKey,
+      projectId: s.config.projectId,
+      appId: s.config.appId,
+      ...(s.config.authDomain ? { authDomain: s.config.authDomain } : {}),
+      ...(s.config.storageBucket ? { storageBucket: s.config.storageBucket } : {}),
+      ...(s.config.messagingSenderId ? { messagingSenderId: s.config.messagingSenderId } : {}),
+      ...(s.config.firestoreDatabaseId
+        ? { firestoreDatabaseId: s.config.firestoreDatabaseId }
+        : {}),
+    },
+  }));
+
+  const serialized = JSON.stringify({ shards: compactShards });
+  if (serialized.length > 31500) {
+    throw new Error('عدد قواعد البيانات لهذا التبويب تجاوز الحد الأقصى المسموح في الفهرس.');
+  }
+
+  const existingSnap = await getDocFresh(regRef).catch(() => null);
+  if (existingSnap?.exists()) {
+    await updateDoc(regRef, {
+      name: `سلسلة قواعد ${COMPLEX_FEATURE_TAB_LABELS[tabKey]}`.slice(0, 120),
+      hasExternalDb: false,
+      firebaseConfigJson: '',
+      mosqueConfigsJson: serialized,
+      active: true,
+      updatedAt: serverTimestamp(),
+    });
+  } else {
+    await setDoc(regRef, {
+      id: docId,
+      name: `سلسلة قواعد ${COMPLEX_FEATURE_TAB_LABELS[tabKey]}`.slice(0, 120),
+      hasExternalDb: false,
+      firebaseConfigJson: '',
+      mosqueConfigsJson: serialized,
+      active: true,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  return normalized;
+}
+
 export async function saveComplexTabRoutes(
   complexId: string,
   tabConfigs: Partial<Record<ComplexFeatureTabKey, ExternalFirebaseConfig>>
@@ -1660,7 +1931,7 @@ export async function saveComplexTabRoutes(
     if (conf) normalizedObj[k] = conf;
   }
   const serialized = JSON.stringify({ tabConfigs: normalizedObj });
-  if (serialized.length > 7900) {
+  if (serialized.length > 31500) {
     throw new Error('حجم إعدادات قواعد التبويبات تجاوز الحد المسموح.');
   }
 
@@ -1688,10 +1959,76 @@ export async function saveComplexTabRoutes(
   }
 }
 
+export function getActiveShardFromPool(
+  workspace: ComplexWorkspaceData,
+  tabKey: ComplexFeatureTabKey
+): TabDbShard | null {
+  const pool = workspace.tabPools?.[tabKey];
+  if (!pool || pool.length === 0) return null;
+  return (
+    pool.find((s) => s.status === 'active') ||
+    pool.find((s) => s.status !== 'full') ||
+    pool[pool.length - 1]
+  );
+}
+
+/**
+ * Returns ALL Firestore instances assigned to this tab (active shard first, then all others)
+ * so historical data written before a 4 GB rollover stays seamlessly readable.
+ */
+export function getReadDbsForComplexTab(
+  workspace: ComplexWorkspaceData,
+  tabKey: ComplexFeatureTabKey
+): Firestore[] {
+  const pool = workspace.tabPools?.[tabKey];
+  if (pool && pool.length > 0) {
+    const active = pool.filter((s) => s.status === 'active');
+    const rest = pool.filter((s) => s.status !== 'active');
+    const ordered = [...active, ...rest];
+    const dbs: Firestore[] = [];
+    for (const sh of ordered) {
+      const dbInst = getFirestoreForConfig(sh.config);
+      if (dbInst === primaryDb) {
+        throw new Error(
+          `حماية العزل: تبويب "${COMPLEX_FEATURE_TAB_LABELS[tabKey]}" مرتبط بقواعد خارجية ولا يمكن القراءة من القاعدة الأم.`
+        );
+      }
+      if (!dbs.includes(dbInst)) {
+        dbs.push(dbInst);
+      }
+    }
+    if (dbs.length > 0) return dbs;
+  }
+
+  const extConfig = workspace.tabConfigMap?.[tabKey];
+  if (extConfig && extConfig.projectId && extConfig.apiKey) {
+    const extDb = workspace.tabDbMap?.[tabKey] || getFirestoreForConfig(extConfig);
+    if (extDb === primaryDb) {
+      throw new Error(
+        `حماية العزل: تبويب "${COMPLEX_FEATURE_TAB_LABELS[tabKey]}" مرتبط بقاعدة خارجية ولا يمكن القراءة أو الكتابة في القاعدة الأم.`
+      );
+    }
+    return [extDb];
+  }
+
+  return [workspace.complexDb];
+}
+
 export function getDbForComplexTab(
   workspace: ComplexWorkspaceData,
   tabKey: ComplexFeatureTabKey
 ): Firestore {
+  const activeShard = getActiveShardFromPool(workspace, tabKey);
+  if (activeShard) {
+    const dbInst = getFirestoreForConfig(activeShard.config);
+    if (dbInst === primaryDb) {
+      throw new Error(
+        `حماية العزل: تبويب "${COMPLEX_FEATURE_TAB_LABELS[tabKey]}" مرتبط بقواعد خارجية ولا يمكن القراءة أو الكتابة في القاعدة الأم.`
+      );
+    }
+    return dbInst;
+  }
+
   const extConfig = workspace.tabConfigMap?.[tabKey];
   if (extConfig && extConfig.projectId && extConfig.apiKey) {
     const extDb = workspace.tabDbMap?.[tabKey] || getFirestoreForConfig(extConfig);
@@ -1705,10 +2042,178 @@ export function getDbForComplexTab(
   return workspace.complexDb;
 }
 
+function syncWorkspaceTabPointers(
+  workspace: ComplexWorkspaceData,
+  tabKey: ComplexFeatureTabKey,
+  shards: TabDbShard[]
+): void {
+  const normalized = normalizeShardPoolInvariants(shards);
+  workspace.tabPools = {
+    ...(workspace.tabPools || {}),
+    [tabKey]: normalized,
+  };
+  writeLocalShardMirror(workspace.complex.id, tabKey, normalized);
+  const activeShard =
+    normalized.find((s) => s.status === 'active') ||
+    normalized.find((s) => s.status !== 'full') ||
+    normalized[normalized.length - 1] ||
+    null;
+  if (activeShard) {
+    workspace.tabConfigMap[tabKey] = activeShard.config;
+    workspace.tabDbMap[tabKey] = getFirestoreForConfig(activeShard.config);
+  } else {
+    delete workspace.tabConfigMap[tabKey];
+    delete workspace.tabDbMap[tabKey];
+  }
+}
+
+async function resolveWriteShardForTab(
+  workspace: ComplexWorkspaceData,
+  tabKey: ComplexFeatureTabKey,
+  incomingBytes: number
+): Promise<{ db: Firestore; shard: TabDbShard | null }> {
+  const pool = workspace.tabPools?.[tabKey];
+  if (!pool || pool.length === 0) {
+    return { db: getDbForComplexTab(workspace, tabKey), shard: null };
+  }
+
+  const workingPool = pool.map((s) => ({ ...s }));
+  let current =
+    workingPool.find((s) => s.status === 'active') ||
+    workingPool.find((s) => s.status !== 'full') ||
+    null;
+
+  if (!current || current.status === 'full' || current.usedBytes + incomingBytes > current.maxBytes) {
+    if (current) {
+      current.status = 'full';
+    }
+    const candidate = workingPool.find(
+      (s) => s.id !== current?.id && s.status !== 'full' && s.usedBytes + incomingBytes <= s.maxBytes
+    );
+    if (!candidate) {
+      syncWorkspaceTabPointers(workspace, tabKey, workingPool);
+      saveComplexTabPool(workspace.complex.id, tabKey, workingPool).catch(() => {});
+      throw new Error(
+        `امتلأت جميع قواعد البيانات المخصصة لتبويب "${COMPLEX_FEATURE_TAB_LABELS[tabKey]}" (حد 4 جيجابايت لكل قاعدة). يرجى إضافة قاعدة جديدة في السلسلة.`
+      );
+    }
+    candidate.status = 'active';
+    current = candidate;
+    syncWorkspaceTabPointers(workspace, tabKey, workingPool);
+    saveComplexTabPool(workspace.complex.id, tabKey, workingPool).catch(() => {});
+  }
+
+  const writeDb = getFirestoreForConfig(current.config);
+  if (writeDb === primaryDb) {
+    throw new Error(
+      `حماية العزل: لا يمكن الكتابة في القاعدة الأم لتبويب "${COMPLEX_FEATURE_TAB_LABELS[tabKey]}".`
+    );
+  }
+  return { db: writeDb, shard: current };
+}
+
+function recordShardWriteUsage(
+  workspace: ComplexWorkspaceData,
+  tabKey: ComplexFeatureTabKey,
+  shard: TabDbShard | null,
+  addedBytes: number,
+  addedDocs: number
+): void {
+  if (!shard || !workspace.tabPools?.[tabKey]) return;
+  const pool = workspace.tabPools[tabKey]!.map((s) => {
+    if (s.id !== shard.id) return { ...s };
+    const nextUsed = Math.max(0, s.usedBytes + addedBytes);
+    const isNowFull = nextUsed >= s.maxBytes;
+    return {
+      ...s,
+      usedBytes: nextUsed,
+      docsCount: Math.max(0, s.docsCount + addedDocs),
+      status: isNowFull ? ('full' as const) : s.status,
+    };
+  });
+
+  // If the current shard just hit 4 GB after this write, automatically open the next standby shard!
+  const updatedCurrent = pool.find((s) => s.id === shard.id);
+  if (updatedCurrent && updatedCurrent.status === 'full') {
+    const nextStandby = pool.find((s) => s.id !== shard.id && s.status !== 'full');
+    if (nextStandby) {
+      nextStandby.status = 'active';
+    }
+  }
+
+  syncWorkspaceTabPointers(workspace, tabKey, pool);
+  saveComplexTabPool(workspace.complex.id, tabKey, pool).catch(() => {});
+}
+
+async function executeTabWriteWithRollover<T>(
+  workspace: ComplexWorkspaceData,
+  tabKey: ComplexFeatureTabKey,
+  incomingBytes: number,
+  isNewDoc: boolean,
+  writeFn: (targetDb: Firestore, shard: TabDbShard | null) => Promise<T>
+): Promise<T> {
+  const first = await resolveWriteShardForTab(workspace, tabKey, incomingBytes);
+  try {
+    const result = await writeFn(first.db, first.shard);
+    recordShardWriteUsage(workspace, tabKey, first.shard, incomingBytes, isNewDoc ? 1 : 0);
+    return result;
+  } catch (err) {
+    if (first.shard && isQuotaOrFullError(err) && workspace.tabPools?.[tabKey]) {
+      // Mark failing shard full and auto-rollover immediately to next shard in chain
+      const rolledPool = workspace.tabPools[tabKey]!.map((s) =>
+        s.id === first.shard!.id ? { ...s, usedBytes: s.maxBytes, status: 'full' as const } : s
+      );
+      syncWorkspaceTabPointers(workspace, tabKey, rolledPool);
+      const next = await resolveWriteShardForTab(workspace, tabKey, incomingBytes);
+      const retryResult = await writeFn(next.db, next.shard);
+      recordShardWriteUsage(workspace, tabKey, next.shard, incomingBytes, isNewDoc ? 1 : 0);
+      return retryResult;
+    }
+    throw err;
+  }
+}
+
+async function findExistingDocInTabPool(
+  workspace: ComplexWorkspaceData,
+  tabKey: ComplexFeatureTabKey,
+  colName: string,
+  docId: string
+): Promise<{ db: Firestore; shard: TabDbShard | null; exists: boolean }> {
+  const pool = workspace.tabPools?.[tabKey];
+  if (pool && pool.length > 0) {
+    const activeFirst = [...pool.filter((s) => s.status === 'active'), ...pool.filter((s) => s.status !== 'active')];
+    for (const sh of activeFirst) {
+      const candidateDb = getFirestoreForConfig(sh.config);
+      const snap = await getDocFresh(doc(candidateDb, colName, docId)).catch(() => null);
+      if (snap?.exists()) {
+        return { db: candidateDb, shard: sh, exists: true };
+      }
+    }
+    const writeTarget = await resolveWriteShardForTab(workspace, tabKey, 512);
+    return { db: writeTarget.db, shard: writeTarget.shard, exists: false };
+  }
+
+  const singleDb = getDbForComplexTab(workspace, tabKey);
+  const snap = await getDocFresh(doc(singleDb, colName, docId)).catch(() => null);
+  return { db: singleDb, shard: null, exists: Boolean(snap?.exists()) };
+}
+
 export function getDbLabelForComplexTab(
   workspace: ComplexWorkspaceData,
   tabKey: ComplexFeatureTabKey
 ): string {
+  const pool = workspace.tabPools?.[tabKey];
+  if (pool && pool.length > 0) {
+    const active = getActiveShardFromPool(workspace, tabKey);
+    if (pool.length === 1 && active) {
+      return `قاعدة منفصلة (${active.label})`;
+    }
+    const availableCount = pool.filter((s) => s.status !== 'full').length;
+    return active
+      ? `سلسلة من ${pool.length} قواعد (النشطة الآن: ${active.label} · المتاح: ${availableCount})`
+      : `سلسلة من ${pool.length} قواعد (جميعها ممتلئة 4 GB)`;
+  }
+
   const extConfig = workspace.tabConfigMap?.[tabKey];
   if (extConfig && extConfig.projectId) {
     return `قاعدة منفصلة (${getDbDisplayLabel(extConfig)})`;
@@ -1725,15 +2230,21 @@ export async function loadComplexWorkspace(
   const halaqaDbMap: Record<string, Firestore> = {};
   const halaqaConfigMap: Record<string, ExternalFirebaseConfig | null> = {};
 
-  const loadedRoutes = await loadComplexTabRoutes(discovered.id);
+  const tabPools = await loadComplexTabPools(discovered.id);
   const tabDbMap: Partial<Record<ComplexFeatureTabKey, Firestore>> = {};
   const tabConfigMap: Partial<Record<ComplexFeatureTabKey, ExternalFirebaseConfig | null>> = {};
 
-  for (const [k, conf] of Object.entries(loadedRoutes)) {
-    if (conf) {
+  for (const [k, pool] of Object.entries(tabPools)) {
+    if (pool && pool.length > 0) {
       const tabKey = k as ComplexFeatureTabKey;
-      tabConfigMap[tabKey] = conf;
-      tabDbMap[tabKey] = getFirestoreForConfig(conf);
+      const active =
+        pool.find((s) => s.status === 'active') ||
+        pool.find((s) => s.status !== 'full') ||
+        pool[pool.length - 1];
+      if (active) {
+        tabConfigMap[tabKey] = active.config;
+        tabDbMap[tabKey] = getFirestoreForConfig(active.config);
+      }
     }
   }
 
@@ -1766,64 +2277,105 @@ export async function loadComplexWorkspace(
     ...sourcesToRead.filter((t) => t.db !== complexDb),
   ];
 
-  const extMosquesDb = tabDbMap.mosques_halaqat || null;
-  const extMosquesConfig = tabConfigMap.mosques_halaqat || null;
-  const extAccountsDb = tabDbMap.accounts_invites || null;
+  const mosquesShardList = tabPools.mosques_halaqat || [];
+  const accountsShardList = tabPools.accounts_invites || [];
+  const hasIsolatedMosques = mosquesShardList.length > 0 || Boolean(tabDbMap.mosques_halaqat);
+  const hasIsolatedAccounts = accountsShardList.length > 0 || Boolean(tabDbMap.accounts_invites);
 
-  if (extMosquesDb) {
-    try {
-      const [mSnap, hSnap] = await Promise.all([
-        getDocsFresh(query(collection(extMosquesDb, 'mosques'), where('complexId', '==', discovered.id))),
-        getDocsFresh(query(collection(extMosquesDb, 'halaqat'), where('complexId', '==', discovered.id))),
-      ]);
-      mSnap.forEach((d) => {
-        const m = d.data() as MosqueRecord;
-        if (m.active) {
-          mosquesMap.set(m.id, m);
-          mosqueDbMap[m.id] = extMosquesDb;
-          mosqueConfigMap[m.id] = extMosquesConfig;
-        }
-      });
-      hSnap.forEach((d) => {
-        const h = d.data() as HalaqaRecord;
-        if (h.active) {
-          halaqatMap.set(h.id, h);
-          halaqaDbMap[h.id] = extMosquesDb;
-          halaqaConfigMap[h.id] = extMosquesConfig;
-        }
-      });
-    } catch {
-      // Skip unreachable isolated tab DB
+  if (hasIsolatedMosques) {
+    const shardsToRead =
+      mosquesShardList.length > 0
+        ? mosquesShardList
+        : tabDbMap.mosques_halaqat && tabConfigMap.mosques_halaqat
+        ? [
+            {
+              id: 'legacy',
+              label: '',
+              config: tabConfigMap.mosques_halaqat,
+              usedBytes: 0,
+              maxBytes: TAB_SHARD_MAX_BYTES,
+              docsCount: 0,
+              status: 'active' as const,
+              createdAtMs: 0,
+            },
+          ]
+        : [];
+    for (const sh of shardsToRead) {
+      const sDb = getFirestoreForConfig(sh.config);
+      try {
+        const [mSnap, hSnap] = await Promise.all([
+          getDocsFresh(query(collection(sDb, 'mosques'), where('complexId', '==', discovered.id))),
+          getDocsFresh(query(collection(sDb, 'halaqat'), where('complexId', '==', discovered.id))),
+        ]);
+        mSnap.forEach((d) => {
+          const m = d.data() as MosqueRecord;
+          if (m.active) {
+            mosquesMap.set(m.id, m);
+            mosqueDbMap[m.id] = sDb;
+            mosqueConfigMap[m.id] = sh.config;
+          }
+        });
+        hSnap.forEach((d) => {
+          const h = d.data() as HalaqaRecord;
+          if (h.active) {
+            halaqatMap.set(h.id, h);
+            halaqaDbMap[h.id] = sDb;
+            halaqaConfigMap[h.id] = sh.config;
+          }
+        });
+      } catch {
+        // Skip unreachable isolated tab shard
+      }
     }
   }
 
-  if (extAccountsDb) {
-    try {
-      const [aSnap, iSnap, qSnap] = await Promise.all([
-        getDocsFresh(query(collection(extAccountsDb, 'accounts'), where('complexId', '==', discovered.id))),
-        getDocsFresh(query(collection(extAccountsDb, 'inviteLinks'), where('complexId', '==', discovered.id))),
-        getDocsFresh(query(collection(extAccountsDb, 'quickLinks'), where('complexId', '==', discovered.id))),
-      ]);
-      aSnap.forEach((d) => {
-        const a = d.data() as AccountRecord;
-        accountsMap.set(a.id, a);
-      });
-      iSnap.forEach((d) => {
-        const inv = d.data() as InviteLinkRecord;
-        inviteMap.set(inv.token, inv);
-      });
-      qSnap.forEach((d) => {
-        const ql = d.data() as QuickLinkRecord;
-        quickMap.set(ql.token, ql);
-      });
-    } catch {
-      // Skip unreachable isolated tab DB
+  if (hasIsolatedAccounts) {
+    const shardsToRead =
+      accountsShardList.length > 0
+        ? accountsShardList
+        : tabConfigMap.accounts_invites
+        ? [
+            {
+              id: 'legacy',
+              label: '',
+              config: tabConfigMap.accounts_invites,
+              usedBytes: 0,
+              maxBytes: TAB_SHARD_MAX_BYTES,
+              docsCount: 0,
+              status: 'active' as const,
+              createdAtMs: 0,
+            },
+          ]
+        : [];
+    for (const sh of shardsToRead) {
+      const sDb = getFirestoreForConfig(sh.config);
+      try {
+        const [aSnap, iSnap, qSnap] = await Promise.all([
+          getDocsFresh(query(collection(sDb, 'accounts'), where('complexId', '==', discovered.id))),
+          getDocsFresh(query(collection(sDb, 'inviteLinks'), where('complexId', '==', discovered.id))),
+          getDocsFresh(query(collection(sDb, 'quickLinks'), where('complexId', '==', discovered.id))),
+        ]);
+        aSnap.forEach((d) => {
+          const a = d.data() as AccountRecord;
+          accountsMap.set(a.id, a);
+        });
+        iSnap.forEach((d) => {
+          const inv = d.data() as InviteLinkRecord;
+          inviteMap.set(inv.token, inv);
+        });
+        qSnap.forEach((d) => {
+          const ql = d.data() as QuickLinkRecord;
+          quickMap.set(ql.token, ql);
+        });
+      } catch {
+        // Skip unreachable isolated tab shard
+      }
     }
   }
 
   for (const source of orderedSources) {
     try {
-      if (!extMosquesDb) {
+      if (!hasIsolatedMosques) {
         const mSnap = await getDocs(
           query(collection(source.db, 'mosques'), where('complexId', '==', discovered.id))
         );
@@ -1849,7 +2401,7 @@ export async function loadComplexWorkspace(
         });
       }
 
-      if (!extAccountsDb) {
+      if (!hasIsolatedAccounts) {
         const aSnap = await getDocs(
           query(collection(source.db, 'accounts'), where('complexId', '==', discovered.id))
         );
@@ -1893,6 +2445,7 @@ export async function loadComplexWorkspace(
     halaqaConfigMap,
     tabDbMap,
     tabConfigMap,
+    tabPools,
     complexDb,
   };
 }
@@ -1902,7 +2455,10 @@ function resolveTargetDbForEntity(
   mosqueId: string,
   halaqaIds?: string[]
 ): Firestore {
-  if (workspace.tabConfigMap?.accounts_invites) {
+  if (
+    workspace.tabPools?.accounts_invites?.length ||
+    workspace.tabConfigMap?.accounts_invites
+  ) {
     return getDbForComplexTab(workspace, 'accounts_invites');
   }
   if (halaqaIds && halaqaIds.length === 1 && workspace.halaqaDbMap[halaqaIds[0]]) {
@@ -2190,25 +2746,41 @@ export async function addOrRenameMosqueInWorkspace(params: {
   name: string;
 }): Promise<void> {
   const mosqueId = params.mosqueId || generateValidId('msq');
-  const targetDb = params.workspace.tabConfigMap?.mosques_halaqat
+  const hasMosquesPool = Boolean(
+    params.workspace.tabPools?.mosques_halaqat?.length ||
+      params.workspace.tabConfigMap?.mosques_halaqat
+  );
+  const targetDb = hasMosquesPool
     ? getDbForComplexTab(params.workspace, 'mosques_halaqat')
     : params.workspace.mosqueDbMap[mosqueId] || params.workspace.complexDb;
 
   if (params.mosqueId) {
-    await updateDoc(doc(targetDb, 'mosques', mosqueId), {
+    const existingDb = params.workspace.mosqueDbMap[mosqueId] || targetDb;
+    await updateDoc(doc(existingDb, 'mosques', mosqueId), {
       name: params.name.trim().slice(0, 120),
       updatedAt: serverTimestamp(),
     });
   } else {
-    await setDoc(doc(targetDb, 'mosques', mosqueId), {
+    const payload = {
       id: mosqueId,
       complexId: params.workspace.discovered.id,
       name: params.name.trim().slice(0, 120),
       usesExternalDb: false,
       active: true,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
+    };
+    await executeTabWriteWithRollover(
+      params.workspace,
+      'mosques_halaqat',
+      estimateRecordBytes(payload),
+      true,
+      async (writeDb) => {
+        await setDoc(doc(writeDb, 'mosques', mosqueId), {
+          ...payload,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+    );
   }
 }
 
@@ -2219,30 +2791,61 @@ export async function addOrRenameHalaqaInWorkspace(params: {
   name: string;
 }): Promise<void> {
   const halaqaId = params.halaqaId || generateValidId('hlq');
-  const targetDb = params.workspace.tabConfigMap?.mosques_halaqat
-    ? getDbForComplexTab(params.workspace, 'mosques_halaqat')
-    : params.halaqaId
+  const hasMosquesPool = Boolean(
+    params.workspace.tabPools?.mosques_halaqat?.length ||
+      params.workspace.tabConfigMap?.mosques_halaqat
+  );
+  const fallbackDb = params.halaqaId
     ? params.workspace.halaqaDbMap[params.halaqaId] ||
       params.workspace.mosqueDbMap[params.mosqueId] ||
       params.workspace.complexDb
     : params.workspace.mosqueDbMap[params.mosqueId] || params.workspace.complexDb;
 
   if (params.halaqaId) {
-    await updateDoc(doc(targetDb, 'halaqat', halaqaId), {
+    let editDb = fallbackDb;
+    if (hasMosquesPool) {
+      const existing = await findExistingDocInTabPool(
+        params.workspace,
+        'mosques_halaqat',
+        'halaqat',
+        halaqaId
+      );
+      if (existing.exists) editDb = existing.db;
+    }
+    await updateDoc(doc(editDb, 'halaqat', halaqaId), {
       name: params.name.trim().slice(0, 120),
       mosqueId: params.mosqueId,
       updatedAt: serverTimestamp(),
     });
   } else {
-    await setDoc(doc(targetDb, 'halaqat', halaqaId), {
+    const payload = {
       id: halaqaId,
       complexId: params.workspace.discovered.id,
       mosqueId: params.mosqueId,
       name: params.name.trim().slice(0, 120),
       active: true,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
+    };
+    if (hasMosquesPool) {
+      await executeTabWriteWithRollover(
+        params.workspace,
+        'mosques_halaqat',
+        estimateRecordBytes(payload),
+        true,
+        async (writeDb) => {
+          await setDoc(doc(writeDb, 'halaqat', halaqaId), {
+            ...payload,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
+      );
+    } else {
+      await setDoc(doc(fallbackDb, 'halaqat', halaqaId), {
+        ...payload,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
   }
 }
 
@@ -3143,18 +3746,20 @@ export async function listBooksInComplex(
   workspace: ComplexWorkspaceData
 ): Promise<BookRecord[]> {
   try {
-    const libraryDb = getDbForComplexTab(workspace, 'library');
-    const snap = await getDocsFresh(
-      query(
-        collection(libraryDb, 'books'),
-        where('complexId', '==', workspace.complex.id)
-      )
+    const readDbs = getReadDbsForComplexTab(workspace, 'library');
+    const byId = new Map<string, BookRecord>();
+    await Promise.all(
+      readDbs.map(async (libDb) => {
+        const snap = await getDocsFresh(
+          query(collection(libDb, 'books'), where('complexId', '==', workspace.complex.id))
+        ).catch(() => null);
+        snap?.forEach((d) => {
+          const item = d.data() as BookRecord;
+          if (item && item.id) byId.set(item.id, item);
+        });
+      })
     );
-    const items: BookRecord[] = [];
-    snap.forEach((d) => {
-      items.push(d.data() as BookRecord);
-    });
-    return items.sort((a, b) => {
+    return Array.from(byId.values()).sort((a, b) => {
       const aSec = (a.updatedAt as { seconds?: number } | undefined)?.seconds || 0;
       const bSec = (b.updatedAt as { seconds?: number } | undefined)?.seconds || 0;
       return bSec - aSec;
@@ -3168,31 +3773,34 @@ export async function loadBookPages(
   workspace: ComplexWorkspaceData,
   bookId: string
 ): Promise<BookPageRecord[]> {
-  const libraryDb = getDbForComplexTab(workspace, 'library');
-  const snap = await getDocsFresh(
-    query(collection(libraryDb, 'bookPages'), where('bookId', '==', bookId))
+  const readDbs = getReadDbsForComplexTab(workspace, 'library');
+  const byId = new Map<string, BookPageRecord>();
+  await Promise.all(
+    readDbs.map(async (libDb) => {
+      const snap = await getDocsFresh(
+        query(collection(libDb, 'bookPages'), where('bookId', '==', bookId))
+      ).catch(() => null);
+      snap?.forEach((d) => {
+        const p = d.data() as BookPageRecord;
+        if (p && p.id) byId.set(p.id, p);
+      });
+    })
   );
-  const pages: BookPageRecord[] = [];
-  snap.forEach((d) => {
-    pages.push(d.data() as BookPageRecord);
-  });
-  return pages.sort((a, b) => a.pageNumber - b.pageNumber);
+  return Array.from(byId.values()).sort((a, b) => a.pageNumber - b.pageNumber);
 }
 
 export async function upsertBookRecord(
   workspace: ComplexWorkspaceData,
   book: BookRecord
 ): Promise<void> {
-  const libraryDb = getDbForComplexTab(workspace, 'library');
-  const targetRef = doc(libraryDb, 'books', book.id);
-  const existing = await getDocFresh(targetRef).catch(() => null);
   const title = book.title.trim().slice(0, 160) || 'كتاب بدون عنوان';
   const totalPages = Math.max(1, Math.min(2000, Math.round(book.totalPages)));
   const uploadedPages = Math.max(0, Math.min(totalPages, Math.round(book.uploadedPages)));
   const recognizedPages = Math.max(0, Math.min(totalPages, Math.round(book.recognizedPages)));
 
-  if (existing?.exists()) {
-    await updateDoc(targetRef, {
+  const located = await findExistingDocInTabPool(workspace, 'library', 'books', book.id);
+  if (located.exists) {
+    await updateDoc(doc(located.db, 'books', book.id), {
       title,
       totalPages,
       uploadedPages,
@@ -3200,38 +3808,44 @@ export async function upsertBookRecord(
       status: book.status,
       updatedAt: serverTimestamp(),
     });
-  } else {
-    await setDoc(targetRef, {
-      id: book.id,
-      complexId: workspace.complex.id,
-      title,
-      fileName: book.fileName.trim().slice(0, 200) || 'book.pdf',
-      fileType: book.fileType,
-      totalPages,
-      uploadedPages,
-      recognizedPages,
-      status: book.status,
-      createdBy: book.createdBy || auth.currentUser?.uid || 'supervisor',
+    return;
+  }
+
+  const payload = {
+    id: book.id,
+    complexId: workspace.complex.id,
+    title,
+    fileName: book.fileName.trim().slice(0, 200) || 'book.pdf',
+    fileType: book.fileType,
+    totalPages,
+    uploadedPages,
+    recognizedPages,
+    status: book.status,
+    createdBy: book.createdBy || auth.currentUser?.uid || 'supervisor',
+  };
+  const byteSize = estimateRecordBytes(payload);
+
+  await executeTabWriteWithRollover(workspace, 'library', byteSize, true, async (targetDb) => {
+    await setDoc(doc(targetDb, 'books', book.id), {
+      ...payload,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
-  }
+  });
 }
 
 export async function upsertBookPageRecord(
   workspace: ComplexWorkspaceData,
   page: BookPageRecord
 ): Promise<void> {
-  const libraryDb = getDbForComplexTab(workspace, 'library');
-  const targetRef = doc(libraryDb, 'bookPages', page.id);
-  const existing = await getDocFresh(targetRef).catch(() => null);
   const cleanSegments = sanitizeBookSegments(page.segments);
   const cleanFullText = String(page.fullText || '').slice(0, 25000);
   const cleanWidth = Math.max(1, Math.min(10000, Math.round(page.width)));
   const cleanHeight = Math.max(1, Math.min(10000, Math.round(page.height)));
 
-  if (existing?.exists()) {
-    await updateDoc(targetRef, {
+  const located = await findExistingDocInTabPool(workspace, 'library', 'bookPages', page.id);
+  if (located.exists) {
+    await updateDoc(doc(located.db, 'bookPages', page.id), {
       imageDataUrl: page.imageDataUrl,
       width: cleanWidth,
       height: cleanHeight,
@@ -3240,21 +3854,29 @@ export async function upsertBookPageRecord(
       segments: cleanSegments,
       updatedAt: serverTimestamp(),
     });
-  } else {
-    await setDoc(targetRef, {
-      id: page.id,
-      bookId: page.bookId,
-      complexId: workspace.complex.id,
-      pageNumber: Math.max(1, Math.min(2000, Math.round(page.pageNumber))),
-      imageDataUrl: page.imageDataUrl,
-      width: cleanWidth,
-      height: cleanHeight,
-      recognized: Boolean(page.recognized),
-      fullText: cleanFullText,
-      segments: cleanSegments,
-      updatedAt: serverTimestamp(),
-    });
+    return;
   }
+
+  const payload = {
+    id: page.id,
+    bookId: page.bookId,
+    complexId: workspace.complex.id,
+    pageNumber: Math.max(1, Math.min(2000, Math.round(page.pageNumber))),
+    imageDataUrl: page.imageDataUrl,
+    width: cleanWidth,
+    height: cleanHeight,
+    recognized: Boolean(page.recognized),
+    fullText: cleanFullText,
+    segments: cleanSegments,
+  };
+  const byteSize = estimateRecordBytes(payload);
+
+  await executeTabWriteWithRollover(workspace, 'library', byteSize, true, async (targetDb) => {
+    await setDoc(doc(targetDb, 'bookPages', page.id), {
+      ...payload,
+      updatedAt: serverTimestamp(),
+    });
+  });
 }
 
 export async function renameBookInWorkspace(
@@ -3266,8 +3888,8 @@ export async function renameBookInWorkspace(
   if (!clean) {
     throw new Error('يرجى إدخال عنوان صالح للكتاب.');
   }
-  const libraryDb = getDbForComplexTab(workspace, 'library');
-  await updateDoc(doc(libraryDb, 'books', bookId), {
+  const located = await findExistingDocInTabPool(workspace, 'library', 'books', bookId);
+  await updateDoc(doc(located.db, 'books', bookId), {
     title: clean,
     updatedAt: serverTimestamp(),
   });
@@ -3277,16 +3899,164 @@ export async function deleteBookFromWorkspace(
   workspace: ComplexWorkspaceData,
   bookId: string
 ): Promise<void> {
-  const libraryDb = getDbForComplexTab(workspace, 'library');
-  const pagesSnap = await getDocs(
-    query(collection(libraryDb, 'bookPages'), where('bookId', '==', bookId))
-  ).catch(() => null);
-  if (pagesSnap) {
-    for (const p of pagesSnap.docs) {
-      await deleteDoc(doc(libraryDb, 'bookPages', p.id)).catch(() => {});
+  const readDbs = getReadDbsForComplexTab(workspace, 'library');
+  for (const libDb of readDbs) {
+    const pagesSnap = await getDocs(
+      query(collection(libDb, 'bookPages'), where('bookId', '==', bookId))
+    ).catch(() => null);
+    if (pagesSnap) {
+      for (const p of pagesSnap.docs) {
+        await deleteDoc(doc(libDb, 'bookPages', p.id)).catch(() => {});
+      }
     }
+    await deleteDoc(doc(libDb, 'books', bookId)).catch(() => {});
   }
-  await deleteDoc(doc(libraryDb, 'books', bookId));
+}
+
+// ============================================================================
+// BOOK WORD AUDIO CACHE IN ACTIVE LIBRARY TAB SHARD POOL
+// ============================================================================
+
+function fnv1aHex(input: string, seedOffset: number): string {
+  let hash = 0x811c9dc5 ^ seedOffset;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+export function buildWordAudioDocId(
+  complexId: string,
+  mode: 'noor_albayan' | 'normal',
+  wordText: string
+): string {
+  const normalized = wordText.trim().replace(/\s+/g, ' ');
+  const cleanComplex = complexId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24) || 'cpx';
+  const modeTag = mode === 'noor_albayan' ? 'nb' : 'nm';
+  const h1 = fnv1aHex(normalized, 0);
+  const h2 = fnv1aHex(normalized.split('').reverse().join(''), 0x9e3779b9);
+  return `wa_${cleanComplex}_${modeTag}_${h1}${h2}`.slice(0, 128);
+}
+
+/**
+ * Searches ALL databases assigned to the `library` tab (active + older full shards)
+ * so previously saved word/tahajji audio is served immediately without regenerating.
+ */
+export async function lookupWordAudioAcrossLibrary(
+  workspace: ComplexWorkspaceData,
+  mode: 'noor_albayan' | 'normal',
+  wordText: string
+): Promise<BookWordAudioRecord | null> {
+  const cleanText = wordText.trim().replace(/\s+/g, ' ');
+  if (!cleanText) return null;
+  const docId = buildWordAudioDocId(workspace.complex.id, mode, cleanText);
+
+  try {
+    const readDbs = getReadDbsForComplexTab(workspace, 'library');
+    const results = await Promise.all(
+      readDbs.map(async (libDb) => {
+        try {
+          const snap = await getDoc(doc(libDb, 'wordAudio', docId));
+          if (!snap.exists()) return null;
+          return snap.data() as BookWordAudioRecord;
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    // Prefer record containing actual WAV audio bytes, fallback to breakdown-only record
+    const withAudio = results.find(
+      (r) => r && r.audioBase64 && r.audioBase64.length > 120
+    );
+    if (withAudio) return withAudio;
+    return results.find((r) => Boolean(r)) || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persists a newly generated word/tahajji pronunciation + audio WAV into the
+ * currently active `library` database shard (auto-rolling over at 4 GB).
+ */
+export async function saveWordAudioToLibraryDb(params: {
+  workspace: ComplexWorkspaceData;
+  mode: 'noor_albayan' | 'normal';
+  wordText: string;
+  diacritizedWord: string;
+  wasAutoDiacritized: boolean;
+  fullReading: string;
+  steps: { part: string; ruleLabel: string; reading: string }[];
+  audioBase64: string;
+  mimeType: string;
+  createdBy?: string;
+}): Promise<BookWordAudioRecord | null> {
+  const { workspace, mode, wordText, diacritizedWord, wasAutoDiacritized, fullReading, steps } =
+    params;
+  const cleanText = wordText.trim().replace(/\s+/g, ' ').slice(0, 1200);
+  if (!cleanText) return null;
+
+  const docId = buildWordAudioDocId(workspace.complex.id, mode, cleanText);
+  const shrunk = shrinkWavBase64ForDb(params.audioBase64 || '', params.mimeType || 'audio/wav');
+  const cleanSteps = (Array.isArray(steps) ? steps : []).slice(0, 60).map((s) => ({
+    part: String(s.part || '').slice(0, 80),
+    ruleLabel: String(s.ruleLabel || '').slice(0, 140),
+    reading: String(s.reading || '').slice(0, 180),
+  }));
+
+  const payloadBase = {
+    id: docId,
+    complexId: workspace.complex.id,
+    mode,
+    wordText: cleanText,
+    diacritizedWord: String(diacritizedWord || cleanText).slice(0, 1200),
+    wasAutoDiacritized: Boolean(wasAutoDiacritized),
+    fullReading: String(fullReading || cleanText).slice(0, 2500),
+    steps: cleanSteps,
+    audioBase64: shrunk.audioBase64,
+    mimeType: shrunk.mimeType || 'audio/wav',
+    createdBy: (auth.currentUser?.uid || params.createdBy || 'reader').slice(0, 128),
+  };
+
+  const byteSize = estimateRecordBytes(payloadBase);
+  const record: BookWordAudioRecord = {
+    ...payloadBase,
+    byteSize,
+  };
+
+  try {
+    const existingLoc = await findExistingDocInTabPool(workspace, 'library', 'wordAudio', docId);
+    if (existingLoc.exists) {
+      // Only update if we now have richer WAV audio or better diacritics
+      if (shrunk.audioBase64.length > 120) {
+        await updateDoc(doc(existingLoc.db, 'wordAudio', docId), {
+          diacritizedWord: record.diacritizedWord,
+          wasAutoDiacritized: record.wasAutoDiacritized,
+          fullReading: record.fullReading,
+          steps: record.steps,
+          audioBase64: record.audioBase64,
+          mimeType: record.mimeType,
+          byteSize: record.byteSize,
+          updatedAt: serverTimestamp(),
+        }).catch(() => {});
+      }
+      return record;
+    }
+
+    await executeTabWriteWithRollover(workspace, 'library', byteSize, true, async (targetDb) => {
+      await setDoc(doc(targetDb, 'wordAudio', docId), {
+        ...record,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    });
+    return record;
+  } catch {
+    // Non-fatal: playback still succeeded via local cache/speech even if user lacks DB write permissions
+    return null;
+  }
 }
 
 // ============================================================================
@@ -3314,11 +4084,13 @@ export async function loadAttendanceRecord(
   halaqaId: string,
   dateKey: string
 ): Promise<AttendanceRecord | null> {
-  const db = getDbForComplexTab(workspace, 'attendance');
+  const readDbs = getReadDbsForComplexTab(workspace, 'attendance');
   const docId = buildAttendanceDocId(halaqaId, dateKey);
-  const snap = await getDocFresh(doc(db, 'attendance', docId)).catch(() => null);
-  if (!snap?.exists()) return null;
-  return snap.data() as AttendanceRecord;
+  for (const db of readDbs) {
+    const snap = await getDocFresh(doc(db, 'attendance', docId)).catch(() => null);
+    if (snap?.exists()) return snap.data() as AttendanceRecord;
+  }
+  return null;
 }
 
 export async function listAttendanceHistory(
@@ -3326,20 +4098,24 @@ export async function listAttendanceHistory(
   options?: { halaqaId?: string; mosqueIds?: string[] }
 ): Promise<AttendanceRecord[]> {
   try {
-    const db = getDbForComplexTab(workspace, 'attendance');
-    const snap = await getDocsFresh(
-      query(collection(db, 'attendance'), where('complexId', '==', workspace.complex.id))
-    );
+    const readDbs = getReadDbsForComplexTab(workspace, 'attendance');
     const allowedMosques =
       options?.mosqueIds && options.mosqueIds.length > 0 ? new Set(options.mosqueIds) : null;
-    const records: AttendanceRecord[] = [];
-    snap.forEach((d) => {
-      const rec = d.data() as AttendanceRecord;
-      if (options?.halaqaId && rec.halaqaId !== options.halaqaId) return;
-      if (allowedMosques && !allowedMosques.has(rec.mosqueId)) return;
-      records.push(rec);
-    });
-    return records.sort((a, b) => b.dateKey.localeCompare(a.dateKey));
+    const byId = new Map<string, AttendanceRecord>();
+    await Promise.all(
+      readDbs.map(async (db) => {
+        const snap = await getDocsFresh(
+          query(collection(db, 'attendance'), where('complexId', '==', workspace.complex.id))
+        ).catch(() => null);
+        snap?.forEach((d) => {
+          const rec = d.data() as AttendanceRecord;
+          if (options?.halaqaId && rec.halaqaId !== options.halaqaId) return;
+          if (allowedMosques && !allowedMosques.has(rec.mosqueId)) return;
+          byId.set(rec.id, rec);
+        });
+      })
+    );
+    return Array.from(byId.values()).sort((a, b) => b.dateKey.localeCompare(a.dateKey));
   } catch {
     return [];
   }
@@ -3362,23 +4138,21 @@ export async function saveAttendanceRecord(params: {
     throw new Error('صيغة التاريخ غير صالحة.');
   }
 
-  const db = getDbForComplexTab(workspace, 'attendance');
   const id = buildAttendanceDocId(halaqaId, dateKey);
-  const targetRef = doc(db, 'attendance', id);
-  const existing = await getDocFresh(targetRef).catch(() => null);
   const cleanEntries = sanitizeAttendanceEntries(entries);
   const cleanRecorder = (recordedBy || auth.currentUser?.uid || 'supervisor').slice(0, 128);
   const cleanRecorderName = (recordedByName || 'المشرف').trim().slice(0, 120) || 'المشرف';
 
-  if (existing?.exists()) {
-    await updateDoc(targetRef, {
+  const located = await findExistingDocInTabPool(workspace, 'attendance', 'attendance', id);
+  if (located.exists) {
+    await updateDoc(doc(located.db, 'attendance', id), {
       entries: cleanEntries,
       recordedBy: cleanRecorder,
       recordedByName: cleanRecorderName,
       updatedAt: serverTimestamp(),
     });
   } else {
-    await setDoc(targetRef, {
+    const payload = {
       id,
       complexId: workspace.complex.id,
       mosqueId,
@@ -3387,8 +4161,14 @@ export async function saveAttendanceRecord(params: {
       entries: cleanEntries,
       recordedBy: cleanRecorder,
       recordedByName: cleanRecorderName,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
+    };
+    const byteSize = estimateRecordBytes(payload);
+    await executeTabWriteWithRollover(workspace, 'attendance', byteSize, true, async (targetDb) => {
+      await setDoc(doc(targetDb, 'attendance', id), {
+        ...payload,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
     });
   }
 
@@ -3412,18 +4192,22 @@ export async function listCurriculaInComplex(
   workspace: ComplexWorkspaceData
 ): Promise<CurriculumRecord[]> {
   try {
-    const db = getDbForComplexTab(workspace, 'curricula');
-    const snap = await getDocsFresh(
-      query(collection(db, 'curricula'), where('complexId', '==', workspace.complex.id))
+    const readDbs = getReadDbsForComplexTab(workspace, 'curricula');
+    const byId = new Map<string, CurriculumRecord>();
+    await Promise.all(
+      readDbs.map(async (db) => {
+        const snap = await getDocsFresh(
+          query(collection(db, 'curricula'), where('complexId', '==', workspace.complex.id))
+        ).catch(() => null);
+        snap?.forEach((d) => {
+          const rec = d.data() as CurriculumRecord;
+          if (rec.active !== false) {
+            byId.set(rec.id, rec);
+          }
+        });
+      })
     );
-    const list: CurriculumRecord[] = [];
-    snap.forEach((d) => {
-      const rec = d.data() as CurriculumRecord;
-      if (rec.active !== false) {
-        list.push(rec);
-      }
-    });
-    return list.sort((a, b) => {
+    return Array.from(byId.values()).sort((a, b) => {
       const aSec = (a.updatedAt as { seconds?: number } | undefined)?.seconds || 0;
       const bSec = (b.updatedAt as { seconds?: number } | undefined)?.seconds || 0;
       return bSec - aSec;
@@ -3462,16 +4246,17 @@ export async function saveCurriculumRecord(params: {
     throw new Error('يرجى تحديد أيام الأسبوع الخاصة بهذا المقرر.');
   }
 
-  const db = getDbForComplexTab(workspace, 'curricula');
   const recordId = id || generateValidId('cur');
-  const targetRef = doc(db, 'curricula', recordId);
-  const existing = id ? await getDocFresh(targetRef).catch(() => null) : null;
   const cleanTitle = bookTitle.trim().slice(0, 160);
   const cleanNote = (scheduleNote || '').trim().slice(0, 240);
   const cleanCreator = (createdBy || auth.currentUser?.uid || 'supervisor').slice(0, 128);
 
-  if (existing?.exists()) {
-    await updateDoc(targetRef, {
+  const located = id
+    ? await findExistingDocInTabPool(workspace, 'curricula', 'curricula', recordId)
+    : { exists: false, db: workspace.complexDb, shard: null };
+
+  if (located.exists) {
+    await updateDoc(doc(located.db, 'curricula', recordId), {
       bookId,
       bookTitle: cleanTitle,
       halaqaIds: cleanHalaqaIds,
@@ -3482,7 +4267,7 @@ export async function saveCurriculumRecord(params: {
       updatedAt: serverTimestamp(),
     });
   } else {
-    await setDoc(targetRef, {
+    const payload = {
       id: recordId,
       complexId: workspace.complex.id,
       bookId,
@@ -3493,8 +4278,14 @@ export async function saveCurriculumRecord(params: {
       scheduleNote: cleanNote,
       active: true,
       createdBy: cleanCreator,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
+    };
+    const byteSize = estimateRecordBytes(payload);
+    await executeTabWriteWithRollover(workspace, 'curricula', byteSize, true, async (targetDb) => {
+      await setDoc(doc(targetDb, 'curricula', recordId), {
+        ...payload,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
     });
   }
 
@@ -3516,8 +4307,8 @@ export async function deleteCurriculumRecord(
   workspace: ComplexWorkspaceData,
   curriculumId: string
 ): Promise<void> {
-  const db = getDbForComplexTab(workspace, 'curricula');
-  await deleteDoc(doc(db, 'curricula', curriculumId));
+  const located = await findExistingDocInTabPool(workspace, 'curricula', 'curricula', curriculumId);
+  await deleteDoc(doc(located.db, 'curricula', curriculumId));
 }
 
 // ============================================================================
@@ -3536,15 +4327,45 @@ async function copyDocWithTimestamp(
   await upsertTransferredDoc(destDb, colName, docId, payload);
 }
 
+async function measureTabUsageOnDb(
+  db: Firestore,
+  complexId: string,
+  tabKey: ComplexFeatureTabKey
+): Promise<{ usedBytes: number; docsCount: number }> {
+  let usedBytes = 0;
+  let docsCount = 0;
+  const colMap: Record<ComplexFeatureTabKey, string[]> = {
+    attendance: ['attendance'],
+    curricula: ['curricula'],
+    library: ['books', 'bookPages', 'wordAudio'],
+    mosques_halaqat: ['mosques', 'halaqat'],
+    accounts_invites: ['accounts', 'inviteLinks', 'quickLinks'],
+  };
+
+  for (const colName of colMap[tabKey]) {
+    const snap = await getDocsFresh(
+      query(collection(db, colName), where('complexId', '==', complexId))
+    ).catch(() => null);
+    if (!snap) continue;
+    snap.forEach((d) => {
+      docsCount++;
+      usedBytes += estimateRecordBytes(d.data());
+    });
+  }
+  return { usedBytes, docsCount };
+}
+
 async function migrateSingleTabRecords(params: {
   complexId: string;
   tabKey: ComplexFeatureTabKey;
   sourceDbs: Firestore[];
   destDb: Firestore;
-}): Promise<number> {
-  const { complexId, tabKey, sourceDbs, destDb } = params;
+  onProgress?: (msg: string) => void;
+}): Promise<{ movedCount: number; movedBytes: number }> {
+  const { complexId, tabKey, sourceDbs, destDb, onProgress } = params;
   const uniqueSources = Array.from(new Set(sourceDbs));
-  let migratedCount = 0;
+  let movedCount = 0;
+  let movedBytes = 0;
 
   if (tabKey === 'attendance') {
     for (const sDb of uniqueSources) {
@@ -3554,11 +4375,12 @@ async function migrateSingleTabRecords(params: {
       if (!snap) continue;
       for (const d of snap.docs) {
         const data = d.data() as Record<string, unknown>;
+        movedBytes += estimateRecordBytes(data);
         if (sDb !== destDb) {
           await copyDocWithTimestamp(destDb, 'attendance', d.id, data);
           await deleteDoc(doc(sDb, 'attendance', d.id)).catch(() => {});
         }
-        migratedCount++;
+        movedCount++;
       }
     }
     if (destDb !== primaryDb) {
@@ -3571,7 +4393,7 @@ async function migrateSingleTabRecords(params: {
         }
       }
     }
-    return migratedCount;
+    return { movedCount, movedBytes };
   }
 
   if (tabKey === 'curricula') {
@@ -3582,11 +4404,12 @@ async function migrateSingleTabRecords(params: {
       if (!snap) continue;
       for (const d of snap.docs) {
         const data = d.data() as Record<string, unknown>;
+        movedBytes += estimateRecordBytes(data);
         if (sDb !== destDb) {
           await copyDocWithTimestamp(destDb, 'curricula', d.id, data);
           await deleteDoc(doc(sDb, 'curricula', d.id)).catch(() => {});
         }
-        migratedCount++;
+        movedCount++;
       }
     }
     if (destDb !== primaryDb) {
@@ -3599,31 +4422,35 @@ async function migrateSingleTabRecords(params: {
         }
       }
     }
-    return migratedCount;
+    return { movedCount, movedBytes };
   }
 
   if (tabKey === 'library') {
     for (const sDb of uniqueSources) {
+      onProgress?.('جاري نقل فهارس الكتب...');
       const booksSnap = await getDocsFresh(
         query(collection(sDb, 'books'), where('complexId', '==', complexId))
       ).catch(() => null);
       if (booksSnap) {
         for (const d of booksSnap.docs) {
           const data = d.data() as Record<string, unknown>;
+          movedBytes += estimateRecordBytes(data);
           if (sDb !== destDb) {
             await copyDocWithTimestamp(destDb, 'books', d.id, data);
             await deleteDoc(doc(sDb, 'books', d.id)).catch(() => {});
           }
-          migratedCount++;
+          movedCount++;
         }
       }
 
+      onProgress?.('جاري نقل صفحات الكتب المصورة...');
       const pagesSnap = await getDocsFresh(
         query(collection(sDb, 'bookPages'), where('complexId', '==', complexId))
       ).catch(() => null);
       if (pagesSnap) {
         for (const d of pagesSnap.docs) {
           const data = d.data() as Record<string, unknown>;
+          movedBytes += estimateRecordBytes(data);
           if (sDb !== destDb) {
             await setDoc(doc(destDb, 'bookPages', d.id), {
               ...data,
@@ -3631,12 +4458,28 @@ async function migrateSingleTabRecords(params: {
             });
             await deleteDoc(doc(sDb, 'bookPages', d.id)).catch(() => {});
           }
-          migratedCount++;
+          movedCount++;
+        }
+      }
+
+      onProgress?.('جاري نقل مقاطع الصوت والتهجي المحفوظة...');
+      const audioSnap = await getDocsFresh(
+        query(collection(sDb, 'wordAudio'), where('complexId', '==', complexId))
+      ).catch(() => null);
+      if (audioSnap) {
+        for (const d of audioSnap.docs) {
+          const data = d.data() as Record<string, unknown>;
+          movedBytes += estimateRecordBytes(data);
+          if (sDb !== destDb) {
+            await copyDocWithTimestamp(destDb, 'wordAudio', d.id, data);
+            await deleteDoc(doc(sDb, 'wordAudio', d.id)).catch(() => {});
+          }
+          movedCount++;
         }
       }
     }
     if (destDb !== primaryDb) {
-      for (const colName of ['books', 'bookPages']) {
+      for (const colName of ['books', 'bookPages', 'wordAudio']) {
         const pSnap = await getDocs(
           query(collection(primaryDb, colName), where('complexId', '==', complexId))
         ).catch(() => null);
@@ -3647,7 +4490,7 @@ async function migrateSingleTabRecords(params: {
         }
       }
     }
-    return migratedCount;
+    return { movedCount, movedBytes };
   }
 
   if (tabKey === 'mosques_halaqat') {
@@ -3659,11 +4502,12 @@ async function migrateSingleTabRecords(params: {
         if (!snap) continue;
         for (const d of snap.docs) {
           const data = d.data() as Record<string, unknown>;
+          movedBytes += estimateRecordBytes(data);
           if (sDb !== destDb) {
             await copyDocWithTimestamp(destDb, colName, d.id, data);
             await deleteDoc(doc(sDb, colName, d.id)).catch(() => {});
           }
-          migratedCount++;
+          movedCount++;
         }
       }
     }
@@ -3679,7 +4523,7 @@ async function migrateSingleTabRecords(params: {
         }
       }
     }
-    return migratedCount;
+    return { movedCount, movedBytes };
   }
 
   // accounts_invites
@@ -3690,6 +4534,7 @@ async function migrateSingleTabRecords(params: {
     if (aSnap) {
       for (const d of aSnap.docs) {
         const acc = d.data() as AccountRecord;
+        movedBytes += estimateRecordBytes(acc);
         if (sDb !== destDb) {
           if (acc.nameHash) {
             await upsertNameIndexSafe(destDb, acc.nameHash, acc.id);
@@ -3698,7 +4543,7 @@ async function migrateSingleTabRecords(params: {
           await copyDocWithTimestamp(destDb, 'accounts', d.id, d.data() as Record<string, unknown>);
           await deleteDoc(doc(sDb, 'accounts', d.id)).catch(() => {});
         }
-        migratedCount++;
+        movedCount++;
       }
     }
 
@@ -3708,11 +4553,13 @@ async function migrateSingleTabRecords(params: {
       ).catch(() => null);
       if (!snap) continue;
       for (const d of snap.docs) {
+        const data = d.data() as Record<string, unknown>;
+        movedBytes += estimateRecordBytes(data);
         if (sDb !== destDb) {
-          await copyDocWithTimestamp(destDb, colName, d.id, d.data() as Record<string, unknown>);
+          await copyDocWithTimestamp(destDb, colName, d.id, data);
           await deleteDoc(doc(sDb, colName, d.id)).catch(() => {});
         }
-        migratedCount++;
+        movedCount++;
       }
     }
   }
@@ -3740,7 +4587,237 @@ async function migrateSingleTabRecords(params: {
       }
     }
   }
-  return migratedCount;
+  return { movedCount, movedBytes };
+}
+
+/**
+ * Adds an additional external DB shard (4 GB limit each) to a single tab's pool, or initializes
+ * the pool and migrates all existing tab data from the complex default / primary DB into shard #1.
+ */
+export async function addShardToComplexTabPool(params: {
+  workspace: ComplexWorkspaceData;
+  tabKey: ComplexFeatureTabKey;
+  config: ExternalFirebaseConfig;
+  maxBytes?: number;
+}): Promise<{ pool: TabDbShard[]; migratedDocs: number }> {
+  const { workspace, tabKey, config, maxBytes = TAB_SHARD_MAX_BYTES } = params;
+  const candidateDb = getFirestoreForConfig(config);
+  if (candidateDb === primaryDb) {
+    throw new Error('لا يمكن إضافة قاعدة المنصة الأم ضمن قواعد التبويبات المنفصلة.');
+  }
+
+  const candidateId = buildDbConnectionId(config);
+  const existingPool = [...(workspace.tabPools?.[tabKey] || [])];
+  if (existingPool.some((s) => s.id === candidateId || buildDbConnectionId(s.config) === candidateId)) {
+    throw new Error('قاعدة البيانات هذه مضافة بالفعل إلى سلسلة هذا التبويب.');
+  }
+
+  await registerExternalDatabaseConnection(config);
+
+  let migratedDocs = 0;
+  let initialUsedBytes = 0;
+  let initialDocsCount = 0;
+
+  if (existingPool.length === 0) {
+    const activeTabDb = getDbForComplexTab(workspace, tabKey);
+    const sourceDbs: Firestore[] = [activeTabDb, workspace.complexDb];
+    if (tabKey === 'accounts_invites' || tabKey === 'mosques_halaqat') {
+      sourceDbs.push(
+        ...Object.values(workspace.mosqueDbMap),
+        ...Object.values(workspace.halaqaDbMap)
+      );
+    }
+    const migrated = await migrateSingleTabRecords({
+      complexId: workspace.complex.id,
+      tabKey,
+      sourceDbs,
+      destDb: candidateDb,
+    });
+    migratedDocs = migrated.movedCount;
+    const stats = await measureTabUsageOnDb(candidateDb, workspace.complex.id, tabKey);
+    initialUsedBytes = stats.usedBytes;
+    initialDocsCount = stats.docsCount;
+  } else {
+    const stats = await measureTabUsageOnDb(candidateDb, workspace.complex.id, tabKey);
+    initialUsedBytes = stats.usedBytes;
+    initialDocsCount = stats.docsCount;
+  }
+
+  const hasAvailableActive = existingPool.some((s) => s.status === 'active');
+  const newShard: TabDbShard = {
+    id: candidateId,
+    label: getDbDisplayLabel(config),
+    config,
+    usedBytes: initialUsedBytes,
+    maxBytes,
+    docsCount: initialDocsCount,
+    status: initialUsedBytes >= maxBytes ? 'full' : hasAvailableActive ? 'standby' : 'active',
+    createdAtMs: Date.now(),
+  };
+
+  const nextPool = await saveComplexTabPool(workspace.complex.id, tabKey, [...existingPool, newShard]);
+  syncWorkspaceTabPointers(workspace, tabKey, nextPool);
+  return { pool: nextPool, migratedDocs };
+}
+
+export async function activateShardInTabPool(params: {
+  workspace: ComplexWorkspaceData;
+  tabKey: ComplexFeatureTabKey;
+  shardId: string;
+}): Promise<TabDbShard[]> {
+  const { workspace, tabKey, shardId } = params;
+  const existingPool = workspace.tabPools?.[tabKey] || [];
+  const target = existingPool.find((s) => s.id === shardId);
+  if (!target) {
+    throw new Error('لم يتم العثور على القاعدة المطلوبة في سلسلة التبويب.');
+  }
+  if (target.status === 'full' || target.usedBytes >= target.maxBytes) {
+    throw new Error('هذه القاعدة وصلت للحد الأقصى (4 جيجابايت) ولا يمكن الكتابة عليها مجدداً.');
+  }
+
+  const updated = existingPool.map((s) => ({
+    ...s,
+    status: s.status === 'full' ? ('full' as const) : s.id === shardId ? ('active' as const) : ('standby' as const),
+  }));
+  const saved = await saveComplexTabPool(workspace.complex.id, tabKey, updated);
+  syncWorkspaceTabPointers(workspace, tabKey, saved);
+  return saved;
+}
+
+export async function recalculateTabPoolUsage(
+  workspace: ComplexWorkspaceData,
+  tabKey: ComplexFeatureTabKey
+): Promise<TabDbShard[]> {
+  const existingPool = workspace.tabPools?.[tabKey] || [];
+  if (existingPool.length === 0) return [];
+
+  const recalculated: TabDbShard[] = [];
+  for (const sh of existingPool) {
+    const sDb = getFirestoreForConfig(sh.config);
+    const stats = await measureTabUsageOnDb(sDb, workspace.complex.id, tabKey);
+    const isFull = stats.usedBytes >= sh.maxBytes;
+    recalculated.push({
+      ...sh,
+      usedBytes: stats.usedBytes,
+      docsCount: stats.docsCount,
+      status: isFull ? 'full' : sh.status === 'full' ? 'standby' : sh.status,
+    });
+  }
+
+  const saved = await saveComplexTabPool(workspace.complex.id, tabKey, recalculated);
+  syncWorkspaceTabPointers(workspace, tabKey, saved);
+  return saved;
+}
+
+/**
+ * Transfers all records of this tab stored inside `sourceShardId` to a replacement database
+ * (either another existing shard in the pool OR a newly verified external DB) and removes the old copies.
+ */
+export async function migrateTabShardToReplacement(params: {
+  workspace: ComplexWorkspaceData;
+  tabKey: ComplexFeatureTabKey;
+  sourceShardId: string;
+  destConfig: ExternalFirebaseConfig;
+  removeSourceAfterMigration?: boolean;
+  onProgress?: (msg: string) => void;
+}): Promise<{ movedDocsCount: number; pool: TabDbShard[] }> {
+  const {
+    workspace,
+    tabKey,
+    sourceShardId,
+    destConfig,
+    removeSourceAfterMigration = true,
+    onProgress,
+  } = params;
+
+  const existingPool = workspace.tabPools?.[tabKey] || [];
+  const sourceShard = existingPool.find((s) => s.id === sourceShardId);
+  if (!sourceShard) {
+    throw new Error('القاعدة المصدر غير موجودة في سلسلة هذا التبويب.');
+  }
+
+  const destId = buildDbConnectionId(destConfig);
+  if (destId === sourceShard.id) {
+    throw new Error('يرجى اختيار قاعدة بديلة مختلفة عن القاعدة الحالية.');
+  }
+
+  const sourceDb = getFirestoreForConfig(sourceShard.config);
+  const destDb = getFirestoreForConfig(destConfig);
+  if (destDb === primaryDb) {
+    throw new Error('لا يمكن نقل بيانات تبويب معزول إلى القاعدة الأم.');
+  }
+
+  await registerExternalDatabaseConnection(destConfig);
+
+  const migrated = await migrateSingleTabRecords({
+    complexId: workspace.complex.id,
+    tabKey,
+    sourceDbs: [sourceDb],
+    destDb,
+    onProgress,
+  });
+
+  const destStats = await measureTabUsageOnDb(destDb, workspace.complex.id, tabKey);
+  const srcWasActive = sourceShard.status === 'active';
+  const existingDestIdx = existingPool.findIndex(
+    (s) => s.id === destId || buildDbConnectionId(s.config) === destId
+  );
+
+  let nextPool: TabDbShard[];
+  if (existingDestIdx >= 0) {
+    nextPool = existingPool
+      .map((s) => {
+        if (s.id === existingPool[existingDestIdx].id) {
+          return {
+            ...s,
+            usedBytes: destStats.usedBytes,
+            docsCount: destStats.docsCount,
+            status:
+              destStats.usedBytes >= s.maxBytes
+                ? ('full' as const)
+                : srcWasActive
+                ? ('active' as const)
+                : s.status,
+          };
+        }
+        if (s.id === sourceShardId && !removeSourceAfterMigration) {
+          return { ...s, usedBytes: 0, docsCount: 0, status: 'standby' as const };
+        }
+        return s;
+      })
+      .filter((s) => !(removeSourceAfterMigration && s.id === sourceShardId));
+  } else {
+    const replacementShard: TabDbShard = {
+      id: destId,
+      label: getDbDisplayLabel(destConfig),
+      config: destConfig,
+      usedBytes: destStats.usedBytes,
+      maxBytes: sourceShard.maxBytes || TAB_SHARD_MAX_BYTES,
+      docsCount: destStats.docsCount,
+      status:
+        destStats.usedBytes >= (sourceShard.maxBytes || TAB_SHARD_MAX_BYTES)
+          ? 'full'
+          : srcWasActive
+          ? 'active'
+          : 'standby',
+      createdAtMs: Date.now(),
+    };
+
+    if (removeSourceAfterMigration) {
+      nextPool = existingPool.map((s) => (s.id === sourceShardId ? replacementShard : s));
+    } else {
+      nextPool = [
+        ...existingPool.map((s) =>
+          s.id === sourceShardId ? { ...s, usedBytes: 0, docsCount: 0, status: 'standby' as const } : s
+        ),
+        replacementShard,
+      ];
+    }
+  }
+
+  const saved = await saveComplexTabPool(workspace.complex.id, tabKey, nextPool);
+  syncWorkspaceTabPointers(workspace, tabKey, saved);
+  return { movedDocsCount: migrated.movedCount, pool: saved };
 }
 
 /**
@@ -3769,8 +4846,8 @@ export async function assignExternalDbToComplexTabs(params: {
   let movedDocsCount = 0;
 
   for (const tabKey of tabKeys) {
-    const activeTabDb = getDbForComplexTab(workspace, tabKey);
-    const sourceDbs: Firestore[] = [activeTabDb, workspace.complexDb];
+    const readDbs = getReadDbsForComplexTab(workspace, tabKey);
+    const sourceDbs: Firestore[] = [...readDbs, workspace.complexDb];
     if (tabKey === 'accounts_invites' || tabKey === 'mosques_halaqat') {
       sourceDbs.push(
         ...Object.values(workspace.mosqueDbMap),
@@ -3778,17 +4855,31 @@ export async function assignExternalDbToComplexTabs(params: {
       );
     }
 
-    movedDocsCount += await migrateSingleTabRecords({
+    const migrated = await migrateSingleTabRecords({
       complexId: workspace.complex.id,
       tabKey,
       sourceDbs,
       destDb,
     });
+    movedDocsCount += migrated.movedCount;
 
     if (targetConfig) {
       nextRoutes[tabKey] = targetConfig;
+      const stats = await measureTabUsageOnDb(destDb, workspace.complex.id, tabKey);
+      const shard: TabDbShard = {
+        id: buildDbConnectionId(targetConfig),
+        label: getDbDisplayLabel(targetConfig),
+        config: targetConfig,
+        usedBytes: stats.usedBytes,
+        maxBytes: TAB_SHARD_MAX_BYTES,
+        docsCount: stats.docsCount,
+        status: stats.usedBytes >= TAB_SHARD_MAX_BYTES ? 'full' : 'active',
+        createdAtMs: Date.now(),
+      };
+      await saveComplexTabPool(workspace.complex.id, tabKey, [shard]);
     } else {
       delete nextRoutes[tabKey];
+      await saveComplexTabPool(workspace.complex.id, tabKey, []);
     }
   }
 
@@ -3944,6 +5035,21 @@ export async function cloneComplexToBackupDatabase(params: {
     }
   }
 
+  const seenWordAudioIds = new Set<string>();
+  const libraryReadDbs = getReadDbsForComplexTab(workspace, 'library');
+  for (const libDb of libraryReadDbs) {
+    const waSnap = await getDocsFresh(
+      query(collection(libDb, 'wordAudio'), where('complexId', '==', workspace.complex.id))
+    ).catch(() => null);
+    if (!waSnap) continue;
+    for (const d of waSnap.docs) {
+      if (seenWordAudioIds.has(d.id)) continue;
+      seenWordAudioIds.add(d.id);
+      await upsertTransferredDoc(backupDb, 'wordAudio', d.id, d.data() as Record<string, unknown>);
+      totalCopiedDocs++;
+    }
+  }
+
   const curricula = await listCurriculaInComplex(workspace);
   for (const cur of curricula) {
     await upsertTransferredDoc(backupDb, 'curricula', cur.id, {
@@ -3995,7 +5101,19 @@ export async function exportComplexTabJsonPayload(
       const pages = await loadBookPages(workspace, b.id);
       bookPages.push(...pages);
     }
-    data = { books, bookPages };
+    const wordAudioMap = new Map<string, BookWordAudioRecord>();
+    for (const libDb of getReadDbsForComplexTab(workspace, 'library')) {
+      const waSnap = await getDocsFresh(
+        query(collection(libDb, 'wordAudio'), where('complexId', '==', workspace.complex.id))
+      ).catch(() => null);
+      if (!waSnap) continue;
+      waSnap.forEach((d) => {
+        if (!wordAudioMap.has(d.id)) {
+          wordAudioMap.set(d.id, d.data() as BookWordAudioRecord);
+        }
+      });
+    }
+    data = { books, bookPages, wordAudio: Array.from(wordAudioMap.values()) };
   } else if (tabKey === 'mosques_halaqat') {
     data = {
       mosques: workspace.mosques,
@@ -4093,7 +5211,7 @@ export async function importComplexTabJsonPayload(params: {
     for (const rec of items) {
       if (!rec || !rec.halaqaId || !rec.dateKey) continue;
       const docId = buildAttendanceDocId(rec.halaqaId, rec.dateKey);
-      await upsertTransferredDoc(destDb, 'attendance', docId, {
+      const payload = {
         id: docId,
         complexId,
         mosqueId: rec.mosqueId || '',
@@ -4102,7 +5220,16 @@ export async function importComplexTabJsonPayload(params: {
         entries: sanitizeAttendanceEntries(Array.isArray(rec.entries) ? rec.entries : []),
         recordedBy: rec.recordedBy || auth.currentUser?.uid || 'admin',
         recordedByName: rec.recordedByName || 'استيراد JSON',
-      });
+      };
+      await executeTabWriteWithRollover(
+        workspace,
+        'attendance',
+        estimateRecordBytes(payload),
+        true,
+        async (writeDb) => {
+          await upsertTransferredDoc(writeDb, 'attendance', docId, payload);
+        }
+      );
       importedCount++;
     }
     return { importedCount };
@@ -4112,7 +5239,7 @@ export async function importComplexTabJsonPayload(params: {
     const items = Array.isArray(sourceData.curricula) ? (sourceData.curricula as CurriculumRecord[]) : [];
     for (const cur of items) {
       if (!cur || !cur.id || !cur.bookId || !cur.bookTitle) continue;
-      await upsertTransferredDoc(destDb, 'curricula', cur.id, {
+      const payload = {
         id: cur.id,
         complexId,
         bookId: cur.bookId,
@@ -4123,7 +5250,16 @@ export async function importComplexTabJsonPayload(params: {
         scheduleNote: cur.scheduleNote || '',
         active: cur.active !== false,
         createdBy: cur.createdBy || auth.currentUser?.uid || 'admin',
-      });
+      };
+      await executeTabWriteWithRollover(
+        workspace,
+        'curricula',
+        estimateRecordBytes(payload),
+        true,
+        async (writeDb) => {
+          await upsertTransferredDoc(writeDb, 'curricula', cur.id, payload);
+        }
+      );
       importedCount++;
     }
     return { importedCount };
@@ -4134,7 +5270,7 @@ export async function importComplexTabJsonPayload(params: {
     const pages = Array.isArray(sourceData.bookPages) ? (sourceData.bookPages as BookPageRecord[]) : [];
     for (const b of books) {
       if (!b || !b.id) continue;
-      await upsertTransferredDoc(destDb, 'books', b.id, {
+      const payload = {
         id: b.id,
         complexId,
         title: b.title || 'كتاب مستورد',
@@ -4145,12 +5281,21 @@ export async function importComplexTabJsonPayload(params: {
         recognizedPages: Number(b.recognizedPages) || 0,
         status: b.status || 'ready',
         createdBy: b.createdBy || auth.currentUser?.uid || 'admin',
-      });
+      };
+      await executeTabWriteWithRollover(
+        workspace,
+        'library',
+        estimateRecordBytes(payload),
+        true,
+        async (writeDb) => {
+          await upsertTransferredDoc(writeDb, 'books', b.id, payload);
+        }
+      );
       importedCount++;
     }
     for (const p of pages) {
       if (!p || !p.id || !p.bookId) continue;
-      await setDoc(doc(destDb, 'bookPages', p.id), {
+      const payload = {
         id: p.id,
         bookId: p.bookId,
         complexId,
@@ -4161,8 +5306,49 @@ export async function importComplexTabJsonPayload(params: {
         recognized: Boolean(p.recognized),
         fullText: String(p.fullText || '').slice(0, 25000),
         segments: sanitizeBookSegments(Array.isArray(p.segments) ? p.segments : []),
-        updatedAt: serverTimestamp(),
-      });
+      };
+      await executeTabWriteWithRollover(
+        workspace,
+        'library',
+        estimateRecordBytes(payload),
+        true,
+        async (writeDb) => {
+          await setDoc(doc(writeDb, 'bookPages', p.id), {
+            ...payload,
+            updatedAt: serverTimestamp(),
+          });
+        }
+      );
+      importedCount++;
+    }
+    const wordAudioList = Array.isArray(sourceData.wordAudio)
+      ? (sourceData.wordAudio as BookWordAudioRecord[])
+      : [];
+    for (const wa of wordAudioList) {
+      if (!wa || !wa.id || !wa.wordText) continue;
+      const payload = {
+        id: wa.id,
+        complexId,
+        mode: wa.mode === 'normal' ? 'normal' : 'noor_albayan',
+        wordText: String(wa.wordText).slice(0, 1200),
+        diacritizedWord: String(wa.diacritizedWord || wa.wordText).slice(0, 1200),
+        wasAutoDiacritized: Boolean(wa.wasAutoDiacritized),
+        fullReading: String(wa.fullReading || wa.wordText).slice(0, 2500),
+        steps: Array.isArray(wa.steps) ? wa.steps.slice(0, 60) : [],
+        audioBase64: String(wa.audioBase64 || ''),
+        mimeType: String(wa.mimeType || 'audio/wav'),
+        byteSize: Number(wa.byteSize) || estimateRecordBytes(wa),
+        createdBy: wa.createdBy || auth.currentUser?.uid || 'admin',
+      };
+      await executeTabWriteWithRollover(
+        workspace,
+        'library',
+        estimateRecordBytes(payload),
+        true,
+        async (writeDb) => {
+          await upsertTransferredDoc(writeDb, 'wordAudio', wa.id, payload);
+        }
+      );
       importedCount++;
     }
     return { importedCount };

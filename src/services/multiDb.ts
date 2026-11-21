@@ -61,6 +61,9 @@ service cloud.firestore {
     match /curricula/{id} {
       allow read, write: if true;
     }
+    match /wordAudio/{id} {
+      allow read, write: if true;
+    }
   }
 }`;
 

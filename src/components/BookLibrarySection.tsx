@@ -6,6 +6,8 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  Crosshair,
+  Database,
   Edit3,
   FileText,
   Headphones,
@@ -16,6 +18,7 @@ import {
   RefreshCw,
   RotateCcw,
   Sparkles,
+  Square,
   Trash2,
   Upload,
   Volume2,
@@ -37,13 +40,17 @@ import {
   synthesizeSpeechOnServer,
   type BookJobState,
   type BookLocalPage,
+  type PageOcrProgress,
 } from '../services/bookStorage';
+import { generateNoorAlBayanClientFallback } from '../services/clientArabicEngine';
 import { generateValidId, getReciterAyahAudioUrl } from '../services/multiDb';
 import {
   deleteBookFromWorkspace,
   listBooksInComplex,
   loadBookPages,
+  lookupWordAudioAcrossLibrary,
   renameBookInWorkspace,
+  saveWordAudioToLibraryDb,
   upsertBookPageRecord,
   upsertBookRecord,
   type ComplexWorkspaceData,
@@ -150,6 +157,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
     total: 0,
   });
   const [isRunningJob, setIsRunningJob] = useState(false);
+  const [pageOcrProgress, setPageOcrProgress] = useState<PageOcrProgress | null>(null);
   const activeRunIdRef = useRef<number>(0);
   const pauseRequestedRef = useRef<boolean>(false);
 
@@ -181,9 +189,36 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
   const [audioPlaying, setAudioPlaying] = useState(false);
   const [audioCurrentTime, setAudioCurrentTime] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
+  const [wordAudioStatus, setWordAudioStatus] = useState<string | null>(null);
+
+  // Continuous Reading Mode State (القراءة المتواصلة)
+  const [continuousMode, setContinuousMode] = useState<'noor_albayan' | 'normal'>('noor_albayan');
+  const [continuousStartId, setContinuousStartId] = useState<string>('');
+  const [pickingContinuousStart, setPickingContinuousStart] = useState(false);
+  const [continuousAutoNextPage, setContinuousAutoNextPage] = useState(true);
+  const [continuousStatus, setContinuousStatus] = useState<'idle' | 'playing' | 'paused'>('idle');
+  const [continuousProgress, setContinuousProgress] = useState<{
+    currentIndex: number;
+    totalCount: number;
+    wordText: string;
+    pageNumber: number;
+    sourceLabel: string;
+  } | null>(null);
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const activeObjectUrlRef = useRef<string | null>(null);
+  const audioLoadWatchdogRef = useRef<number | null>(null);
   const audioRunTokenRef = useRef<number>(0);
+  const continuousTokenRef = useRef<number>(0);
+  const continuousPausedRef = useRef<boolean>(false);
+  const continuousPositionRef = useRef<{
+    pageIndex: number;
+    segIndex: number;
+    mode: 'noor_albayan' | 'normal';
+  }>({ pageIndex: 0, segIndex: 0, mode: 'noor_albayan' });
+  const wordChipRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const prefetchMapRef = useRef<Map<string, Promise<unknown>>>(new Map());
+
   const speechStateRef = useRef<{
     active: boolean;
     text: string;
@@ -194,6 +229,8 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
     elapsedBeforePauseMs: number;
     timerId: number | null;
     startDelayId: number | null;
+    startWatchdogId: number | null;
+    maxDurationId: number | null;
   }>({
     active: false,
     text: '',
@@ -204,6 +241,8 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
     elapsedBeforePauseMs: 0,
     timerId: null,
     startDelayId: null,
+    startWatchdogId: null,
+    maxDurationId: null,
   });
 
   const loadBooksAndJobs = useCallback(async () => {
@@ -224,6 +263,23 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
     void loadBooksAndJobs();
   }, [loadBooksAndJobs]);
 
+  // Pre-warm Web Speech API voices list so first pronunciation starts immediately
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    const warm = () => {
+      try {
+        window.speechSynthesis.getVoices();
+      } catch {
+        // Ignore
+      }
+    };
+    warm();
+    window.speechSynthesis.addEventListener?.('voiceschanged', warm);
+    return () => {
+      window.speechSynthesis.removeEventListener?.('voiceschanged', warm);
+    };
+  }, []);
+
   // Warn user before leaving page while actively uploading or recognizing a book
   useEffect(() => {
     if (!isRunningJob) return;
@@ -238,7 +294,11 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
   // Clean up audio element, SpeechSynthesis & ObjectURLs on unmount
   useEffect(() => {
     return () => {
+      continuousTokenRef.current++;
       audioRunTokenRef.current++;
+      if (audioLoadWatchdogRef.current !== null) {
+        window.clearTimeout(audioLoadWatchdogRef.current);
+      }
       if (audioRef.current) {
         audioRef.current.onloadedmetadata = null;
         audioRef.current.ontimeupdate = null;
@@ -257,6 +317,12 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
       }
       if (speechStateRef.current.startDelayId !== null) {
         window.clearTimeout(speechStateRef.current.startDelayId);
+      }
+      if (speechStateRef.current.startWatchdogId !== null) {
+        window.clearTimeout(speechStateRef.current.startWatchdogId);
+      }
+      if (speechStateRef.current.maxDurationId !== null) {
+        window.clearTimeout(speechStateRef.current.maxDurationId);
       }
       if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
         window.speechSynthesis.cancel();
@@ -290,6 +356,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
       const runId = ++activeRunIdRef.current;
       pauseRequestedRef.current = false;
       setIsRunningJob(true);
+      setPageOcrProgress(null);
       setFeedback(null);
 
       let workingJob: BookJobState = {
@@ -372,12 +439,23 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
             throw new Error('انقطع الاتصال بالإنترنت أثناء التعرف الذكي.');
           }
 
+          setPageOcrProgress({
+            pageNumber: page.pageNumber,
+            pagePercent: 1,
+            stageText: `جاري تجهيز الصفحة ${page.pageNumber} لبدء التعرف الذكي...`,
+          });
+
           const analyzed = await analyzeBookPageOnServer({
             imageDataUrl: page.imageDataUrl,
             ocrImageDataUrl: page.ocrImageDataUrl,
             pageNumber: page.pageNumber,
             bookTitle: workingJob.title,
             embeddedSegments: page.embeddedSegments,
+            onProgress: (prog) => {
+              if (activeRunIdRef.current === runId && !pauseRequestedRef.current) {
+                setPageOcrProgress(prog);
+              }
+            },
           });
 
           const updatedPage: BookLocalPage = {
@@ -435,6 +513,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
       } finally {
         if (activeRunIdRef.current === runId) {
           setIsRunningJob(false);
+          setPageOcrProgress(null);
         }
       }
     },
@@ -566,9 +645,21 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
       window.clearTimeout(speechStateRef.current.startDelayId);
       speechStateRef.current.startDelayId = null;
     }
+    if (speechStateRef.current.startWatchdogId !== null) {
+      window.clearTimeout(speechStateRef.current.startWatchdogId);
+      speechStateRef.current.startWatchdogId = null;
+    }
+    if (speechStateRef.current.maxDurationId !== null) {
+      window.clearTimeout(speechStateRef.current.maxDurationId);
+      speechStateRef.current.maxDurationId = null;
+    }
   }, []);
 
   const detachAndStopAudioElement = useCallback(() => {
+    if (audioLoadWatchdogRef.current !== null) {
+      window.clearTimeout(audioLoadWatchdogRef.current);
+      audioLoadWatchdogRef.current = null;
+    }
     const audio = audioRef.current;
     if (audio) {
       audio.onloadedmetadata = null;
@@ -608,15 +699,32 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
     setAudioDuration(0);
     setActiveAudioMode(null);
     setAudioError(null);
+    setAudioLoadingMode(null);
+    setNoorLoading(false);
   }, [clearSpeechTimers, detachAndStopAudioElement]);
 
+  const stopContinuousReading = useCallback(() => {
+    continuousTokenRef.current++;
+    continuousPausedRef.current = false;
+    setPickingContinuousStart(false);
+    setContinuousStatus('idle');
+    setContinuousProgress(null);
+    stopAndResetAudio();
+  }, [stopAndResetAudio]);
+
   const openBookReader = async (book: BookRecord) => {
+    continuousTokenRef.current++;
+    setContinuousStatus('idle');
+    setContinuousProgress(null);
+    setPickingContinuousStart(false);
     stopAndResetAudio();
     setSelectedSegment(null);
+    setContinuousStartId('');
     setNoorSteps([]);
     setNoorFullReading('');
     setNoorDiacritizedWord('');
     setNoorAutoDiacritized(false);
+    setWordAudioStatus(null);
     setReaderBook(book);
     setCurrentPageIndex(0);
     setLoadingReader(true);
@@ -625,6 +733,9 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
       setReaderPages(pages);
       const firstSeg = pages[0]?.segments?.[0] || null;
       setSelectedSegment(firstSeg);
+      if (firstSeg) {
+        setContinuousStartId(firstSeg.id);
+      }
     } catch {
       setFeedback({ type: 'err', text: 'تعذّر تحميل صفحات الكتاب.' });
     } finally {
@@ -633,12 +744,25 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
   };
 
   const handleSelectSegment = (seg: BookTextSegment) => {
-    stopAndResetAudio();
+    if (pickingContinuousStart) {
+      setContinuousStartId(seg.id);
+      setSelectedSegment(seg);
+      setPickingContinuousStart(false);
+      setAudioError(null);
+      return;
+    }
+    if (continuousStatus !== 'idle') {
+      stopContinuousReading();
+    } else {
+      stopAndResetAudio();
+    }
     setSelectedSegment(seg);
+    setContinuousStartId(seg.id);
     setNoorSteps([]);
     setNoorFullReading('');
     setNoorDiacritizedWord('');
     setNoorAutoDiacritized(false);
+    setWordAudioStatus(null);
     setAudioError(null);
   };
 
@@ -663,15 +787,23 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
   };
 
   const playBrowserSpeech = useCallback(
-    (mode: AudioMode, text: string, startChunkIdx = 0) => {
+    (mode: AudioMode, text: string, startChunkIdx = 0, onComplete?: () => void) => {
       const runToken = ++audioRunTokenRef.current;
       detachAndStopAudioElement();
       clearSpeechTimers();
       setAudioError(null);
 
+      let completed = false;
+      const fireComplete = () => {
+        if (completed) return;
+        completed = true;
+        onComplete?.();
+      };
+
       if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
         setAudioPlaying(false);
         setAudioError('متصفحك لا يدعم القراءة الصوتية التلقائية بدون خادم.');
+        fireComplete();
         return;
       }
 
@@ -683,7 +815,10 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
       }
 
       const cleanText = text.trim();
-      if (!cleanText) return;
+      if (!cleanText) {
+        fireComplete();
+        return;
+      }
       const chunks = splitArabicSpeechChunks(cleanText);
       const estimatedSeconds = Math.max(
         1.4,
@@ -718,11 +853,21 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
 
       const speakChunkAt = (idx: number) => {
         if (audioRunTokenRef.current !== runToken || !speechStateRef.current.active) return;
+        if (speechStateRef.current.startWatchdogId !== null) {
+          window.clearTimeout(speechStateRef.current.startWatchdogId);
+          speechStateRef.current.startWatchdogId = null;
+        }
+        if (speechStateRef.current.maxDurationId !== null) {
+          window.clearTimeout(speechStateRef.current.maxDurationId);
+          speechStateRef.current.maxDurationId = null;
+        }
+
         if (idx >= chunks.length) {
           clearSpeechTimers();
           speechStateRef.current.active = false;
           setAudioPlaying(false);
           setAudioCurrentTime(estimatedSeconds);
+          fireComplete();
           return;
         }
 
@@ -737,17 +882,41 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
         utterance.rate = mode === 'noor_albayan' ? 0.78 : 0.95;
         utterance.pitch = 1.0;
 
-        utterance.onend = () => {
+        let utteranceStarted = false;
+        let chunkSettled = false;
+
+        const finishChunk = () => {
+          if (chunkSettled) return;
+          chunkSettled = true;
+          if (speechStateRef.current.startWatchdogId !== null) {
+            window.clearTimeout(speechStateRef.current.startWatchdogId);
+            speechStateRef.current.startWatchdogId = null;
+          }
+          if (speechStateRef.current.maxDurationId !== null) {
+            window.clearTimeout(speechStateRef.current.maxDurationId);
+            speechStateRef.current.maxDurationId = null;
+          }
           if (audioRunTokenRef.current !== runToken || !speechStateRef.current.active) return;
           speakChunkAt(idx + 1);
+        };
+
+        utterance.onstart = () => {
+          utteranceStarted = true;
+          if (speechStateRef.current.startWatchdogId !== null) {
+            window.clearTimeout(speechStateRef.current.startWatchdogId);
+            speechStateRef.current.startWatchdogId = null;
+          }
+        };
+
+        utterance.onend = () => {
+          finishChunk();
         };
 
         utterance.onerror = (ev) => {
           if (audioRunTokenRef.current !== runToken) return;
           if (ev.error === 'canceled' || ev.error === 'interrupted') return;
-          // Try next chunk cleanly before surfacing voice missing notice
           if (idx + 1 < chunks.length) {
-            speakChunkAt(idx + 1);
+            finishChunk();
             return;
           }
           clearSpeechTimers();
@@ -758,12 +927,59 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
           );
           if (!hasAnyArabicVoice) {
             setAudioError(
-              'لا توجد حزمة صوت عربي مفعّلة في هذا المتصفح حالياً، لكن يمكنك متابعة التهجي البصري خطوة بخطوة بالأسفل.'
+              'لا توجد حزمة صوت عربي مفعّلة في هذا المتصفح حالياً، لكن التهجي البصري معروض بالأسفل.'
             );
           } else {
             setAudioError('تعذّر تشغيل القارئ الصوتي في المتصفح مؤقتاً؛ اضغط أعد المحاولة.');
           }
+          fireComplete();
         };
+
+        // Chromium deadlock watchdog: if speech synthesis neither starts nor errors within 2.2s
+        speechStateRef.current.startWatchdogId = window.setTimeout(() => {
+          if (audioRunTokenRef.current !== runToken || !speechStateRef.current.active || chunkSettled) {
+            return;
+          }
+          if (!utteranceStarted && !window.speechSynthesis.speaking) {
+            try {
+              window.speechSynthesis.cancel();
+            } catch {
+              // Ignore
+            }
+            if (idx + 1 < chunks.length) {
+              finishChunk();
+            } else {
+              clearSpeechTimers();
+              speechStateRef.current.active = false;
+              setAudioPlaying(false);
+              const hasAnyArabicVoice = (window.speechSynthesis.getVoices() || []).some((v) =>
+                v.lang.toLowerCase().startsWith('ar')
+              );
+              if (!hasAnyArabicVoice) {
+                setAudioError(
+                  'المتصفح الحالي لا يحتوي على صوت عربي مثبّت للنطق التلقائي؛ يظهر التهجي البصري بالأسفل.'
+                );
+              }
+              fireComplete();
+            }
+          }
+        }, 2200);
+
+        // Max utterance watchdog so stuck speechSynthesis never blocks continuous reading
+        speechStateRef.current.maxDurationId = window.setTimeout(
+          () => {
+            if (audioRunTokenRef.current !== runToken || !speechStateRef.current.active || chunkSettled) {
+              return;
+            }
+            try {
+              window.speechSynthesis.cancel();
+            } catch {
+              // Ignore
+            }
+            finishChunk();
+          },
+          Math.max(8500, chunkText.length * 165)
+        );
 
         try {
           window.speechSynthesis.speak(utterance);
@@ -771,6 +987,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
           clearSpeechTimers();
           speechStateRef.current.active = false;
           setAudioPlaying(false);
+          fireComplete();
         }
       };
 
@@ -800,7 +1017,8 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
       url: string,
       isObjectUrl: boolean,
       onFallback?: () => void,
-      badCacheKey?: string
+      badCacheKey?: string,
+      onEndedCallback?: () => void
     ) => {
       const runToken = ++audioRunTokenRef.current;
       clearSpeechTimers();
@@ -823,9 +1041,18 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
       }
 
       let fallbackHandled = false;
+      let startedPlaying = false;
+      const clearLoadWatchdog = () => {
+        if (audioLoadWatchdogRef.current !== null) {
+          window.clearTimeout(audioLoadWatchdogRef.current);
+          audioLoadWatchdogRef.current = null;
+        }
+      };
+
       const triggerFallback = () => {
         if (fallbackHandled || audioRunTokenRef.current !== runToken) return;
         fallbackHandled = true;
+        clearLoadWatchdog();
         detachAndStopAudioElement();
         if (badCacheKey) {
           void deleteCachedAudioEntry(badCacheKey);
@@ -835,6 +1062,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
         } else {
           setAudioPlaying(false);
           setAudioError('تعذّر تشغيل الملف الصوتي حالياً؛ تأكد من الاتصال وحاول مجدداً.');
+          onEndedCallback?.();
         }
       };
 
@@ -847,6 +1075,8 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
       };
       audio.ontimeupdate = () => {
         if (audioRunTokenRef.current !== runToken) return;
+        startedPlaying = true;
+        clearLoadWatchdog();
         setAudioCurrentTime(audio.currentTime || 0);
         if (Number.isFinite(audio.duration)) {
           setAudioDuration(audio.duration);
@@ -854,6 +1084,8 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
       };
       audio.onplay = () => {
         if (audioRunTokenRef.current !== runToken) return;
+        startedPlaying = true;
+        clearLoadWatchdog();
         setAudioPlaying(true);
       };
       audio.onpause = () => {
@@ -862,12 +1094,21 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
       };
       audio.onended = () => {
         if (audioRunTokenRef.current !== runToken) return;
+        clearLoadWatchdog();
         setAudioPlaying(false);
         setAudioCurrentTime(audio.duration || 0);
+        onEndedCallback?.();
       };
       audio.onerror = () => {
         triggerFallback();
       };
+
+      // Watchdog prevents silent <audio> stall if codec/stream never starts playing
+      audioLoadWatchdogRef.current = window.setTimeout(() => {
+        if (audioRunTokenRef.current === runToken && !startedPlaying && audio.paused) {
+          triggerFallback();
+        }
+      }, 3500);
 
       setAudioError(null);
       setActiveAudioMode(mode);
@@ -880,161 +1121,494 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
     [clearSpeechTimers, detachAndStopAudioElement]
   );
 
+  interface ResolvedWordAudio {
+    cacheKey: string;
+    source: 'local' | 'db' | 'generated';
+    audioBase64: string;
+    mimeType: string;
+    diacritizedWord: string;
+    wasAutoDiacritized: boolean;
+    steps: NoorAlBayanStep[];
+    fullReading: string;
+  }
+
+  const resolveSegmentAudio = useCallback(
+    async (
+      seg: BookTextSegment,
+      mode: 'noor_albayan' | 'normal',
+      options?: { callToken?: number; showUi?: boolean }
+    ): Promise<ResolvedWordAudio> => {
+      const normalizedText = seg.text.trim().replace(/\s+/g, ' ');
+      const cacheKey = `${mode === 'noor_albayan' ? 'noor_v2' : 'normal_v2'}_${normalizedText}`;
+
+      const applyBreakdownUi = (data: {
+        diacritizedWord: string;
+        wasAutoDiacritized: boolean;
+        steps: NoorAlBayanStep[];
+        fullReading: string;
+        sourceLabel?: string;
+      }) => {
+        if (options?.callToken !== undefined && audioRunTokenRef.current !== options.callToken) {
+          return;
+        }
+        if (mode === 'noor_albayan') {
+          setNoorDiacritizedWord(data.diacritizedWord);
+          setNoorAutoDiacritized(data.wasAutoDiacritized);
+          setNoorSteps(data.steps);
+          setNoorFullReading(data.fullReading);
+        }
+        if (options?.showUi && data.sourceLabel) {
+          setWordAudioStatus(data.sourceLabel);
+        }
+      };
+
+      // Instant local breakdown on Noor Al-Bayan click so UI never freezes on spinner
+      const instantLocal =
+        mode === 'noor_albayan' ? generateNoorAlBayanClientFallback(seg.text) : null;
+      if (instantLocal && options?.showUi) {
+        applyBreakdownUi({
+          diacritizedWord: instantLocal.diacritizedWord,
+          wasAutoDiacritized: instantLocal.wasAutoDiacritized,
+          steps: instantLocal.steps,
+          fullReading: instantLocal.fullReading,
+        });
+      }
+
+      // 1. Check local IndexedDB cache
+      const localCached = await getCachedAudioEntry(cacheKey);
+      if (localCached && localCached.base64Wav && localCached.base64Wav.length > 120) {
+        const diacritizedWord =
+          localCached.diacritizedWord || instantLocal?.diacritizedWord || seg.text;
+        const fullReading =
+          localCached.fullReading || instantLocal?.fullReading || diacritizedWord;
+        const steps = localCached.steps || instantLocal?.steps || [];
+        const wasAutoDiacritized = Boolean(
+          localCached.wasAutoDiacritized ?? instantLocal?.wasAutoDiacritized
+        );
+        applyBreakdownUi({
+          diacritizedWord,
+          wasAutoDiacritized,
+          steps,
+          fullReading,
+          sourceLabel: 'محفوظة مسبقاً (تشغيل فوري من القاعدة)',
+        });
+        return {
+          cacheKey,
+          source: 'local',
+          audioBase64: localCached.base64Wav,
+          mimeType: localCached.mimeType || 'audio/wav',
+          diacritizedWord,
+          wasAutoDiacritized,
+          steps,
+          fullReading,
+        };
+      }
+
+      // 2. Search across ALL shards of `library` DB (active + older filled shards)
+      const dbHit = await lookupWordAudioAcrossLibrary(workspace, mode, seg.text);
+      if (dbHit) {
+        const diacritizedWord =
+          dbHit.diacritizedWord || instantLocal?.diacritizedWord || seg.text;
+        const fullReading =
+          dbHit.fullReading || instantLocal?.fullReading || diacritizedWord;
+        const steps =
+          dbHit.steps && dbHit.steps.length > 0 ? dbHit.steps : instantLocal?.steps || [];
+        const wasAutoDiacritized = Boolean(
+          dbHit.wasAutoDiacritized ?? instantLocal?.wasAutoDiacritized
+        );
+
+        if (dbHit.audioBase64 && dbHit.audioBase64.length > 120) {
+          await saveCachedAudioEntry({
+            key: cacheKey,
+            base64Wav: dbHit.audioBase64,
+            mimeType: dbHit.mimeType || 'audio/wav',
+            diacritizedWord,
+            wasAutoDiacritized,
+            steps,
+            fullReading,
+            updatedAtMs: Date.now(),
+          });
+          applyBreakdownUi({
+            diacritizedWord,
+            wasAutoDiacritized,
+            steps,
+            fullReading,
+            sourceLabel: 'تم جلب الصوت المحفوظ من قاعدة المكتبة مباشرة',
+          });
+          return {
+            cacheKey,
+            source: 'db',
+            audioBase64: dbHit.audioBase64,
+            mimeType: dbHit.mimeType || 'audio/wav',
+            diacritizedWord,
+            wasAutoDiacritized,
+            steps,
+            fullReading,
+          };
+        }
+      }
+
+      // 3. Deduplicate concurrent resolution / prefetch for identical (mode + word)
+      const existingInFlight = prefetchMapRef.current.get(cacheKey) as
+        | Promise<ResolvedWordAudio>
+        | undefined;
+      if (existingInFlight) {
+        const res = await existingInFlight;
+        applyBreakdownUi({
+          diacritizedWord: res.diacritizedWord,
+          wasAutoDiacritized: res.wasAutoDiacritized,
+          steps: res.steps,
+          fullReading: res.fullReading,
+          sourceLabel:
+            res.source === 'generated'
+              ? 'تم التوليد والحفظ تلقائياً في قاعدة المكتبة النشطة'
+              : 'محفوظة مسبقاً',
+        });
+        return res;
+      }
+
+      const workPromise = (async (): Promise<ResolvedWordAudio> => {
+        let diacritizedWord = instantLocal?.diacritizedWord || seg.text;
+        let wasAutoDiacritized = instantLocal?.wasAutoDiacritized || false;
+        let steps: NoorAlBayanStep[] = instantLocal?.steps || [];
+        let fullReading = instantLocal?.fullReading || seg.text;
+
+        if (mode === 'noor_albayan') {
+          const breakdown = await generateNoorAlBayanOnServer({
+            text: seg.text,
+            surahName: seg.surahName,
+          }).catch(() => null);
+          if (breakdown) {
+            diacritizedWord = breakdown.diacritizedWord;
+            wasAutoDiacritized = breakdown.wasAutoDiacritized;
+            steps = breakdown.steps;
+            fullReading =
+              breakdown.fullReading ||
+              `${breakdown.steps.map((s) => s.reading).join(' ، ')} ، ${breakdown.diacritizedWord}`;
+          }
+          if (options?.showUi) {
+            applyBreakdownUi({
+              diacritizedWord,
+              wasAutoDiacritized,
+              steps,
+              fullReading,
+            });
+          }
+        }
+
+        const tts = await synthesizeSpeechOnServer({
+          text: fullReading,
+          mode,
+        });
+
+        const audioBase64 = tts.engine === 'server_wav' ? tts.audioBase64 : '';
+        const mimeType = tts.mimeType || 'audio/wav';
+
+        if (audioBase64 && audioBase64.length > 120) {
+          await saveCachedAudioEntry({
+            key: cacheKey,
+            base64Wav: audioBase64,
+            mimeType,
+            diacritizedWord,
+            wasAutoDiacritized,
+            steps,
+            fullReading,
+            updatedAtMs: Date.now(),
+          });
+        }
+
+        // Automatically persist to currently active `library` DB shard (auto-rollover at 4 GB)
+        void saveWordAudioToLibraryDb({
+          workspace,
+          mode,
+          wordText: seg.text,
+          diacritizedWord,
+          wasAutoDiacritized,
+          fullReading,
+          steps,
+          audioBase64,
+          mimeType,
+          createdBy: currentUserId,
+        });
+
+        return {
+          cacheKey,
+          source: 'generated',
+          audioBase64,
+          mimeType,
+          diacritizedWord,
+          wasAutoDiacritized,
+          steps,
+          fullReading: tts.text || fullReading,
+        };
+      })();
+
+      prefetchMapRef.current.set(cacheKey, workPromise);
+      try {
+        const result = await workPromise;
+        applyBreakdownUi({
+          diacritizedWord: result.diacritizedWord,
+          wasAutoDiacritized: result.wasAutoDiacritized,
+          steps: result.steps,
+          fullReading: result.fullReading,
+          sourceLabel:
+            result.audioBase64.length > 120
+              ? 'تم إنشاء الصوت وحفظه تلقائياً في قاعدة المكتبة النشطة'
+              : 'تم تجهيز النطق وحفظ التفصيل في القاعدة النشطة',
+        });
+        return result;
+      } finally {
+        prefetchMapRef.current.delete(cacheKey);
+      }
+    },
+    [currentUserId, workspace]
+  );
+
   const handlePlayNoorAlBayan = async (overrideSegment?: BookTextSegment) => {
     const targetSeg = overrideSegment || selectedSegment;
     if (!targetSeg) return;
+    if (continuousStatus !== 'idle') {
+      continuousTokenRef.current++;
+      continuousPausedRef.current = false;
+      setContinuousStatus('idle');
+      setContinuousProgress(null);
+    }
     const callToken = ++audioRunTokenRef.current;
     setAudioError(null);
     setAudioLoadingMode('noor_albayan');
     setNoorLoading(true);
+    const safetyUnlockTimer = window.setTimeout(() => {
+      if (audioRunTokenRef.current === callToken) {
+        setNoorLoading(false);
+        setAudioLoadingMode(null);
+      }
+    }, 12500);
+
     try {
-      const cacheKey = `noor_v2_${targetSeg.text}`;
-      const cached = await getCachedAudioEntry(cacheKey);
+      const resolved = await resolveSegmentAudio(targetSeg, 'noor_albayan', {
+        callToken,
+        showUi: true,
+      });
       if (audioRunTokenRef.current !== callToken) return;
 
-      if (cached && cached.base64Wav && cached.base64Wav.length > 120) {
-        const displayWord = cached.diacritizedWord || targetSeg.text;
-        const script = cached.fullReading || displayWord;
-        setNoorSteps(cached.steps || []);
-        setNoorFullReading(script);
-        setNoorDiacritizedWord(displayWord);
-        setNoorAutoDiacritized(Boolean(cached.wasAutoDiacritized));
-        const url = base64AudioToObjectUrl(cached.base64Wav, cached.mimeType);
+      const script = resolved.fullReading || targetSeg.text;
+      if (resolved.audioBase64 && resolved.audioBase64.length > 120) {
+        const url = base64AudioToObjectUrl(resolved.audioBase64, resolved.mimeType);
         await playAudioSource(
           'noor_albayan',
           url,
           true,
           () => playBrowserSpeech('noor_albayan', script),
-          cacheKey
+          resolved.cacheKey
         );
-        return;
-      }
-
-      const breakdown = await generateNoorAlBayanOnServer({
-        text: targetSeg.text,
-        surahName: targetSeg.surahName,
-      });
-      if (audioRunTokenRef.current !== callToken) return;
-
-      setNoorDiacritizedWord(breakdown.diacritizedWord);
-      setNoorAutoDiacritized(breakdown.wasAutoDiacritized);
-      setNoorSteps(breakdown.steps);
-      setNoorFullReading(breakdown.fullReading);
-
-      const speechScript =
-        breakdown.fullReading ||
-        `${breakdown.steps.map((s) => s.reading).join(' ، ')} ، ${breakdown.diacritizedWord}`;
-
-      const tts = await synthesizeSpeechOnServer({
-        text: speechScript,
-        mode: 'noor_albayan',
-      });
-      if (audioRunTokenRef.current !== callToken) return;
-
-      if (tts.engine === 'browser_speech') {
-        playBrowserSpeech('noor_albayan', tts.text);
-        return;
-      }
-
-      await saveCachedAudioEntry({
-        key: cacheKey,
-        base64Wav: tts.audioBase64,
-        mimeType: tts.mimeType,
-        diacritizedWord: breakdown.diacritizedWord,
-        wasAutoDiacritized: breakdown.wasAutoDiacritized,
-        steps: breakdown.steps,
-        fullReading: speechScript,
-        updatedAtMs: Date.now(),
-      });
-
-      const url = base64AudioToObjectUrl(tts.audioBase64, tts.mimeType);
-      await playAudioSource(
-        'noor_albayan',
-        url,
-        true,
-        () => playBrowserSpeech('noor_albayan', speechScript),
-        cacheKey
-      );
-    } catch {
-      // Ultimate guarantee: Noor Al-Bayan NEVER deadlocks!
-      const fallback = await generateNoorAlBayanOnServer({
-        text: targetSeg.text,
-        surahName: targetSeg.surahName,
-      }).catch(() => null);
-      if (fallback) {
-        setNoorDiacritizedWord(fallback.diacritizedWord);
-        setNoorAutoDiacritized(fallback.wasAutoDiacritized);
-        setNoorSteps(fallback.steps);
-        setNoorFullReading(fallback.fullReading);
-        playBrowserSpeech('noor_albayan', fallback.fullReading);
       } else {
-        playBrowserSpeech('noor_albayan', targetSeg.text);
+        playBrowserSpeech('noor_albayan', script);
       }
+    } catch {
+      const fallback = generateNoorAlBayanClientFallback(targetSeg.text);
+      setNoorDiacritizedWord(fallback.diacritizedWord);
+      setNoorAutoDiacritized(fallback.wasAutoDiacritized);
+      setNoorSteps(fallback.steps);
+      setNoorFullReading(fallback.fullReading);
+      playBrowserSpeech('noor_albayan', fallback.fullReading);
     } finally {
+      window.clearTimeout(safetyUnlockTimer);
       setNoorLoading(false);
       setAudioLoadingMode(null);
     }
   };
 
   const handlePlaySingleNoorStep = (step: NoorAlBayanStep) => {
+    if (continuousStatus !== 'idle') {
+      stopContinuousReading();
+    }
     const line = `${step.ruleLabel}، ${step.reading}`;
     playBrowserSpeech('noor_albayan', line);
   };
 
   const handlePlayNormalReading = async () => {
     if (!selectedSegment) return;
+    if (continuousStatus !== 'idle') {
+      continuousTokenRef.current++;
+      continuousPausedRef.current = false;
+      setContinuousStatus('idle');
+      setContinuousProgress(null);
+    }
     const callToken = ++audioRunTokenRef.current;
     setAudioError(null);
     setAudioLoadingMode('normal');
+    const safetyUnlockTimer = window.setTimeout(() => {
+      if (audioRunTokenRef.current === callToken) {
+        setAudioLoadingMode(null);
+      }
+    }, 12500);
+
     try {
-      const cacheKey = `normal_v2_${selectedSegment.text}`;
-      const cached = await getCachedAudioEntry(cacheKey);
+      const resolved = await resolveSegmentAudio(selectedSegment, 'normal', {
+        callToken,
+        showUi: true,
+      });
       if (audioRunTokenRef.current !== callToken) return;
 
-      if (cached && cached.base64Wav && cached.base64Wav.length > 120) {
-        const url = base64AudioToObjectUrl(cached.base64Wav, cached.mimeType);
+      const script = resolved.fullReading || selectedSegment.text;
+      if (resolved.audioBase64 && resolved.audioBase64.length > 120) {
+        const url = base64AudioToObjectUrl(resolved.audioBase64, resolved.mimeType);
         await playAudioSource(
           'normal',
           url,
           true,
-          () => playBrowserSpeech('normal', cached.fullReading || selectedSegment.text),
-          cacheKey
+          () => playBrowserSpeech('normal', script),
+          resolved.cacheKey
         );
-        return;
+      } else {
+        playBrowserSpeech('normal', script);
       }
-
-      const tts = await synthesizeSpeechOnServer({
-        text: selectedSegment.text,
-        mode: 'normal',
-      });
-      if (audioRunTokenRef.current !== callToken) return;
-
-      if (tts.engine === 'browser_speech') {
-        playBrowserSpeech('normal', tts.text);
-        return;
-      }
-
-      await saveCachedAudioEntry({
-        key: cacheKey,
-        base64Wav: tts.audioBase64,
-        mimeType: tts.mimeType,
-        fullReading: tts.text,
-        updatedAtMs: Date.now(),
-      });
-
-      const url = base64AudioToObjectUrl(tts.audioBase64, tts.mimeType);
-      await playAudioSource(
-        'normal',
-        url,
-        true,
-        () => playBrowserSpeech('normal', tts.text),
-        cacheKey
-      );
     } catch {
       playBrowserSpeech('normal', selectedSegment.text);
     } finally {
+      window.clearTimeout(safetyUnlockTimer);
       setAudioLoadingMode(null);
     }
+  };
+
+  const runContinuousFrom = useCallback(
+    async (
+      startPageIdx: number,
+      startSegIdx: number,
+      mode: 'noor_albayan' | 'normal'
+    ) => {
+      const loopToken = ++continuousTokenRef.current;
+      continuousPausedRef.current = false;
+      setPickingContinuousStart(false);
+      setContinuousStatus('playing');
+      setAudioError(null);
+
+      for (let pIdx = startPageIdx; pIdx < readerPages.length; pIdx++) {
+        if (continuousTokenRef.current !== loopToken || continuousPausedRef.current) return;
+        const page = readerPages[pIdx];
+        if (!page || !page.segments || page.segments.length === 0) continue;
+
+        setCurrentPageIndex(pIdx);
+        await new Promise((r) => window.setTimeout(r, 70));
+        if (continuousTokenRef.current !== loopToken || continuousPausedRef.current) return;
+
+        const segs = page.segments;
+        const firstSegIdx = pIdx === startPageIdx ? Math.max(0, startSegIdx) : 0;
+
+        for (let sIdx = firstSegIdx; sIdx < segs.length; sIdx++) {
+          if (continuousTokenRef.current !== loopToken || continuousPausedRef.current) return;
+          const seg = segs[sIdx];
+          continuousPositionRef.current = { pageIndex: pIdx, segIndex: sIdx, mode };
+          setSelectedSegment(seg);
+          setContinuousStartId(seg.id);
+
+          const chipEl = wordChipRefs.current[seg.id];
+          if (chipEl) {
+            chipEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          }
+
+          setContinuousProgress({
+            currentIndex: sIdx + 1,
+            totalCount: segs.length,
+            wordText: seg.text,
+            pageNumber: page.pageNumber,
+            sourceLabel: 'جاري البحث في قاعدة المكتبة وتجهيز الصوت...',
+          });
+
+          // Background prefetch next segment on this page or next page for instant flow
+          const nextSeg =
+            segs[sIdx + 1] ||
+            (continuousAutoNextPage ? readerPages[pIdx + 1]?.segments?.[0] : undefined);
+          if (nextSeg) {
+            void resolveSegmentAudio(nextSeg, mode, { showUi: false }).catch(() => {});
+          }
+
+          const resolved = await resolveSegmentAudio(seg, mode, { showUi: true });
+          if (continuousTokenRef.current !== loopToken || continuousPausedRef.current) return;
+
+          setContinuousProgress({
+            currentIndex: sIdx + 1,
+            totalCount: segs.length,
+            wordText: seg.text,
+            pageNumber: page.pageNumber,
+            sourceLabel:
+              resolved.source === 'generated'
+                ? 'جديد · تم التوليد والحفظ بالقاعدة النشطة'
+                : 'محفوظ مسبقاً بالقاعدة (تشغيل فوري)',
+          });
+
+          await new Promise<void>((resolve) => {
+            let settled = false;
+            const done = () => {
+              if (settled) return;
+              settled = true;
+              resolve();
+            };
+            const safetyMaxWait = mode === 'noor_albayan' ? 28000 : 14000;
+            const safetyTimer = window.setTimeout(done, safetyMaxWait);
+            const finishWord = () => {
+              window.clearTimeout(safetyTimer);
+              done();
+            };
+
+            const script = resolved.fullReading || seg.text;
+            if (resolved.audioBase64 && resolved.audioBase64.length > 120) {
+              const url = base64AudioToObjectUrl(resolved.audioBase64, resolved.mimeType);
+              void playAudioSource(
+                mode,
+                url,
+                true,
+                () => playBrowserSpeech(mode, script, 0, finishWord),
+                resolved.cacheKey,
+                finishWord
+              );
+            } else {
+              playBrowserSpeech(mode, script, 0, finishWord);
+            }
+          });
+
+          if (continuousTokenRef.current !== loopToken || continuousPausedRef.current) return;
+          await new Promise((r) => window.setTimeout(r, mode === 'noor_albayan' ? 260 : 180));
+        }
+
+        if (!continuousAutoNextPage) break;
+      }
+
+      if (continuousTokenRef.current === loopToken && !continuousPausedRef.current) {
+        setContinuousStatus('idle');
+        setContinuousProgress(null);
+      }
+    },
+    [
+      continuousAutoNextPage,
+      playAudioSource,
+      playBrowserSpeech,
+      readerPages,
+      resolveSegmentAudio,
+    ]
+  );
+
+  const handleStartContinuousReading = () => {
+    const segs = readerPages[currentPageIndex]?.segments || [];
+    if (segs.length === 0) return;
+    let startIdx = segs.findIndex((s) => s.id === continuousStartId);
+    if (startIdx < 0 && selectedSegment) {
+      startIdx = segs.findIndex((s) => s.id === selectedSegment.id);
+    }
+    if (startIdx < 0) startIdx = 0;
+    void runContinuousFrom(currentPageIndex, startIdx, continuousMode);
+  };
+
+  const handlePauseContinuousReading = () => {
+    continuousPausedRef.current = true;
+    continuousTokenRef.current++;
+    setContinuousStatus('paused');
+    stopAndResetAudio();
+  };
+
+  const handleResumeContinuousReading = () => {
+    const pos = continuousPositionRef.current;
+    void runContinuousFrom(pos.pageIndex, pos.segIndex, pos.mode);
   };
 
   const handlePlaySheikhAyah = async (overrideReciterId?: string) => {
@@ -1193,12 +1767,20 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
     setNoorDiacritizedWord('');
     setNoorAutoDiacritized(false);
     setReanalyzingPage(true);
+    setPageOcrProgress({
+      pageNumber: currentPage.pageNumber,
+      pagePercent: 1,
+      stageText: `جاري تجهيز الصفحة ${currentPage.pageNumber} لإعادة التعرف الذكي...`,
+    });
     setFeedback(null);
     try {
       const analyzed = await analyzeBookPageOnServer({
         imageDataUrl: currentPage.imageDataUrl,
         pageNumber: currentPage.pageNumber,
         bookTitle: readerBook.title,
+        onProgress: (prog) => {
+          setPageOcrProgress(prog);
+        },
       });
       const updatedRecord: BookPageRecord = {
         ...currentPage,
@@ -1222,6 +1804,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
       });
     } finally {
       setReanalyzingPage(false);
+      setPageOcrProgress(null);
     }
   };
 
@@ -1275,7 +1858,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
             <button
               type="button"
               onClick={() => {
-                stopAndResetAudio();
+                stopContinuousReading();
                 setReaderBook(null);
               }}
               className="duo-btn-cream min-h-[44px] px-4 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
@@ -1287,7 +1870,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
                 {readerBook.title}
               </h2>
               <p className="text-xs text-[#7D4E35] tabular-nums">
-                اضغط على أي كلمة أو آية في صفحة الكتاب للمعاينة والاستماع
+                اضغط على أي كلمة أو آية في صفحة الكتاب للمعاينة والاستماع، أو شغّل القراءة المتواصلة
               </p>
             </div>
           </div>
@@ -1313,6 +1896,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
                   type="button"
                   disabled={currentPageIndex <= 0}
                   onClick={() => {
+                    stopContinuousReading();
                     const nextIdx = Math.max(0, currentPageIndex - 1);
                     setCurrentPageIndex(nextIdx);
                     const first = readerPages[nextIdx]?.segments?.[0] || null;
@@ -1331,6 +1915,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
                   type="button"
                   disabled={currentPageIndex >= readerPages.length - 1}
                   onClick={() => {
+                    stopContinuousReading();
                     const nextIdx = Math.min(readerPages.length - 1, currentPageIndex + 1);
                     setCurrentPageIndex(nextIdx);
                     const first = readerPages[nextIdx]?.segments?.[0] || null;
@@ -1346,6 +1931,224 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
             )}
           </div>
         </div>
+
+        {/* Continuous Reading Control Bar (القراءة المتواصلة بالتهجي أو السريعة) */}
+        {currentPage && currentPage.segments.length > 0 && (
+          <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-4 sm:p-5 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-[#F56900]/10 text-[#F56900] flex items-center justify-center shrink-0">
+                  <Sparkles className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-display text-sm sm:text-base font-extrabold text-[#4A220D]">
+                    القراءة المتواصلة
+                  </h3>
+                  <p className="text-[11px] text-[#7D4E35]">
+                    يقرأ الكلمات بالتسلسل ويجلب الصوت المحفوظ فوراً أو ينشئه ويحفظه في قاعدة المكتبة النشطة تلقائياً
+                  </p>
+                </div>
+              </div>
+
+              {/* Mode Selector: بالتهجي / سريعة */}
+              <div className="flex items-center gap-1.5 bg-[#FDF6EE] border border-[#EADBC8] rounded-2xl p-1">
+                <button
+                  type="button"
+                  disabled={continuousStatus === 'playing'}
+                  onClick={() => setContinuousMode('noor_albayan')}
+                  className={`min-h-[36px] px-3 rounded-xl font-display font-bold text-xs cursor-pointer transition-colors disabled:opacity-60 ${
+                    continuousMode === 'noor_albayan'
+                      ? 'bg-[#F56900] text-white'
+                      : 'text-[#4A220D] hover:bg-white'
+                  }`}
+                >
+                  بالتهجي (نور البيان)
+                </button>
+                <button
+                  type="button"
+                  disabled={continuousStatus === 'playing'}
+                  onClick={() => setContinuousMode('normal')}
+                  className={`min-h-[36px] px-3 rounded-xl font-display font-bold text-xs cursor-pointer transition-colors disabled:opacity-60 ${
+                    continuousMode === 'normal'
+                      ? 'bg-[#46A302] text-white'
+                      : 'text-[#4A220D] hover:bg-white'
+                  }`}
+                >
+                  سريعة (قراءة عادية)
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-center">
+              {/* Start word selector dropdown */}
+              <div className="lg:col-span-5 flex items-center gap-2">
+                <label
+                  htmlFor="continuous-start-select"
+                  className="text-xs font-bold text-[#7D4E35] shrink-0 whitespace-nowrap"
+                >
+                  ابدأ من الكلمة:
+                </label>
+                <select
+                  id="continuous-start-select"
+                  disabled={continuousStatus === 'playing'}
+                  value={continuousStartId || selectedSegment?.id || currentPage.segments[0]?.id || ''}
+                  onChange={(e) => {
+                    const seg = currentPage.segments.find((s) => s.id === e.target.value);
+                    if (seg) {
+                      setContinuousStartId(seg.id);
+                      setSelectedSegment(seg);
+                    }
+                  }}
+                  className="w-full min-h-[42px] px-3 py-1.5 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE]/70 text-xs sm:text-sm font-bold text-[#4A220D]"
+                >
+                  {currentPage.segments.map((seg, i) => (
+                    <option key={seg.id} value={seg.id}>
+                      {i + 1}. {seg.text.slice(0, 42)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Pick by clicking word button + Auto next page toggle */}
+              <div className="lg:col-span-3 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={continuousStatus === 'playing'}
+                  onClick={() => setPickingContinuousStart((p) => !p)}
+                  className={`min-h-[42px] px-3 rounded-xl border-2 font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50 ${
+                    pickingContinuousStart
+                      ? 'bg-[#F56900] border-[#C95200] text-white'
+                      : 'bg-[#FDF6EE] border-[#EADBC8] text-[#4A220D] hover:border-[#F56900]'
+                  }`}
+                >
+                  <Crosshair className="w-3.5 h-3.5 shrink-0" />
+                  <span>{pickingContinuousStart ? 'انقر على أي كلمة...' : 'تحديد بالنقر'}</span>
+                </button>
+
+                <label className="inline-flex items-center gap-1.5 text-xs font-bold text-[#4A220D] cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={continuousAutoNextPage}
+                    onChange={(e) => setContinuousAutoNextPage(e.target.checked)}
+                    className="w-4 h-4 accent-[#58CC02] rounded cursor-pointer"
+                  />
+                  <span>التالي تلقائياً</span>
+                </label>
+              </div>
+
+              {/* Transport action buttons */}
+              <div className="lg:col-span-4 flex flex-wrap items-center justify-end gap-2">
+                {continuousStatus === 'idle' && (
+                  <button
+                    type="button"
+                    onClick={handleStartContinuousReading}
+                    className="duo-btn-green w-full sm:w-auto min-h-[44px] px-5 rounded-xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <Play className="w-4 h-4 shrink-0" />
+                    <span>ابدأ القراءة المتواصلة</span>
+                  </button>
+                )}
+
+                {continuousStatus === 'playing' && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handlePauseContinuousReading}
+                      className="min-h-[42px] px-4 rounded-xl bg-[#4A220D] text-white font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Pause className="w-3.5 h-3.5" />
+                      <span>إيقاف مؤقت</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={stopContinuousReading}
+                      className="min-h-[42px] px-4 rounded-xl bg-[#D95338] text-white font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Square className="w-3.5 h-3.5" />
+                      <span>إيقاف</span>
+                    </button>
+                  </>
+                )}
+
+                {continuousStatus === 'paused' && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleResumeContinuousReading}
+                      className="duo-btn-green min-h-[42px] px-4 rounded-xl font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Play className="w-3.5 h-3.5" />
+                      <span>متابعة</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={stopContinuousReading}
+                      className="min-h-[42px] px-4 rounded-xl bg-[#D95338] text-white font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Square className="w-3.5 h-3.5" />
+                      <span>إيقاف</span>
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {pickingContinuousStart && (
+              <div className="bg-[#FDF6EE] border border-[#F56900]/40 rounded-xl px-3.5 py-2 text-xs font-bold text-[#F56900]">
+                اضغط الآن على أي كلمة في صورة الصفحة أو من قائمة الكلمات لتكون نقطة البداية في القراءة المتواصلة.
+              </div>
+            )}
+
+            {continuousProgress && (
+              <div className="bg-[#FDF6EE] border border-[#58CC02]/40 rounded-2xl px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs font-bold">
+                <div className="flex items-center gap-2 text-[#4A220D]">
+                  <Volume2 className="w-4 h-4 text-[#46A302] shrink-0" />
+                  <span>
+                    صفحة {continuousProgress.pageNumber} · كلمة {continuousProgress.currentIndex} من{' '}
+                    {continuousProgress.totalCount}:
+                  </span>
+                  <span className="font-display font-extrabold text-sm text-[#F56900]">
+                    {continuousProgress.wordText}
+                  </span>
+                </div>
+                <span className="text-[11px] font-bold text-[#46A302] inline-flex items-center gap-1">
+                  <Database className="w-3.5 h-3.5" />
+                  <span>{continuousProgress.sourceLabel}</span>
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Live Per-Page Progress Banner in Reader View */}
+        {reanalyzingPage && (
+          <div className="bg-[#FDF6EE] border-2 border-[#58CC02] rounded-2xl p-4 space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs sm:text-sm font-display font-extrabold text-[#4A220D]">
+                <Loader2 className="w-4 h-4 text-[#46A302] animate-spin shrink-0" />
+                <span>
+                  إعادة التعرف الذكي على الصفحة{' '}
+                  {pageOcrProgress?.pageNumber ?? currentPage?.pageNumber ?? ''}
+                </span>
+              </div>
+              <span className="px-2.5 py-0.5 rounded-lg bg-[#58CC02]/15 border border-[#58CC02]/40 text-xs sm:text-sm font-display font-extrabold text-[#46A302] tabular-nums">
+                {pageOcrProgress?.pagePercent ?? 2}%
+              </span>
+            </div>
+            <div className="w-full h-2.5 rounded-full bg-white border border-[#EADBC8] overflow-hidden">
+              <div
+                className="h-full bg-[#58CC02] transition-all duration-200"
+                style={{ width: `${pageOcrProgress?.pagePercent ?? 2}%` }}
+              />
+            </div>
+            <p className="text-xs font-bold text-[#7D4E35] flex items-center gap-1.5">
+              <Sparkles className="w-3.5 h-3.5 text-[#F56900] shrink-0" />
+              <span>
+                {pageOcrProgress?.stageText || 'جاري تجهيز الصفحة لبدء القراءة...'}
+              </span>
+            </p>
+          </div>
+        )}
 
         {feedback && (
           <div
@@ -1440,6 +2243,9 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
                       return (
                         <button
                           key={seg.id}
+                          ref={(el) => {
+                            wordChipRefs.current[seg.id] = el;
+                          }}
                           type="button"
                           onClick={() => handleSelectSegment(seg)}
                           className={`min-h-[38px] px-3 py-1 rounded-xl border-2 text-base font-bold transition-colors cursor-pointer ${
@@ -1539,6 +2345,13 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
                       <span>قراءة عادية</span>
                     </button>
                   </div>
+
+                  {wordAudioStatus && (
+                    <div className="rounded-xl bg-[#58CC02]/10 border border-[#58CC02]/40 px-3 py-2 text-[11px] font-bold text-[#46A302] flex items-center gap-1.5">
+                      <Database className="w-3.5 h-3.5 shrink-0" />
+                      <span>{wordAudioStatus}</span>
+                    </div>
+                  )}
 
                   {/* Option 3: Reciter Selection for Quranic Ayahs */}
                   {selectedSegment.kind === 'ayah' && (
@@ -1883,6 +2696,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
                   onClick={() => {
                     pauseRequestedRef.current = true;
                     setIsRunningJob(false);
+                    setPageOcrProgress(null);
                     setActiveJob((prev) =>
                       prev ? { ...prev, status: 'paused' } : prev
                     );
@@ -1951,6 +2765,45 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
               </div>
             </div>
           </div>
+
+          {/* Live Per-Page Progress Panel */}
+          {isRunningJob && activeJob.status === 'processing' && pageOcrProgress && (
+            <div className="bg-[#FDF6EE] border-2 border-[#EADBC8] rounded-2xl p-3.5 sm:p-4 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs sm:text-sm font-display font-extrabold text-[#4A220D] tabular-nums">
+                  <Loader2 className="w-4 h-4 text-[#F56900] animate-spin shrink-0" />
+                  <span>
+                    تقدّم الصفحة الحالية: صفحة {pageOcrProgress.pageNumber} من{' '}
+                    {activeJobStats.total}
+                  </span>
+                </div>
+                <span className="px-2.5 py-0.5 rounded-lg bg-[#58CC02]/15 border border-[#58CC02]/40 text-xs sm:text-sm font-display font-extrabold text-[#46A302] tabular-nums">
+                  {pageOcrProgress.pagePercent}%
+                </span>
+              </div>
+              <div className="w-full h-2.5 rounded-full bg-white border border-[#EADBC8] overflow-hidden">
+                <div
+                  className="h-full bg-[#58CC02] transition-all duration-200"
+                  style={{ width: `${pageOcrProgress.pagePercent}%` }}
+                />
+              </div>
+              <p className="text-xs font-bold text-[#7D4E35] flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-[#F56900] shrink-0" />
+                <span>{pageOcrProgress.stageText}</span>
+              </p>
+            </div>
+          )}
+
+          {isRunningJob && activeJob.status === 'uploading' && (
+            <div className="bg-[#FDF6EE] border border-[#EADBC8] rounded-2xl px-3.5 py-2.5 text-xs font-bold text-[#7D4E35] flex items-center gap-2 tabular-nums">
+              <Loader2 className="w-4 h-4 text-[#F56900] animate-spin shrink-0" />
+              <span>
+                جاري رفع الصفحة{' '}
+                {Math.min(activeJobStats.total, activeJobStats.uploaded + 1)} من{' '}
+                {activeJobStats.total} وحفظها في المكتبة...
+              </span>
+            </div>
+          )}
         </div>
       )}
 

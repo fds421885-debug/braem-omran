@@ -57,7 +57,7 @@ function getFriendlyGeminiError(err: unknown): { status: number; message: string
   };
 }
 
-async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 3): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 2): Promise<T> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
@@ -74,10 +74,82 @@ async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 3): Promise<T> {
       if (!retryable || attempt === maxAttempts) {
         throw err;
       }
-      await new Promise((r) => setTimeout(r, 700 * attempt));
+      await new Promise((r) => setTimeout(r, 500 * attempt));
     }
   }
   throw lastError;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timerId: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timerId = setTimeout(() => {
+      reject(new Error(`Request timeout after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timerId !== null) clearTimeout(timerId);
+  }
+}
+
+function ensureWavBase64(rawBase64: string, rawMimeType?: string): {
+  base64Wav: string;
+  mimeType: string;
+} {
+  const buf = Buffer.from(rawBase64, 'base64');
+  if (
+    buf.length >= 12 &&
+    buf[0] === 0x52 &&
+    buf[1] === 0x49 &&
+    buf[2] === 0x46 &&
+    buf[3] === 0x46
+  ) {
+    return { base64Wav: rawBase64, mimeType: 'audio/wav' };
+  }
+
+  // Gemini TTS often returns raw signed 16-bit LE PCM (e.g., audio/L16;codec=pcm;rate=24000).
+  // Wrap it in a standard 44-byte RIFF/WAVE header so browser <audio> decodes immediately.
+  if (
+    !rawMimeType ||
+    rawMimeType.toLowerCase().includes('pcm') ||
+    rawMimeType.toLowerCase().includes('l16') ||
+    rawMimeType.toLowerCase().includes('wav')
+  ) {
+    const rateMatch = rawMimeType?.match(/rate=(\d+)/i);
+    const sampleRate = rateMatch ? Math.max(8000, Math.min(48000, Number(rateMatch[1]))) : 24000;
+    const numChannels = 1;
+    const bitsPerSample = 16;
+    const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
+    const blockAlign = (numChannels * bitsPerSample) / 8;
+    const dataSize = buf.length;
+
+    const header = Buffer.alloc(44);
+    header.write('RIFF', 0);
+    header.writeUInt32LE(36 + dataSize, 4);
+    header.write('WAVE', 8);
+    header.write('fmt ', 12);
+    header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(1, 20);
+    header.writeUInt16LE(numChannels, 22);
+    header.writeUInt32LE(sampleRate, 24);
+    header.writeUInt32LE(byteRate, 28);
+    header.writeUInt16LE(blockAlign, 32);
+    header.writeUInt16LE(bitsPerSample, 34);
+    header.write('data', 36);
+    header.writeUInt32LE(dataSize, 40);
+
+    return {
+      base64Wav: Buffer.concat([header, buf]).toString('base64'),
+      mimeType: 'audio/wav',
+    };
+  }
+
+  return {
+    base64Wav: rawBase64,
+    mimeType: rawMimeType,
+  };
 }
 
 function stripTashkeel(input: string): string {
@@ -333,36 +405,39 @@ async function startServer() {
    - "ruleLabel": القاعدة مثل (فتحة، كسرة، ضمة، لام قمرية مظهرة، لام شمسية مدغمة، مد بالألف حركتان، سكون، شدة وفتحة، تنوين بالضم...)
    - "reading": النتيجة المجمعة حتى هذه الخطوة بالحركات الكاملة.`;
 
-      const result = await withRetry(() =>
-        ai.models.generateContent({
-          model: 'gemini-4-hydrogen',
-          contents: prompt,
-          config: {
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                diacritizedWord: { type: Type.STRING },
-                wasAutoDiacritized: { type: Type.BOOLEAN },
-                tahajjiScript: { type: Type.STRING },
-                steps: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      part: { type: Type.STRING },
-                      ruleLabel: { type: Type.STRING },
-                      reading: { type: Type.STRING },
+      const result = await withTimeout(
+        withRetry(() =>
+          ai.models.generateContent({
+            model: 'gemini-4-hydrogen',
+            contents: prompt,
+            config: {
+              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  diacritizedWord: { type: Type.STRING },
+                  wasAutoDiacritized: { type: Type.BOOLEAN },
+                  tahajjiScript: { type: Type.STRING },
+                  steps: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        part: { type: Type.STRING },
+                        ruleLabel: { type: Type.STRING },
+                        reading: { type: Type.STRING },
+                      },
+                      required: ['part', 'ruleLabel', 'reading'],
                     },
-                    required: ['part', 'ruleLabel', 'reading'],
                   },
                 },
+                required: ['diacritizedWord', 'tahajjiScript', 'steps'],
               },
-              required: ['diacritizedWord', 'tahajjiScript', 'steps'],
             },
-          },
-        })
+          })
+        ),
+        9000
       );
 
       const rawJson = (result.text ?? '{}').trim();
@@ -410,52 +485,49 @@ async function startServer() {
         return;
       }
 
-      const stylePrompt =
-        readingMode === 'tahajji'
-          ? 'Warm, patient Classical Arabic Noor Al-Bayan Quran teacher. Speak slowly and articulate every Arabic letter name, fatha, kasra, damma, sukoon, shadda, tanween, and 2-count madd elongation clearly with short gentle pauses at commas.'
-          : 'Clear, articulate Classical Arabic educator reading the Arabic text naturally at a calm pace while pronouncing every short vowel (harakat) and letter ending accurately.';
-
       const ai = getGeminiClient();
-      const response = await withRetry(() =>
-        ai.models.generateContent({
-          model: 'gemini-3.8-flash-lite-tts',
-          contents: [
-            {
-              role: 'user',
-              parts: [
-                {
-                  text: spokenText,
-                  speechMetadata: {
-                    style: stylePrompt,
+      const response = await withTimeout(
+        withRetry(() =>
+          ai.models.generateContent({
+            model: 'gemini-3.8-flash-lite-tts',
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  {
+                    text: spokenText,
                   },
+                ],
+              },
+            ],
+            config: {
+              responseModalities: ['AUDIO'],
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: { voiceName: 'Charon' },
                 },
-              ],
-            },
-          ],
-          config: {
-            responseModalities: ['AUDIO'],
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: { voiceName: 'Charon' },
               },
             },
-          },
-        })
+          })
+        ),
+        10500
       );
 
-      const base64Audio = response.candidates?.[0]?.content?.parts?.find(
+      const audioPart = response.candidates?.[0]?.content?.parts?.find(
         (p) => Boolean(p.inlineData?.data)
-      )?.inlineData?.data;
+      )?.inlineData;
+      const base64Audio = audioPart?.data;
 
       if (!base64Audio || base64Audio.length < 120) {
         res.status(502).json({ error: 'لم يتمكن محرك الصوت من توليد المقطع الصوتي.' });
         return;
       }
 
-      setLruCache(ttsAudioServerCache, cacheKey, base64Audio, 250);
+      const wrapped = ensureWavBase64(base64Audio, audioPart?.mimeType);
+      setLruCache(ttsAudioServerCache, cacheKey, wrapped.base64Wav, 250);
       res.json({
-        audioBase64: base64Audio,
-        mimeType: 'audio/wav',
+        audioBase64: wrapped.base64Wav,
+        mimeType: wrapped.mimeType,
       });
     } catch (err) {
       const friendly = getFriendlyGeminiError(err);

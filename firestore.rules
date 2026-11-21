@@ -50,6 +50,13 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/accounts/$(request.auth.uid)).data.complexId == cpxId;
     }
 
+    function isComplexMember(cpxId) {
+      return isVerifiedUser()
+        && isValidId(cpxId)
+        && exists(/databases/$(database)/documents/accounts/$(request.auth.uid))
+        && get(/databases/$(database)/documents/accounts/$(request.auth.uid)).data.complexId == cpxId;
+    }
+
     function isBoundedStringList(arr, maxLen) {
       return arr is list
         && arr.size() <= maxLen
@@ -89,7 +96,7 @@ service cloud.firestore {
         && data.name is string && data.name.size() >= 2 && data.name.size() <= 120
         && data.hasExternalDb is bool
         && data.firebaseConfigJson is string && data.firebaseConfigJson.size() <= 2500
-        && data.mosqueConfigsJson is string && data.mosqueConfigsJson.size() <= 8000
+        && data.mosqueConfigsJson is string && data.mosqueConfigsJson.size() <= 32000
         && data.active is bool
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
@@ -274,6 +281,34 @@ service cloud.firestore {
         && data.fullText is string && data.fullText.size() <= 25000
         && data.segments is list && data.segments.size() <= 500
         && (data.segments.size() == 0 || data.segments[0] is map)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidWordAudio(data, audioId) {
+      return data.keys().hasAll([
+          'id', 'complexId', 'mode', 'wordText', 'diacritizedWord',
+          'wasAutoDiacritized', 'fullReading', 'steps', 'audioBase64',
+          'mimeType', 'byteSize', 'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'complexId', 'mode', 'wordText', 'diacritizedWord',
+          'wasAutoDiacritized', 'fullReading', 'steps', 'audioBase64',
+          'mimeType', 'byteSize', 'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == audioId && isValidId(data.id)
+        && data.complexId is string && isValidId(data.complexId)
+        && data.mode in ['noor_albayan', 'normal']
+        && data.wordText is string && data.wordText.size() >= 1 && data.wordText.size() <= 1200
+        && data.diacritizedWord is string && data.diacritizedWord.size() >= 1 && data.diacritizedWord.size() <= 1200
+        && data.wasAutoDiacritized is bool
+        && data.fullReading is string && data.fullReading.size() <= 2500
+        && data.steps is list && data.steps.size() <= 60
+        && (data.steps.size() == 0 || data.steps[0] is map)
+        && data.audioBase64 is string && data.audioBase64.size() <= 660000
+        && data.mimeType is string && data.mimeType.size() >= 1 && data.mimeType.size() <= 64
+        && data.byteSize is int && data.byteSize >= 0 && data.byteSize <= 1048576
+        && data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128
+        && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
 
@@ -671,6 +706,42 @@ service cloud.firestore {
           'imageDataUrl', 'width', 'height', 'recognized', 'fullText', 'segments', 'updatedAt'
         ]);
       allow delete: if isValidId(pageId) && (
+        isPlatformAdmin() || isComplexSupervisor(existing().complexId)
+      );
+    }
+
+    match /wordAudio/{audioId} {
+      allow get: if isSignedIn() && isValidId(audioId) && (
+        isPlatformAdmin() || isComplexMember(existing().complexId)
+      );
+      allow list: if isSignedIn() && (
+        isPlatformAdmin()
+        || (resource.data.complexId is string && isComplexMember(resource.data.complexId))
+      );
+      allow create: if (isPlatformAdmin() || isComplexMember(incoming().complexId))
+        && isValidId(audioId)
+        && isValidWordAudio(incoming(), audioId)
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if (
+          isPlatformAdmin()
+          || (isComplexMember(existing().complexId) && incoming().complexId == existing().complexId)
+        )
+        && isValidId(audioId)
+        && isValidWordAudio(incoming(), audioId)
+        && incoming().id == existing().id
+        && incoming().complexId == existing().complexId
+        && incoming().mode == existing().mode
+        && incoming().wordText == existing().wordText
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'diacritizedWord', 'wasAutoDiacritized', 'fullReading', 'steps',
+          'audioBase64', 'mimeType', 'byteSize', 'updatedAt'
+        ]);
+      allow delete: if isValidId(audioId) && (
         isPlatformAdmin() || isComplexSupervisor(existing().complexId)
       );
     }

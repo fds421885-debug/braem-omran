@@ -359,3 +359,37 @@ export interface TeacherRoleContext {
   halaqaName: string;
 }
 
+export const TAB_SHARD_MAX_BYTES = 4 * 1024 * 1024 * 1024; // 4 GB cap per database shard
+
+export type TabDbShardStatus = 'active' | 'full' | 'standby';
+
+export interface TabDbShard {
+  id: string;
+  label: string;
+  config: ExternalFirebaseConfig;
+  usedBytes: number;
+  maxBytes: number;
+  docsCount: number;
+  status: TabDbShardStatus;
+  createdAtMs: number;
+}
+
+export type TabDbPoolMap = Partial<Record<ComplexFeatureTabKey, TabDbShard[]>>;
+
+export interface BookWordAudioRecord {
+  id: string;
+  complexId: string;
+  mode: 'noor_albayan' | 'normal';
+  wordText: string;
+  diacritizedWord: string;
+  wasAutoDiacritized: boolean;
+  fullReading: string;
+  steps: NoorAlBayanStep[];
+  audioBase64: string;
+  mimeType: string;
+  byteSize: number;
+  createdBy: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+

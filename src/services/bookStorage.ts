@@ -6,7 +6,10 @@ import {
   generateNoorAlBayanClientFallback,
   inferArabicDiacriticsForWord,
   verifyAndAlignSegmentsWithQuran,
+  type PageOcrProgress,
 } from './clientArabicEngine';
+
+export type { PageOcrProgress };
 
 function getPdfJsAssetBaseUrl(): string {
   const rawBase = import.meta.env.BASE_URL || '/';
@@ -524,31 +527,99 @@ function isStaticMissingApi(res: Response): boolean {
   return false;
 }
 
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number
+): Promise<Response> {
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  let timerId: number | null = null;
+  if (controller && typeof window !== 'undefined') {
+    timerId = window.setTimeout(() => {
+      try {
+        controller.abort();
+      } catch {
+        // Ignore abort cleanup error
+      }
+    }, timeoutMs);
+  }
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: controller ? controller.signal : init.signal,
+    });
+  } finally {
+    if (timerId !== null && typeof window !== 'undefined') {
+      window.clearTimeout(timerId);
+    }
+  }
+}
+
 export async function analyzeBookPageOnServer(params: {
   imageDataUrl: string;
   ocrImageDataUrl?: string;
   pageNumber: number;
   bookTitle?: string;
   embeddedSegments?: EmbeddedWordHint[];
+  onProgress?: (progress: PageOcrProgress) => void;
 }): Promise<{
   fullText: string;
   segments: BookTextSegment[];
 }> {
+  const emit = (pagePercent: number, stageText: string) => {
+    params.onProgress?.({
+      pageNumber: params.pageNumber,
+      pagePercent: Math.max(1, Math.min(100, Math.round(pagePercent))),
+      stageText,
+    });
+  };
+
+  if (!params.ocrImageDataUrl) {
+    emit(3, 'جاري رفع دقة صورة الصفحة وتنعيم الحروف قبل التحليل...');
+  } else {
+    emit(4, 'تم تجهيز نسخة عالية الدقة من الصفحة لبدء التحليل...');
+  }
+
   const highResSource =
     params.ocrImageDataUrl ||
     (await enhanceImageDataUrlForRecognition(params.imageDataUrl));
 
   if (staticHostWithoutApi !== true) {
+    let serverPct = 16;
+    let progressTimer: number | null = null;
     try {
-      const res = await fetch('/api/books/analyze-page', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          imageDataUrl: highResSource,
-          pageNumber: params.pageNumber,
-          bookTitle: params.bookTitle,
-        }),
-      });
+      emit(16, 'جاري إرسال الصفحة إلى محرك الذكاء الاصطناعي...');
+      if (typeof window !== 'undefined') {
+        progressTimer = window.setInterval(() => {
+          serverPct = Math.min(80, serverPct + 7);
+          const stage =
+            serverPct < 38
+              ? 'جاري قراءة النصوص والآيات والحركات على الصفحة...'
+              : serverPct < 62
+              ? 'جاري استخراج الكلمات وضبط التشكيل العربي...'
+              : 'جاري تحديد إحداثيات ومواقع الكلمات بدقة...';
+          emit(serverPct, stage);
+        }, 700);
+      }
+
+      const res = await fetchWithTimeout(
+        '/api/books/analyze-page',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            imageDataUrl: highResSource,
+            pageNumber: params.pageNumber,
+            bookTitle: params.bookTitle,
+          }),
+        },
+        22000
+      );
+
+      if (progressTimer !== null) {
+        window.clearInterval(progressTimer);
+        progressTimer = null;
+      }
 
       if (!isStaticMissingApi(res)) {
         const data = (await res.json().catch(() => ({}))) as {
@@ -564,6 +635,7 @@ export async function analyzeBookPageOnServer(params: {
               segments: serverSegments,
               fullText: String(data.fullText || '').trim(),
               pageNumber: params.pageNumber,
+              onProgress: params.onProgress,
             });
           }
         } else if (res.status !== 404 && res.status !== 405 && res.status !== 501) {
@@ -574,6 +646,11 @@ export async function analyzeBookPageOnServer(params: {
       }
     } catch {
       // Static host or offline API — use pure browser Arabic OCR below
+    } finally {
+      if (progressTimer !== null) {
+        window.clearInterval(progressTimer);
+        progressTimer = null;
+      }
     }
   }
 
@@ -581,6 +658,7 @@ export async function analyzeBookPageOnServer(params: {
     imageDataUrl: highResSource,
     pageNumber: params.pageNumber,
     embeddedSegments: params.embeddedSegments,
+    onProgress: params.onProgress,
   });
 }
 
@@ -595,11 +673,15 @@ export async function generateNoorAlBayanOnServer(params: {
 }> {
   if (staticHostWithoutApi !== true) {
     try {
-      const res = await fetch('/api/books/noor-albayan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params),
-      });
+      const res = await fetchWithTimeout(
+        '/api/books/noor-albayan',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(params),
+        },
+        6000
+      );
 
       if (!isStaticMissingApi(res)) {
         const data = (await res.json().catch(() => ({}))) as {
@@ -650,14 +732,18 @@ export async function synthesizeSpeechOnServer(params: {
 
   if (staticHostWithoutApi !== true) {
     try {
-      const res = await fetch('/api/tts/speak', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: preparedText,
-          mode: params.mode,
-        }),
-      });
+      const res = await fetchWithTimeout(
+        '/api/tts/speak',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: preparedText,
+            mode: params.mode,
+          }),
+        },
+        9500
+      );
 
       if (!isStaticMissingApi(res)) {
         const data = (await res.json().catch(() => ({}))) as {
@@ -678,7 +764,7 @@ export async function synthesizeSpeechOnServer(params: {
         staticHostWithoutApi = true;
       }
     } catch {
-      // Static host, rate limit, or offline API — fall through to chunked browser SpeechSynthesis
+      // Static host, timeout, rate limit, or offline API — fall through to chunked browser SpeechSynthesis
     }
   }
 
@@ -690,12 +776,121 @@ export async function synthesizeSpeechOnServer(params: {
   };
 }
 
+function buildWavWithRiffHeader(pcmBytes: Uint8Array, sampleRate = 24000): Uint8Array {
+  const header = new ArrayBuffer(44);
+  const view = new DataView(header);
+  const writeAscii = (offset: number, str: string) => {
+    for (let i = 0; i < str.length; i++) {
+      view.setUint8(offset + i, str.charCodeAt(i));
+    }
+  };
+  writeAscii(0, 'RIFF');
+  view.setUint32(4, 36 + pcmBytes.length, true);
+  writeAscii(8, 'WAVE');
+  writeAscii(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeAscii(36, 'data');
+  view.setUint32(40, pcmBytes.length, true);
+
+  const out = new Uint8Array(44 + pcmBytes.length);
+  out.set(new Uint8Array(header), 0);
+  out.set(pcmBytes, 44);
+  return out;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  const chunkSize = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const slice = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+    binary += String.fromCharCode(...slice);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Ensures audioBase64 stays comfortably within Firestore's 1 MiB document size limit
+ * by halving PCM sample rate (24kHz -> 12kHz) when clips are longer, or returning empty if still too large.
+ */
+export function shrinkWavBase64ForDb(
+  base64Data: string,
+  mimeType = 'audio/wav',
+  maxChars = 640000
+): { audioBase64: string; mimeType: string } {
+  if (!base64Data) return { audioBase64: '', mimeType };
+  if (base64Data.length <= maxChars) return { audioBase64: base64Data, mimeType };
+
+  try {
+    const binary = atob(base64Data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+
+    const isRiff =
+      bytes.length > 44 &&
+      bytes[0] === 0x52 &&
+      bytes[1] === 0x49 &&
+      bytes[2] === 0x46 &&
+      bytes[3] === 0x46;
+
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const sampleRate = isRiff ? view.getUint32(24, true) : 24000;
+    const pcmStart = isRiff ? 44 : 0;
+    const sampleCount = Math.floor((bytes.length - pcmStart) / 2);
+
+    // Try 2x downsample, then 3x if needed
+    for (const factor of [2, 3]) {
+      const targetRate = Math.max(8000, Math.round(sampleRate / factor));
+      const newSamples = Math.floor(sampleCount / factor);
+      const downsampled = new Uint8Array(newSamples * 2);
+      const outView = new DataView(downsampled.buffer);
+      for (let i = 0; i < newSamples; i++) {
+        const srcByte = pcmStart + i * factor * 2;
+        const sample = view.getInt16(srcByte, true);
+        outView.setInt16(i * 2, sample, true);
+      }
+      const wrapped = buildWavWithRiffHeader(downsampled, targetRate);
+      const encoded = bytesToBase64(wrapped);
+      if (encoded.length <= maxChars) {
+        return { audioBase64: encoded, mimeType: 'audio/wav' };
+      }
+    }
+  } catch {
+    // Non-fatal fallback
+  }
+
+  return { audioBase64: '', mimeType: 'text/speech' };
+}
+
 export function base64AudioToObjectUrl(base64Data: string, mimeType = 'audio/wav'): string {
   const binary = atob(base64Data);
-  const bytes = new Uint8Array(binary.length);
+  let bytes: Uint8Array<ArrayBufferLike> = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {
     bytes[i] = binary.charCodeAt(i);
   }
-  const blob = new Blob([bytes], { type: mimeType });
+  const hasRiffHeader =
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46;
+  const normalizedMime = mimeType.toLowerCase();
+  if (
+    !hasRiffHeader &&
+    (normalizedMime.includes('wav') ||
+      normalizedMime.includes('pcm') ||
+      normalizedMime.includes('l16'))
+  ) {
+    bytes = buildWavWithRiffHeader(bytes, 24000);
+    mimeType = 'audio/wav';
+  }
+  const blob = new Blob([bytes.buffer as ArrayBuffer], { type: mimeType });
   return URL.createObjectURL(blob);
 }

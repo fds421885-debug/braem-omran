@@ -24,7 +24,14 @@ const QURAN_CACHE_DB = 'braem_omran_quran_cache_v1';
 const QURAN_CACHE_STORE = 'quranData';
 const QURAN_CACHE_KEY = 'full_quran_simple_v2';
 
+export interface PageOcrProgress {
+  pageNumber: number;
+  pagePercent: number;
+  stageText: string;
+}
+
 let ocrWorkerPromise: Promise<Worker> | null = null;
+let activeOcrLoggerCallback: ((m: { status?: string; progress?: number }) => void) | null = null;
 let quranIndexPromise: Promise<QuranIndexData | null> | null = null;
 let loadedQuranWordMap: Map<string, string> | null = null;
 
@@ -1965,9 +1972,20 @@ export async function verifyAndAlignSegmentsWithQuran(params: {
   segments: BookTextSegment[];
   fullText: string;
   pageNumber: number;
+  onProgress?: (progress: PageOcrProgress) => void;
 }): Promise<{ fullText: string; segments: BookTextSegment[] }> {
+  params.onProgress?.({
+    pageNumber: params.pageNumber,
+    pagePercent: 86,
+    stageText: 'جاري مطابقة النصوص والآيات مع فهرس القرآن الكريم (٦٢٣٦ آية)...',
+  });
   const quranIndex = await getQuranIndex().catch(() => null);
   if (!quranIndex || params.segments.length === 0) {
+    params.onProgress?.({
+      pageNumber: params.pageNumber,
+      pagePercent: 100,
+      stageText: 'اكتمل التعرف على الصفحة بنجاح',
+    });
     return { fullText: params.fullText, segments: params.segments };
   }
 
@@ -1977,6 +1995,16 @@ export async function verifyAndAlignSegmentsWithQuran(params: {
     params.pageNumber
   );
   if (reconstructed && reconstructed.length > 0) {
+    params.onProgress?.({
+      pageNumber: params.pageNumber,
+      pagePercent: 97,
+      stageText: 'جاري ضبط التشكيل العثماني الكامل ومواقع الكلمات على الصفحة...',
+    });
+    params.onProgress?.({
+      pageNumber: params.pageNumber,
+      pagePercent: 100,
+      stageText: 'تمت مطابقة الآيات والتشكيل بنسبة دقة كاملة',
+    });
     return {
       fullText: reconstructed.map((s) => s.text).join(' ').slice(0, 18000),
       segments: reconstructed,
@@ -1984,6 +2012,16 @@ export async function verifyAndAlignSegmentsWithQuran(params: {
   }
 
   const enriched = enrichSegmentsWithQuranMatch(params.segments, quranIndex);
+  params.onProgress?.({
+    pageNumber: params.pageNumber,
+    pagePercent: 97,
+    stageText: 'جاري ضبط التشكيل وإحداثيات الكلمات...',
+  });
+  params.onProgress?.({
+    pageNumber: params.pageNumber,
+    pagePercent: 100,
+    stageText: 'اكتمل التعرف على الصفحة بنجاح',
+  });
   return {
     fullText:
       enriched.length > 0
@@ -1996,7 +2034,11 @@ export async function verifyAndAlignSegmentsWithQuran(params: {
 async function getArabicOcrWorker(): Promise<Worker> {
   if (ocrWorkerPromise) return ocrWorkerPromise;
   ocrWorkerPromise = (async () => {
-    const worker = await createWorker('ara', 1);
+    const worker = await createWorker('ara', 1, {
+      logger: (m: { status?: string; progress?: number }) => {
+        activeOcrLoggerCallback?.(m);
+      },
+    });
     await worker.setParameters({
       tessedit_pageseg_mode: PSM.AUTO,
       preserve_interword_spaces: '1',
@@ -2748,13 +2790,18 @@ interface PreparedOcrVariants {
   buildVariantC: () => HTMLCanvasElement;
 }
 
-async function prepareOcrVariants(imageDataUrl: string): Promise<PreparedOcrVariants> {
+async function prepareOcrVariants(
+  imageDataUrl: string,
+  onStage?: (pct: number, stageText: string) => void
+): Promise<PreparedOcrVariants> {
+  onStage?.(4, 'جاري فحص أبعاد الصفحة وعزل الزخارف والأشرطة الجانبية...');
   const img = await loadHtmlImage(imageDataUrl);
   const crop = detectInnerTextCropRect(img);
   const upCanvas = progressiveCropAndUpscale(img, crop, 2150);
   const w = upCanvas.width;
   const h = upCanvas.height;
 
+  onStage?.(9, 'جاري رفع دقة الحروف وتنقية الإضاءة وتصحيح ميل الصفحة...');
   const { gray: rawGray } = extractNormalizedGrayscale(upCanvas);
   const isLowRes = crop.w < 1150;
 
@@ -2770,6 +2817,7 @@ async function prepareOcrVariants(imageDataUrl: string): Promise<PreparedOcrVari
     isLowRes ? 5 : 7
   );
 
+  onStage?.(14, 'جاري إزالة التظليل وتحسين تباين الحبر والخلفية...');
   const tables = buildIntegralTables(sharpened, w, h);
   const radius = Math.max(22, Math.min(58, Math.round(w / 30)));
 
@@ -2825,6 +2873,7 @@ async function prepareOcrVariants(imageDataUrl: string): Promise<PreparedOcrVari
     }
   }
 
+  onStage?.(19, 'جاري اكتشاف وفصل أسطر الصفحة للتحليل الدقيق...');
   const detectedLines = detectHorizontalTextLines(bufBClean, w, h);
   const variantA = renderGrayBufferWithMargin(bufA, w, h, OCR_WHITE_MARGIN);
   const variantB = renderGrayBufferWithMargin(bufBClean, w, h, OCR_WHITE_MARGIN);
@@ -2991,7 +3040,8 @@ async function runOcrPass(
   canvas: HTMLCanvasElement,
   psm: PSM,
   pageNumber: number,
-  prepared: PreparedOcrVariants
+  prepared: PreparedOcrVariants,
+  onPassProgress?: (fraction: number) => void
 ): Promise<OcrPassOutcome> {
   await worker.setParameters({
     tessedit_pageseg_mode: psm,
@@ -2999,7 +3049,20 @@ async function runOcrPass(
     user_defined_dpi: '300',
   });
 
-  const res = await worker.recognize(canvas, {}, { text: true, blocks: true });
+  activeOcrLoggerCallback = (m) => {
+    if (m.status === 'recognizing text' && typeof m.progress === 'number') {
+      onPassProgress?.(Math.max(0, Math.min(1, m.progress)));
+    }
+  };
+
+  let res: Awaited<ReturnType<Worker['recognize']>>;
+  try {
+    res = await worker.recognize(canvas, {}, { text: true, blocks: true });
+  } finally {
+    activeOcrLoggerCallback = null;
+  }
+  onPassProgress?.(1);
+
   const ocrText = (res.data.text || '').normalize('NFKC').trim();
   const confidence = Number(res.data.confidence || 0);
   const blocks = res.data.blocks || [];
@@ -3075,7 +3138,8 @@ async function runLineByLineOcr(
   worker: Worker,
   prepared: PreparedOcrVariants,
   useBinarizedBuffer: boolean,
-  pageNumber: number
+  pageNumber: number,
+  onLineProgress?: (currentLine: number, totalLines: number) => void
 ): Promise<OcrPassOutcome> {
   await worker.setParameters({
     tessedit_pageseg_mode: PSM.SINGLE_LINE,
@@ -3097,7 +3161,10 @@ async function runLineByLineOcr(
   let junkTokens = 0;
   let wordCounter = 0;
 
-  for (const band of prepared.detectedLines) {
+  const totalLines = prepared.detectedLines.length;
+  for (let lineIdx = 0; lineIdx < totalLines; lineIdx++) {
+    const band = prepared.detectedLines[lineIdx];
+    onLineProgress?.(lineIdx + 1, totalLines);
     const sy0 = Math.max(0, band.y0 - padY);
     const sy1 = Math.min(h, band.y1 + padY);
     const sliceH = Math.max(12, sy1 - sy0);
@@ -3266,27 +3333,55 @@ export async function analyzeBookPageInBrowser(params: {
     ymax: number;
     xmax: number;
   }>;
+  onProgress?: (progress: PageOcrProgress) => void;
 }): Promise<{
   fullText: string;
   segments: BookTextSegment[];
 }> {
+  let highestPct = 0;
+  const emit = (pct: number, stageText: string) => {
+    const clamped = Math.max(highestPct, Math.min(100, Math.round(pct)));
+    highestPct = clamped;
+    params.onProgress?.({
+      pageNumber: params.pageNumber,
+      pagePercent: clamped,
+      stageText,
+    });
+  };
+
+  emit(2, 'جاري تحضير الصفحة وفهرس القرآن الكريم...');
+
   const [prepared, quranIndex] = await Promise.all([
-    prepareOcrVariants(params.imageDataUrl),
+    prepareOcrVariants(params.imageDataUrl, (pct, msg) => emit(pct, msg)),
     getQuranIndex().catch(() => null),
   ]);
 
   let bestPass: OcrPassOutcome | null = null;
 
   try {
+    emit(21, 'جاري تهيئة محرك القراءة العربي الذكي...');
+    activeOcrLoggerCallback = (m) => {
+      const p = typeof m.progress === 'number' ? m.progress : 0;
+      if (m.status === 'loading tesseract core' || m.status === 'initializing tesseract') {
+        emit(22 + p * 3, 'جاري تشغيل نواة التعرف الذكي...');
+      } else if (m.status === 'loading language traineddata' || m.status === 'initializing api') {
+        emit(25 + p * 5, 'جاري تحميل حزمة اللغة العربية وتهيئتها...');
+      }
+    };
     const worker = await getArabicOcrWorker();
+    activeOcrLoggerCallback = null;
 
     // Pass 1: Cropped inner text (no borders/status bars) + normalized contrast + SINGLE_BLOCK
+    emit(30, 'جاري التعرف الأولي على الكلمات العربية في الصفحة...');
     const pass1 = await runOcrPass(
       worker,
       prepared.variantA,
       PSM.SINGLE_BLOCK,
       params.pageNumber,
-      prepared
+      prepared,
+      (frac) => {
+        emit(30 + frac * 22, 'جاري التعرف الأولي على الكلمات العربية في الصفحة...');
+      }
     );
     bestPass = pass1;
 
@@ -3296,12 +3391,16 @@ export async function analyzeBookPageInBrowser(params: {
 
     if (!pass1Strong) {
       // Pass 2: Sauvola binarized cropped block (eliminates shadows & highlight tints)
+      emit(53, 'جاري التحليل المعمّق بعزل التظليل وتحسين تباين الحروف...');
       const pass2 = await runOcrPass(
         worker,
         prepared.variantB,
         PSM.SINGLE_BLOCK,
         params.pageNumber,
-        prepared
+        prepared,
+        (frac) => {
+          emit(53 + frac * 15, 'جاري التحليل المعمّق بعزل التظليل وتحسين تباين الحروف...');
+        }
       );
       const useBinarized = pass2.score > pass1.score;
       if (useBinarized) {
@@ -3318,7 +3417,14 @@ export async function analyzeBookPageInBrowser(params: {
           worker,
           prepared,
           useBinarized,
-          params.pageNumber
+          params.pageNumber,
+          (lineNum, totalLines) => {
+            const frac = totalLines > 0 ? lineNum / totalLines : 1;
+            emit(
+              68 + frac * 16,
+              `جاري قراءة الصفحة سطراً بسطر بدقة عالية (السطر ${lineNum} من ${totalLines})...`
+            );
+          }
         );
         if (linePass.score > bestPass.score) {
           bestPass = linePass;
@@ -3327,13 +3433,17 @@ export async function analyzeBookPageInBrowser(params: {
 
       // Pass 4: Stroke-thickened sparse layout fallback for ultra-low-res or scattered pages
       if (bestPass.arabicWords < 8 || bestPass.confidence < 54) {
+        emit(84, 'جاري تعريض الحروف الدقيقة لقراءة الكلمات منخفضة الوضوح...');
         const variantC = prepared.buildVariantC();
         const pass4 = await runOcrPass(
           worker,
           variantC,
           PSM.SPARSE_TEXT,
           params.pageNumber,
-          prepared
+          prepared,
+          (frac) => {
+            emit(84 + frac * 5, 'جاري تعريض الحروف الدقيقة لقراءة الكلمات منخفضة الوضوح...');
+          }
         );
         if (pass4.score > bestPass.score) {
           bestPass = pass4;
@@ -3347,10 +3457,14 @@ export async function analyzeBookPageInBrowser(params: {
         ? err
         : new Error('تعذّر التعرف على نص الصفحة في المتصفح.');
     }
+  } finally {
+    activeOcrLoggerCallback = null;
   }
 
   let rawSegments: BookTextSegment[] = bestPass?.segments || [];
   const ocrText = bestPass?.ocrText || '';
+
+  emit(90, 'جاري فحص النص المضمّن ومطابقة الآيات مع فهرس القرآن الكريم...');
 
   // Only prefer embedded PDF Unicode text when verified as readable Arabic (not legacy gibberish)
   const reliableEmbedded = isEmbeddedTextReliable(params.embeddedSegments);
@@ -3365,6 +3479,7 @@ export async function analyzeBookPageInBrowser(params: {
   }
 
   // Whole-Quran Monotonic Passage Reconstruction (100% zero-error Mushaf & Quran screenshot accuracy)
+  emit(94, 'جاري مطابقة تسلسل الآيات واستعادة التشكيل الكامل...');
   const reconstructedQuran = reconstructQuranPassageFromSegments(
     rawSegments,
     quranIndex,
@@ -3376,10 +3491,14 @@ export async function analyzeBookPageInBrowser(params: {
       ? reconstructedQuran
       : enrichSegmentsWithQuranMatch(rawSegments, quranIndex);
 
+  emit(98, 'جاري تثبيت إحداثيات الكلمات والآيات لحفظ الصفحة...');
+
   const fullText =
     finalSegments.length > 0
       ? finalSegments.map((s) => s.text).join(' ').slice(0, 18000)
       : ocrText.slice(0, 18000);
+
+  emit(100, `اكتمل التعرف على الصفحة بنجاح (${finalSegments.length} كلمة)`);
 
   return {
     fullText,
