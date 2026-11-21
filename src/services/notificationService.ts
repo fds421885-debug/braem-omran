@@ -4,6 +4,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  getDocsFromServer,
   onSnapshot,
   query,
   serverTimestamp,
@@ -12,13 +13,14 @@ import {
   where,
   type Firestore,
 } from 'firebase/firestore';
-import { db as primaryDb } from '../firebase';
+import { auth as primaryAuth, db as primaryDb } from '../firebase';
 import { generateValidId, getFirestoreForConfig } from './multiDb';
 import { getAllKnownDatabases } from './platformService';
 import type {
   ActiveSession,
   BroadcastMessageRecord,
   BroadcastTargetRole,
+  ExternalFirebaseConfig,
 } from '../types/platform';
 
 const BASE_URL =
@@ -28,6 +30,26 @@ export type NotificationPermissionState = 'granted' | 'denied' | 'default' | 'un
 
 const DISMISSED_STORAGE_PREFIX = 'braem_dismissed_broadcasts_v1_';
 const NOTIFIED_OS_STORAGE_PREFIX = 'braem_notified_broadcasts_v1_';
+const OUTBOX_STORAGE_KEY = 'braem_broadcast_outbox_v1';
+const CACHE_STORAGE_PREFIX = 'braem_cached_broadcasts_v1_';
+export const BROADCAST_OUTBOX_EVENT = 'braem-broadcast-outbox-changed';
+const BROADCAST_WRITE_TIMEOUT_MS = 7000;
+
+export interface PendingBroadcastOutboxItem {
+  id: string;
+  title: string;
+  body: string;
+  targetRoles: BroadcastTargetRole[];
+  targetComplexId: string;
+  targetComplexName: string;
+  senderName: string;
+  createdBy: string;
+  createdAtMs: number;
+  scopedComplexOnly: boolean;
+  targetDbConfig: ExternalFirebaseConfig | null;
+  mirrorDbConfigs: ExternalFirebaseConfig[];
+  queuedAtMs: number;
+}
 
 export class BroadcastRulesPermissionError extends Error {
   code = 'PRIMARY_RULES_NEED_UPDATE';
@@ -315,6 +337,245 @@ export function filterBroadcastsForRecipient(
     .sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
 }
 
+export interface BroadcastScopeOptions {
+  targetDb?: Firestore;
+  targetDbConfig?: ExternalFirebaseConfig | null;
+  mirrorDbs?: Firestore[];
+  mirrorDbConfigs?: ExternalFirebaseConfig[];
+  complexId?: string;
+  scopedComplexOnly?: boolean;
+  actorUid?: string;
+}
+
+function isNetworkOrTimeoutError(err: unknown): boolean {
+  const code = String((err as { code?: string })?.code || '').toLowerCase();
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    code.includes('unavailable') ||
+    code.includes('offline') ||
+    code.includes('aborted') ||
+    code.includes('deadline') ||
+    msg.includes('offline') ||
+    msg.includes('unavailable') ||
+    msg.includes('network') ||
+    msg.includes('failed to fetch') ||
+    msg.includes('broadcast_write_timeout')
+  );
+}
+
+async function writeDocWithTimeout(
+  fn: () => Promise<void>,
+  timeoutMs = BROADCAST_WRITE_TIMEOUT_MS
+): Promise<void> {
+  await Promise.race([
+    fn(),
+    new Promise<never>((_, reject) =>
+      window.setTimeout(() => reject(new Error('broadcast_write_timeout')), timeoutMs)
+    ),
+  ]);
+}
+
+function readRawOutbox(): PendingBroadcastOutboxItem[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(OUTBOX_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as PendingBroadcastOutboxItem[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeRawOutbox(items: PendingBroadcastOutboxItem[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (items.length === 0) {
+      window.localStorage.removeItem(OUTBOX_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(OUTBOX_STORAGE_KEY, JSON.stringify(items.slice(-50)));
+    }
+    window.dispatchEvent(new CustomEvent(BROADCAST_OUTBOX_EVENT));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+export function getPendingBroadcastOutbox(filterComplexId?: string): PendingBroadcastOutboxItem[] {
+  const all = readRawOutbox();
+  if (!filterComplexId) return all;
+  return all.filter((item) => item.targetComplexId === filterComplexId);
+}
+
+export function enqueueOfflineBroadcast(item: PendingBroadcastOutboxItem): void {
+  const current = readRawOutbox().filter((existing) => existing.id !== item.id);
+  current.push(item);
+  writeRawOutbox(current);
+  ensureBroadcastOfflineSyncListeners();
+}
+
+export function removeOfflineBroadcast(broadcastId: string): void {
+  const next = readRawOutbox().filter((item) => item.id !== broadcastId);
+  writeRawOutbox(next);
+}
+
+async function dispatchOutboxItemMirrors(
+  item: PendingBroadcastOutboxItem,
+  payload: Record<string, unknown>,
+  primaryWriteDb: Firestore
+): Promise<void> {
+  if (item.scopedComplexOnly) {
+    const mirrorTargets = (item.mirrorDbConfigs || [])
+      .map((cfg) => getFirestoreForConfig(cfg))
+      .filter((db) => db !== primaryWriteDb && !(primaryWriteDb !== primaryDb && db === primaryDb));
+    await Promise.all(
+      mirrorTargets.map((db) =>
+        setDoc(doc(db, 'broadcasts', item.id), payload).catch(() => {})
+      )
+    );
+    return;
+  }
+
+  try {
+    const knownDbs = await getAllKnownDatabases();
+    await Promise.all(
+      knownDbs
+        .filter((d) => !d.isPrimary && d.db !== primaryWriteDb)
+        .map((d) =>
+          setDoc(doc(d.db, 'broadcasts', item.id), payload).catch(() => {})
+        )
+    );
+  } catch {
+    // Non-fatal
+  }
+}
+
+let activeOutboxFlushPromise: Promise<{ sentIds: string[]; remainingCount: number }> | null = null;
+let offlineListenersAttached = false;
+
+export async function flushPendingBroadcastOutbox(): Promise<{
+  sentIds: string[];
+  remainingCount: number;
+}> {
+  if (typeof window === 'undefined') return { sentIds: [], remainingCount: 0 };
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return { sentIds: [], remainingCount: readRawOutbox().length };
+  }
+  if (activeOutboxFlushPromise) {
+    return activeOutboxFlushPromise;
+  }
+
+  activeOutboxFlushPromise = (async () => {
+    const sentIds: string[] = [];
+    const queue = readRawOutbox();
+    if (queue.length === 0) return { sentIds, remainingCount: 0 };
+
+    const remaining: PendingBroadcastOutboxItem[] = [];
+    for (const item of queue) {
+      const writeDb = item.targetDbConfig
+        ? getFirestoreForConfig(item.targetDbConfig)
+        : primaryDb;
+      if (writeDb === primaryDb && !primaryAuth.currentUser) {
+        remaining.push(item);
+        continue;
+      }
+      const payload = {
+        id: item.id,
+        title: item.title,
+        body: item.body,
+        targetRoles: item.targetRoles,
+        targetComplexId: item.targetComplexId,
+        targetComplexName: item.targetComplexName,
+        senderName: item.senderName,
+        createdBy: item.createdBy,
+        active: true,
+        createdAtMs: item.createdAtMs,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+      try {
+        await writeDocWithTimeout(() => setDoc(doc(writeDb, 'broadcasts', item.id), payload));
+        await dispatchOutboxItemMirrors(item, payload, writeDb);
+        sentIds.push(item.id);
+      } catch {
+        // Keep in queue until connection or rules allow delivery
+        remaining.push(item);
+      }
+    }
+
+    if (sentIds.length > 0) {
+      writeRawOutbox(remaining);
+    }
+    return { sentIds, remainingCount: remaining.length };
+  })().finally(() => {
+    activeOutboxFlushPromise = null;
+  });
+
+  return activeOutboxFlushPromise;
+}
+
+export function ensureBroadcastOfflineSyncListeners(): void {
+  if (typeof window === 'undefined' || offlineListenersAttached) return;
+  offlineListenersAttached = true;
+
+  const tryFlushWithFollowUp = () => {
+    if (readRawOutbox().length === 0) return;
+    void flushPendingBroadcastOutbox();
+    window.setTimeout(() => {
+      if (readRawOutbox().length > 0) {
+        void flushPendingBroadcastOutbox();
+      }
+    }, 2500);
+  };
+
+  window.addEventListener('online', tryFlushWithFollowUp);
+  window.addEventListener('focus', tryFlushWithFollowUp);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      tryFlushWithFollowUp();
+    }
+  });
+}
+
+function loadCachedRecipientBroadcasts(accountKey: string): BroadcastMessageRecord[] {
+  if (typeof window === 'undefined' || !accountKey) return [];
+  try {
+    const raw = window.localStorage.getItem(`${CACHE_STORAGE_PREFIX}${accountKey}`);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+      .map((item) => normalizeBroadcastDoc(String(item.id || ''), item));
+  } catch {
+    return [];
+  }
+}
+
+function saveCachedRecipientBroadcasts(accountKey: string, list: BroadcastMessageRecord[]): void {
+  if (typeof window === 'undefined' || !accountKey) return;
+  try {
+    const trimmed = list
+      .filter((m) => m.active)
+      .slice(0, 40)
+      .map((m) => ({
+        id: m.id,
+        title: m.title,
+        body: m.body,
+        targetRoles: m.targetRoles,
+        targetComplexId: m.targetComplexId,
+        targetComplexName: m.targetComplexName,
+        senderName: m.senderName,
+        createdBy: m.createdBy,
+        active: m.active,
+        createdAtMs: m.createdAtMs,
+      }));
+    window.localStorage.setItem(`${CACHE_STORAGE_PREFIX}${accountKey}`, JSON.stringify(trimmed));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
 export async function sendBroadcastMessage(params: {
   title: string;
   body: string;
@@ -324,7 +585,14 @@ export async function sendBroadcastMessage(params: {
   senderName: string;
   createdBy: string;
   scheduledAtMs?: number;
+  targetDb?: Firestore;
+  targetDbConfig?: ExternalFirebaseConfig | null;
+  mirrorDbs?: Firestore[];
+  mirrorDbConfigs?: ExternalFirebaseConfig[];
+  scopedComplexOnly?: boolean;
 }): Promise<BroadcastMessageRecord> {
+  ensureBroadcastOfflineSyncListeners();
+
   const cleanBody = params.body.trim();
   if (!cleanBody) {
     throw new Error('يرجى كتابة نص الرسالة قبل الإرسال.');
@@ -332,6 +600,10 @@ export async function sendBroadcastMessage(params: {
   const roles = Array.from(new Set(params.targetRoles));
   if (roles.length === 0) {
     throw new Error('يرجى اختيار فئة مستهدفة واحدة على الأقل (مشرفين / معلمين / طلاب).');
+  }
+
+  if (params.scopedComplexOnly && (!params.targetComplexId || params.targetComplexId === 'all')) {
+    throw new Error('صلاحية الإرسال مقتصرة على نطاق المجمع التابع لك فقط.');
   }
 
   const id = generateValidId('msg');
@@ -343,14 +615,48 @@ export async function sendBroadcastMessage(params: {
       ? Math.round(params.scheduledAtMs)
       : nowMs;
 
+  const defaultTitle = params.scopedComplexOnly
+    ? 'رسالة من إدارة المجمع'
+    : 'رسالة من إدارة المنصة';
+
+  const normalizedTitle = (params.title.trim() || defaultTitle).slice(0, 160);
+  const normalizedBody = cleanBody.slice(0, 4000);
+  const normalizedComplexId = params.targetComplexId || 'all';
+  const normalizedComplexName = params.targetComplexName || 'جميع المجمعات';
+  const normalizedSenderName = (params.senderName.trim() || 'الإدارة').slice(0, 100);
+
+  const outboxItem: PendingBroadcastOutboxItem = {
+    id,
+    title: normalizedTitle,
+    body: normalizedBody,
+    targetRoles: roles,
+    targetComplexId: normalizedComplexId,
+    targetComplexName: normalizedComplexName,
+    senderName: normalizedSenderName,
+    createdBy: params.createdBy,
+    createdAtMs: publishAtMs,
+    scopedComplexOnly: Boolean(params.scopedComplexOnly),
+    targetDbConfig: params.targetDbConfig || null,
+    mirrorDbConfigs: params.mirrorDbConfigs || [],
+    queuedAtMs: nowMs,
+  };
+
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    enqueueOfflineBroadcast(outboxItem);
+    return {
+      ...normalizeBroadcastDoc(id, outboxItem as unknown as Record<string, unknown>),
+      queuedOffline: true,
+    };
+  }
+
   const payload = {
     id,
-    title: (params.title.trim() || 'رسالة من إدارة المنصة').slice(0, 160),
-    body: cleanBody.slice(0, 4000),
+    title: normalizedTitle,
+    body: normalizedBody,
     targetRoles: roles,
-    targetComplexId: params.targetComplexId || 'all',
-    targetComplexName: params.targetComplexName || 'جميع المجمعات',
-    senderName: (params.senderName.trim() || 'المبرمج').slice(0, 100),
+    targetComplexId: normalizedComplexId,
+    targetComplexName: normalizedComplexName,
+    senderName: normalizedSenderName,
     createdBy: params.createdBy,
     active: true,
     createdAtMs: publishAtMs,
@@ -358,40 +664,84 @@ export async function sendBroadcastMessage(params: {
     updatedAt: serverTimestamp(),
   };
 
+  const primaryWriteDb =
+    params.targetDb ||
+    (params.targetDbConfig ? getFirestoreForConfig(params.targetDbConfig) : primaryDb);
+
   try {
-    await setDoc(doc(primaryDb, 'broadcasts', id), payload);
+    await writeDocWithTimeout(() => setDoc(doc(primaryWriteDb, 'broadcasts', id), payload));
   } catch (err: unknown) {
     const code = (err as { code?: string })?.code || '';
     if (code === 'permission-denied') {
       throw new BroadcastRulesPermissionError(
-        'تعذّر حفظ الرسالة في القاعدة الأساسية لأن قواعد الحماية تحتاج تحديثاً لإضافة مجموعة الرسائل (broadcasts).'
+        params.scopedComplexOnly
+          ? 'تعذّر حفظ الرسالة لأن قواعد الحماية في القاعدة الأساسية تحتاج تحديثاً للسماح لمشرفي المجمعات بالإرسال، أو أن الجلسة ليست مسجلة بحساب جوجل.'
+          : 'تعذّر حفظ الرسالة في القاعدة الأساسية لأن قواعد الحماية تحتاج تحديثاً لإضافة مجموعة الرسائل (broadcasts).'
       );
+    }
+    if (isNetworkOrTimeoutError(err) || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+      enqueueOfflineBroadcast(outboxItem);
+      return {
+        ...normalizeBroadcastDoc(id, outboxItem as unknown as Record<string, unknown>),
+        queuedOffline: true,
+      };
     }
     throw err;
   }
 
-  // Also mirror to connected external databases so complex-only links receive updates smoothly
-  try {
-    const knownDbs = await getAllKnownDatabases();
-    await Promise.all(
-      knownDbs
-        .filter((d) => !d.isPrimary)
-        .map((d) =>
-          setDoc(doc(d.db, 'broadcasts', id), payload).catch(() => {
-            // External project may not have updated rules yet; primary copy still works
-          })
-        )
+  if (params.scopedComplexOnly) {
+    const mirrorSet = new Set<Firestore>(params.mirrorDbs || []);
+    for (const cfg of params.mirrorDbConfigs || []) {
+      mirrorSet.add(getFirestoreForConfig(cfg));
+    }
+    const mirrorTargets = Array.from(mirrorSet).filter(
+      (db) => db !== primaryWriteDb && !(primaryWriteDb !== primaryDb && db === primaryDb)
     );
-  } catch {
-    // Non-fatal
+    await Promise.all(
+      mirrorTargets.map((db) =>
+        setDoc(doc(db, 'broadcasts', id), payload).catch(() => {})
+      )
+    );
+  } else {
+    // Platform admin global broadcast: mirror to connected external databases so complex-only links receive updates smoothly
+    try {
+      const knownDbs = await getAllKnownDatabases();
+      await Promise.all(
+        knownDbs
+          .filter((d) => !d.isPrimary && d.db !== primaryWriteDb)
+          .map((d) =>
+            setDoc(doc(d.db, 'broadcasts', id), payload).catch(() => {
+              // External project may not have updated rules yet; primary copy still works
+            })
+          )
+      );
+    } catch {
+      // Non-fatal
+    }
   }
 
   return normalizeBroadcastDoc(id, payload);
 }
 
-export async function listRecentBroadcasts(): Promise<BroadcastMessageRecord[]> {
+export async function listRecentBroadcasts(
+  options?: BroadcastScopeOptions
+): Promise<BroadcastMessageRecord[]> {
   try {
-    const snap = await getDocs(collection(primaryDb, 'broadcasts'));
+    const readDb = options?.targetDb || primaryDb;
+    if (options?.scopedComplexOnly) {
+      if (!options.complexId || options.complexId === 'all') return [];
+      const q = query(
+        collection(readDb, 'broadcasts'),
+        where('targetComplexId', '==', options.complexId)
+      );
+      const snap = await getDocs(q);
+      const list = snap.docs
+        .map((d) => normalizeBroadcastDoc(d.id, d.data() as Record<string, unknown>))
+        .filter((item) => item.targetComplexId === options.complexId);
+      return list.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
+    }
+
+    const snap = await getDocs(collection(readDb, 'broadcasts'));
     const list = snap.docs.map((d) =>
       normalizeBroadcastDoc(d.id, d.data() as Record<string, unknown>)
     );
@@ -401,16 +751,36 @@ export async function listRecentBroadcasts(): Promise<BroadcastMessageRecord[]> 
   }
 }
 
-export async function deactivateBroadcastMessage(broadcastId: string): Promise<void> {
-  await updateDoc(doc(primaryDb, 'broadcasts', broadcastId), {
+export async function deactivateBroadcastMessage(
+  broadcastId: string,
+  options?: BroadcastScopeOptions
+): Promise<void> {
+  const writeDb = options?.targetDb || primaryDb;
+  await updateDoc(doc(writeDb, 'broadcasts', broadcastId), {
     active: false,
     updatedAt: serverTimestamp(),
   });
+
+  if (options?.scopedComplexOnly) {
+    const mirrorTargets = Array.from(new Set(options.mirrorDbs || [])).filter(
+      (db) => db !== writeDb && !(writeDb !== primaryDb && db === primaryDb)
+    );
+    await Promise.all(
+      mirrorTargets.map((db) =>
+        updateDoc(doc(db, 'broadcasts', broadcastId), {
+          active: false,
+          updatedAt: serverTimestamp(),
+        }).catch(() => {})
+      )
+    );
+    return;
+  }
+
   try {
     const knownDbs = await getAllKnownDatabases();
     await Promise.all(
       knownDbs
-        .filter((d) => !d.isPrimary)
+        .filter((d) => !d.isPrimary && d.db !== writeDb)
         .map((d) =>
           updateDoc(doc(d.db, 'broadcasts', broadcastId), {
             active: false,
@@ -423,13 +793,35 @@ export async function deactivateBroadcastMessage(broadcastId: string): Promise<v
   }
 }
 
-export async function deleteBroadcastMessage(broadcastId: string): Promise<void> {
-  await deleteDoc(doc(primaryDb, 'broadcasts', broadcastId));
+export async function deleteBroadcastMessage(
+  broadcastId: string,
+  options?: BroadcastScopeOptions
+): Promise<void> {
+  const writeDb = options?.targetDb || primaryDb;
+  await deleteDoc(doc(writeDb, 'broadcasts', broadcastId));
+
+  if (options?.scopedComplexOnly) {
+    const mirrorTargets = Array.from(new Set(options.mirrorDbs || [])).filter(
+      (db) => db !== writeDb && !(writeDb !== primaryDb && db === primaryDb)
+    );
+    await Promise.all(
+      mirrorTargets.map((db) =>
+        deleteDoc(doc(db, 'broadcasts', broadcastId)).catch(() =>
+          updateDoc(doc(db, 'broadcasts', broadcastId), {
+            active: false,
+            updatedAt: serverTimestamp(),
+          }).catch(() => {})
+        )
+      )
+    );
+    return;
+  }
+
   try {
     const knownDbs = await getAllKnownDatabases();
     await Promise.all(
       knownDbs
-        .filter((d) => !d.isPrimary)
+        .filter((d) => !d.isPrimary && d.db !== writeDb)
         .map((d) =>
           deleteDoc(doc(d.db, 'broadcasts', broadcastId)).catch(() =>
             updateDoc(doc(d.db, 'broadcasts', broadcastId), {
@@ -446,20 +838,26 @@ export async function deleteBroadcastMessage(broadcastId: string): Promise<void>
 
 export async function rescheduleBroadcastMessage(
   existing: BroadcastMessageRecord,
-  nextPublishAtMs: number
+  nextPublishAtMs: number,
+  options?: BroadcastScopeOptions
 ): Promise<BroadcastMessageRecord> {
   const created = await sendBroadcastMessage({
     title: existing.title,
     body: existing.body,
     targetRoles: existing.targetRoles,
-    targetComplexId: existing.targetComplexId,
+    targetComplexId: options?.complexId || existing.targetComplexId,
     targetComplexName: existing.targetComplexName,
     senderName: existing.senderName,
-    createdBy: existing.createdBy,
+    createdBy: options?.actorUid || existing.createdBy,
     scheduledAtMs: nextPublishAtMs > Date.now() ? nextPublishAtMs : undefined,
+    targetDb: options?.targetDb,
+    targetDbConfig: options?.targetDbConfig,
+    mirrorDbs: options?.mirrorDbs,
+    mirrorDbConfigs: options?.mirrorDbConfigs,
+    scopedComplexOnly: options?.scopedComplexOnly,
   });
-  await deleteBroadcastMessage(existing.id).catch(() =>
-    deactivateBroadcastMessage(existing.id).catch(() => {})
+  await deleteBroadcastMessage(existing.id, options).catch(() =>
+    deactivateBroadcastMessage(existing.id, options).catch(() => {})
   );
   return created;
 }
@@ -495,13 +893,23 @@ export function subscribeToBroadcastsForSession(
   session: ActiveSession,
   onMessagesChange: (messages: BroadcastMessageRecord[]) => void
 ): () => void {
+  ensureBroadcastOfflineSyncListeners();
+
   const role = session.account.role;
   const complexId = session.account.complexId || '';
+  const accountKey = session.account.id || session.account.uid || role;
   const sessionDb = session.authConfig ? getFirestoreForConfig(session.authConfig) : primaryDb;
+  const hasExternalDb = Boolean(sessionDb && sessionDb !== primaryDb);
 
   let primaryList: BroadcastMessageRecord[] = [];
   let externalList: BroadcastMessageRecord[] = [];
+  let cachedList: BroadcastMessageRecord[] = loadCachedRecipientBroadcasts(accountKey);
   let dueTimerId: number | null = null;
+  let onlineRetryTimerId: number | null = null;
+  let unsubPrimary: (() => void) | null = null;
+  let unsubExternal: (() => void) | null = null;
+  let primaryListenerErrored = false;
+  let externalListenerErrored = false;
   let disposed = false;
 
   const scheduleNextDueTrigger = (merged: BroadcastMessageRecord[], nowMs: number) => {
@@ -530,30 +938,54 @@ export function subscribeToBroadcastsForSession(
   };
 
   const emitCombined = () => {
+    if (disposed) return;
     const nowMs = Date.now();
-    const merged = mergeBroadcastSources(primaryList, externalList);
+    // Once live snapshots arrive, prefer live data while preserving due/scheduled items during offline fallback
+    const hasLiveSnapshot = primaryList.length > 0 || externalList.length > 0;
+    const merged = hasLiveSnapshot
+      ? mergeBroadcastSources(primaryList, externalList)
+      : mergeBroadcastSources(primaryList, externalList, cachedList);
+    if (hasLiveSnapshot) {
+      saveCachedRecipientBroadcasts(accountKey, merged);
+      cachedList = merged;
+    }
     const filtered = filterBroadcastsForRecipient(merged, { role, complexId }, nowMs);
     onMessagesChange(filtered);
     scheduleNextDueTrigger(merged, nowMs);
   };
 
   const qPrimary = query(collection(primaryDb, 'broadcasts'), where('active', '==', true));
-  const unsubPrimary = onSnapshot(
-    qPrimary,
-    (snap) => {
-      primaryList = snap.docs.map((d) =>
-        normalizeBroadcastDoc(d.id, d.data() as Record<string, unknown>)
-      );
-      emitCombined();
-    },
-    () => {
-      // Ignore transient listener errors while offline
-    }
-  );
+  const qExternal = hasExternalDb
+    ? query(collection(sessionDb, 'broadcasts'), where('active', '==', true))
+    : null;
 
-  let unsubExternal: (() => void) | null = null;
-  if (sessionDb && sessionDb !== primaryDb) {
-    const qExternal = query(collection(sessionDb, 'broadcasts'), where('active', '==', true));
+  const attachPrimaryListener = () => {
+    if (unsubPrimary) {
+      unsubPrimary();
+      unsubPrimary = null;
+    }
+    primaryListenerErrored = false;
+    unsubPrimary = onSnapshot(
+      qPrimary,
+      (snap) => {
+        primaryList = snap.docs.map((d) =>
+          normalizeBroadcastDoc(d.id, d.data() as Record<string, unknown>)
+        );
+        emitCombined();
+      },
+      () => {
+        primaryListenerErrored = true;
+      }
+    );
+  };
+
+  const attachExternalListener = () => {
+    if (!qExternal) return;
+    if (unsubExternal) {
+      unsubExternal();
+      unsubExternal = null;
+    }
+    externalListenerErrored = false;
     unsubExternal = onSnapshot(
       qExternal,
       (snap) => {
@@ -563,10 +995,84 @@ export function subscribeToBroadcastsForSession(
         emitCombined();
       },
       () => {
-        // External DB might not have broadcasts rule yet
+        externalListenerErrored = true;
       }
     );
+  };
+
+  const refreshFromServer = async () => {
+    if (disposed) return;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      emitCombined();
+      return;
+    }
+    try {
+      const snap = await getDocsFromServer(qPrimary);
+      if (!disposed) {
+        primaryList = snap.docs.map((d) =>
+          normalizeBroadcastDoc(d.id, d.data() as Record<string, unknown>)
+        );
+      }
+    } catch {
+      // Offline or blocked
+    }
+    if (qExternal) {
+      try {
+        const snap = await getDocsFromServer(qExternal);
+        if (!disposed) {
+          externalList = snap.docs.map((d) =>
+            normalizeBroadcastDoc(d.id, d.data() as Record<string, unknown>)
+          );
+        }
+      } catch {
+        // Offline or external DB without broadcasts rule
+      }
+    }
+    emitCombined();
+  };
+
+  // Emit cached scheduled/unread items immediately in case app opens offline
+  if (cachedList.length > 0) {
+    emitCombined();
   }
+
+  attachPrimaryListener();
+  attachExternalListener();
+
+  const handleReconnect = () => {
+    if (disposed) return;
+    if (primaryListenerErrored) attachPrimaryListener();
+    if (externalListenerErrored) attachExternalListener();
+    void flushPendingBroadcastOutbox();
+    void refreshFromServer();
+    if (onlineRetryTimerId !== null) {
+      window.clearTimeout(onlineRetryTimerId);
+    }
+    onlineRetryTimerId = window.setTimeout(() => {
+      if (!disposed) {
+        if (primaryListenerErrored) attachPrimaryListener();
+        if (externalListenerErrored) attachExternalListener();
+        void flushPendingBroadcastOutbox();
+        void refreshFromServer();
+      }
+    }, 2500);
+  };
+
+  const handleVisibilityOrFocus = () => {
+    if (disposed) return;
+    if (document.visibilityState === 'visible') {
+      emitCombined();
+      if (typeof navigator === 'undefined' || navigator.onLine !== false) {
+        if (primaryListenerErrored) attachPrimaryListener();
+        if (externalListenerErrored) attachExternalListener();
+        void refreshFromServer();
+      }
+    }
+  };
+
+  window.addEventListener('online', handleReconnect);
+  window.addEventListener('focus', handleVisibilityOrFocus);
+  document.addEventListener('visibilitychange', handleVisibilityOrFocus);
 
   return () => {
     disposed = true;
@@ -574,7 +1080,14 @@ export function subscribeToBroadcastsForSession(
       window.clearTimeout(dueTimerId);
       dueTimerId = null;
     }
-    unsubPrimary();
+    if (onlineRetryTimerId !== null) {
+      window.clearTimeout(onlineRetryTimerId);
+      onlineRetryTimerId = null;
+    }
+    window.removeEventListener('online', handleReconnect);
+    window.removeEventListener('focus', handleVisibilityOrFocus);
+    document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+    if (unsubPrimary) unsubPrimary();
     if (unsubExternal) unsubExternal();
   };
 }

@@ -14,11 +14,13 @@ import {
   Layers,
   LogOut,
   Medal,
+  Megaphone,
   RefreshCw,
   Sparkles,
   Users,
   X,
 } from 'lucide-react';
+import { db as primaryDb } from '../firebase';
 import { getAuthForConfig } from '../services/multiDb';
 import {
   loadSupervisorDashboardAnalytics,
@@ -28,12 +30,14 @@ import {
 import type {
   ActiveSession,
   DailyStatsRecord,
+  ExternalFirebaseConfig,
   HalaqaRankingItem,
   StudentRankingItem,
   TeacherRoleContext,
 } from '../types/platform';
 import { AttendanceSection } from './AttendanceSection';
 import { BookLibrarySection } from './BookLibrarySection';
+import { BroadcastComposerModal } from './BroadcastComposerModal';
 import { ComplexWorkspace } from './ComplexWorkspace';
 import { CurriculaSection } from './CurriculaSection';
 import { ModernLoader } from './ModernLoader';
@@ -70,12 +74,13 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
   const [topHalaqat, setTopHalaqat] = useState<HalaqaRankingItem[]>([]);
   const [topStudents, setTopStudents] = useState<StudentRankingItem[]>([]);
 
-  // Switch to Teacher Role state
+  // Switch to Teacher Role & Broadcast Messaging state
   const [teacherContext, setTeacherContext] = useState<TeacherRoleContext | null>(null);
   const [showTeacherPicker, setShowTeacherPicker] = useState(false);
   const [pickerMosqueId, setPickerMosqueId] = useState('');
   const [pickerHalaqaId, setPickerHalaqaId] = useState('');
   const [pickerError, setPickerError] = useState<string | null>(null);
+  const [messageModalOpen, setMessageModalOpen] = useState(false);
 
   const restrictMosqueIds = useMemo(() => {
     const ids = session.account.mosqueIds?.length
@@ -352,15 +357,25 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
 
           <div className="flex flex-wrap items-center gap-2 shrink-0">
             {!loading && workspace && (
-              <button
-                type="button"
-                onClick={openTeacherPicker}
-                className="duo-btn-green min-h-[42px] px-3 py-2 rounded-xl font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
-              >
-                <ArrowLeftRight className="w-4 h-4 shrink-0" />
-                <span className="hidden sm:inline">الانتقال لدور المعلم</span>
-                <span className="sm:hidden">دور المعلم</span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => setMessageModalOpen(true)}
+                  className="duo-btn-orange min-h-[42px] px-3 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  <Megaphone className="w-4 h-4 shrink-0" />
+                  <span>رسالة</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={openTeacherPicker}
+                  className="duo-btn-green min-h-[42px] px-3 py-2 rounded-xl font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                >
+                  <ArrowLeftRight className="w-4 h-4 shrink-0" />
+                  <span className="hidden sm:inline">الانتقال لدور المعلم</span>
+                  <span className="sm:hidden">دور المعلم</span>
+                </button>
+              </>
             )}
             <NotificationPermissionButton variant="compact" />
             <PWAInstallButton variant="compact" />
@@ -1042,6 +1057,32 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
           </div>,
           document.body
         )}
+
+      {/* Complex-Scoped Broadcast Message Modal */}
+      {messageModalOpen && workspace && (
+        <BroadcastComposerModal
+          senderName={session.account.quadrupleName}
+          createdBy={
+            getAuthForConfig(session.authConfig).currentUser?.uid ||
+            session.account.uid ||
+            session.account.id
+          }
+          complexes={[workspace.discovered]}
+          lockedComplex={{ id: workspace.complex.id, name: workspace.complex.name }}
+          targetDb={workspace.complexDb}
+          targetDbConfig={workspace.discovered.ownerConfig}
+          mirrorDbs={Array.from(new Set(Object.values(workspace.mosqueDbMap))).filter(
+            (db) => db !== workspace.complexDb && !(workspace.discovered.isExternal && db === primaryDb)
+          )}
+          mirrorDbConfigs={Object.values(workspace.mosqueConfigMap).filter(
+            (c): c is ExternalFirebaseConfig => Boolean(c)
+          )}
+          isSupervisorView
+          isQuickSession={session.mode === 'quick'}
+          isExternalComplex={workspace.discovered.isExternal}
+          onClose={() => setMessageModalOpen(false)}
+        />
+      )}
 
       <footer className="hidden lg:block py-4 px-4 text-center text-xs sm:text-sm font-medium text-[#7D4E35]">
         منصة براعم عمران · جميع الحقوق محفوظة لاستيديو expraiment

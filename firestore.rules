@@ -845,16 +845,42 @@ service cloud.firestore {
 
     match /broadcasts/{broadcastId} {
       allow get: if isValidId(broadcastId) && (
-        isPlatformAdmin() || (resource != null && resource.data.active == true)
+        isPlatformAdmin()
+        || (resource != null && resource.data.active == true)
+        || (
+          resource != null
+          && resource.data.targetComplexId is string
+          && resource.data.targetComplexId != 'all'
+          && isComplexSupervisor(resource.data.targetComplexId)
+        )
       );
-      allow list: if isPlatformAdmin() || resource.data.active == true;
-      allow create: if isPlatformAdmin()
+      allow list: if isPlatformAdmin()
+        || resource.data.active == true
+        || (
+          resource.data.targetComplexId is string
+          && resource.data.targetComplexId != 'all'
+          && isComplexSupervisor(resource.data.targetComplexId)
+        );
+      allow create: if (
+          isPlatformAdmin()
+          || (
+            incoming().targetComplexId != 'all'
+            && isComplexSupervisor(incoming().targetComplexId)
+          )
+        )
         && isValidId(broadcastId)
         && isValidBroadcast(incoming(), broadcastId)
         && incoming().createdBy == request.auth.uid
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isPlatformAdmin()
+      allow update: if (
+          isPlatformAdmin()
+          || (
+            existing().targetComplexId != 'all'
+            && isComplexSupervisor(existing().targetComplexId)
+            && incoming().targetComplexId == existing().targetComplexId
+          )
+        )
         && isValidId(broadcastId)
         && isValidBroadcast(incoming(), broadcastId)
         && incoming().id == existing().id
@@ -865,7 +891,14 @@ service cloud.firestore {
           'title', 'body', 'targetRoles', 'targetComplexId', 'targetComplexName',
           'active', 'updatedAt'
         ]);
-      allow delete: if isPlatformAdmin() && isValidId(broadcastId);
+      allow delete: if isValidId(broadcastId) && (
+        isPlatformAdmin()
+        || (
+          existing().targetComplexId is string
+          && existing().targetComplexId != 'all'
+          && isComplexSupervisor(existing().targetComplexId)
+        )
+      );
     }
   }
 }

@@ -16,6 +16,10 @@ import { SupervisorDashboard } from './components/SupervisorDashboard';
 import { auth as primaryAuth, db as primaryDb } from './firebase';
 import { getAuthForConfig } from './services/multiDb';
 import {
+  ensureBroadcastOfflineSyncListeners,
+  flushPendingBroadcastOutbox,
+} from './services/notificationService';
+import {
   findExistingAccountForInvite,
   findExistingAccountForUser,
   getAllKnownDatabases,
@@ -90,6 +94,15 @@ function AppContent() {
   };
 
   useEffect(() => {
+    if (activeSession) {
+      void flushPendingBroadcastOutbox();
+    }
+  }, [activeSession]);
+
+  useEffect(() => {
+    ensureBroadcastOfflineSyncListeners();
+    void flushPendingBroadcastOutbox();
+
     const params = new URLSearchParams(window.location.search);
     const quickToken = params.get('quick')?.trim() || null;
     const inviteToken = params.get('invite')?.trim() || null;

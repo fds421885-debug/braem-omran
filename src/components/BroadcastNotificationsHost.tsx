@@ -210,7 +210,11 @@ export const BroadcastNotificationsHost: React.FC<BroadcastNotificationsHostProp
             <div className="min-w-0 space-y-1">
               <div className="inline-flex items-center gap-1.5 bg-[#F56900] text-white px-3 py-1 rounded-xl border-b-2 border-[#C95200] text-xs font-display font-extrabold">
                 <Megaphone className="w-3.5 h-3.5 shrink-0" />
-                <span>رسالة من إدارة المنصة</span>
+                <span>
+                  {activeMessage.targetComplexId && activeMessage.targetComplexId !== 'all'
+                    ? 'رسالة من إدارة المجمع'
+                    : 'رسالة من إدارة المنصة'}
+                </span>
               </div>
               <p className="text-xs font-bold text-[#7D4E35] truncate">
                 {activeMessage.senderName} · {formatArabicDateTime(activeMessage.createdAtMs)}

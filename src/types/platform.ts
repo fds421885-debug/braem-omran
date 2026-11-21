@@ -414,5 +414,6 @@ export interface BroadcastMessageRecord {
   createdAtMs: number;
   createdAt?: unknown;
   updatedAt?: unknown;
+  queuedOffline?: boolean;
 }
 

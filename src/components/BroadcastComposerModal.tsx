@@ -1,7 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
+import type { Firestore } from 'firebase/firestore';
 import {
   AlertCircle,
+  Building2,
   CalendarClock,
   Check,
   CheckCircle2,
@@ -9,31 +11,48 @@ import {
   Copy,
   Edit3,
   Megaphone,
+  RefreshCw,
   Send,
   ShieldAlert,
   Trash2,
   Users,
+  WifiOff,
   X,
 } from 'lucide-react';
 import {
+  BROADCAST_OUTBOX_EVENT,
   BroadcastRulesPermissionError,
   deactivateBroadcastMessage,
   deleteBroadcastMessage,
+  flushPendingBroadcastOutbox,
+  getPendingBroadcastOutbox,
   listRecentBroadcasts,
+  removeOfflineBroadcast,
   rescheduleBroadcastMessage,
   sendBroadcastMessage,
+  type BroadcastScopeOptions,
+  type PendingBroadcastOutboxItem,
 } from '../services/notificationService';
 import type { DiscoveredComplex } from '../services/platformService';
 import {
   BROADCAST_ROLE_LABELS,
   type BroadcastMessageRecord,
   type BroadcastTargetRole,
+  type ExternalFirebaseConfig,
 } from '../types/platform';
 
 interface BroadcastComposerModalProps {
   senderName: string;
   createdBy: string;
   complexes: DiscoveredComplex[];
+  lockedComplex?: { id: string; name: string };
+  targetDb?: Firestore;
+  targetDbConfig?: ExternalFirebaseConfig | null;
+  mirrorDbs?: Firestore[];
+  mirrorDbConfigs?: ExternalFirebaseConfig[];
+  isSupervisorView?: boolean;
+  isQuickSession?: boolean;
+  isExternalComplex?: boolean;
   onClose: () => void;
 }
 
@@ -68,16 +87,42 @@ const BROADCAST_RULES_SNIPPET = `    function isValidBroadcast(data, broadcastId
 
     match /broadcasts/{broadcastId} {
       allow get: if isValidId(broadcastId) && (
-        isPlatformAdmin() || (resource != null && resource.data.active == true)
+        isPlatformAdmin()
+        || (resource != null && resource.data.active == true)
+        || (
+          resource != null
+          && resource.data.targetComplexId is string
+          && resource.data.targetComplexId != 'all'
+          && isComplexSupervisor(resource.data.targetComplexId)
+        )
       );
-      allow list: if isPlatformAdmin() || resource.data.active == true;
-      allow create: if isPlatformAdmin()
+      allow list: if isPlatformAdmin()
+        || resource.data.active == true
+        || (
+          resource.data.targetComplexId is string
+          && resource.data.targetComplexId != 'all'
+          && isComplexSupervisor(resource.data.targetComplexId)
+        );
+      allow create: if (
+          isPlatformAdmin()
+          || (
+            incoming().targetComplexId != 'all'
+            && isComplexSupervisor(incoming().targetComplexId)
+          )
+        )
         && isValidId(broadcastId)
         && isValidBroadcast(incoming(), broadcastId)
         && incoming().createdBy == request.auth.uid
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isPlatformAdmin()
+      allow update: if (
+          isPlatformAdmin()
+          || (
+            existing().targetComplexId != 'all'
+            && isComplexSupervisor(existing().targetComplexId)
+            && incoming().targetComplexId == existing().targetComplexId
+          )
+        )
         && isValidId(broadcastId)
         && isValidBroadcast(incoming(), broadcastId)
         && incoming().id == existing().id
@@ -88,7 +133,14 @@ const BROADCAST_RULES_SNIPPET = `    function isValidBroadcast(data, broadcastId
           'title', 'body', 'targetRoles', 'targetComplexId', 'targetComplexName',
           'active', 'updatedAt'
         ]);
-      allow delete: if isPlatformAdmin() && isValidId(broadcastId);
+      allow delete: if isValidId(broadcastId) && (
+        isPlatformAdmin()
+        || (
+          existing().targetComplexId is string
+          && existing().targetComplexId != 'all'
+          && isComplexSupervisor(existing().targetComplexId)
+        )
+      );
     }`;
 
 function toLocalDateInput(ms: number): string {
@@ -144,8 +196,17 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
   senderName,
   createdBy,
   complexes,
+  lockedComplex,
+  targetDb,
+  targetDbConfig = null,
+  mirrorDbs,
+  mirrorDbConfigs,
+  isSupervisorView = false,
+  isQuickSession = false,
+  isExternalComplex = false,
   onClose,
 }) => {
+  const scopedComplexOnly = Boolean(lockedComplex);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [selectedRoles, setSelectedRoles] = useState<BroadcastTargetRole[]>([
@@ -153,7 +214,7 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
     'teacher',
     'student',
   ]);
-  const [targetComplexId, setTargetComplexId] = useState('all');
+  const [targetComplexId, setTargetComplexId] = useState(lockedComplex?.id || 'all');
 
   const [deliveryMode, setDeliveryMode] = useState<'now' | 'scheduled'>('now');
   const [scheduleDate, setScheduleDate] = useState(() =>
@@ -165,6 +226,7 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
   const [editingScheduledId, setEditingScheduledId] = useState<string | null>(null);
 
   const [sending, setSending] = useState(false);
+  const [flushingOutbox, setFlushingOutbox] = useState(false);
   const [busyActionId, setBusyActionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [needsRulesHelp, setNeedsRulesHelp] = useState(false);
@@ -172,25 +234,66 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   const [history, setHistory] = useState<BroadcastMessageRecord[]>([]);
+  const [outboxItems, setOutboxItems] = useState<PendingBroadcastOutboxItem[]>(() =>
+    getPendingBroadcastOutbox(lockedComplex?.id)
+  );
+  const [isOffline, setIsOffline] = useState<boolean>(
+    typeof navigator !== 'undefined' ? navigator.onLine === false : false
+  );
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
-  const loadHistory = async () => {
+  const scopeOptions: BroadcastScopeOptions = useMemo(
+    () => ({
+      targetDb,
+      targetDbConfig,
+      mirrorDbs,
+      mirrorDbConfigs,
+      complexId: lockedComplex?.id,
+      scopedComplexOnly,
+      actorUid: createdBy,
+    }),
+    [targetDb, targetDbConfig, mirrorDbs, mirrorDbConfigs, lockedComplex?.id, scopedComplexOnly, createdBy]
+  );
+
+  const loadHistory = useCallback(async () => {
     setLoadingHistory(true);
     try {
-      const items = await listRecentBroadcasts();
+      const items = await listRecentBroadcasts(scopeOptions);
       setHistory(items.filter((m) => m.active));
       setNowMs(Date.now());
     } finally {
       setLoadingHistory(false);
     }
-  };
+  }, [scopeOptions]);
 
   useEffect(() => {
     void loadHistory();
     const timer = window.setInterval(() => setNowMs(Date.now()), 20000);
-    return () => window.clearInterval(timer);
-  }, []);
+
+    const syncOutboxAndNet = () => {
+      setIsOffline(typeof navigator !== 'undefined' ? navigator.onLine === false : false);
+      setOutboxItems(getPendingBroadcastOutbox(lockedComplex?.id));
+    };
+
+    const handleOutboxChanged = () => {
+      setOutboxItems(getPendingBroadcastOutbox(lockedComplex?.id));
+      if (typeof navigator === 'undefined' || navigator.onLine !== false) {
+        void loadHistory();
+      }
+    };
+
+    window.addEventListener('online', syncOutboxAndNet);
+    window.addEventListener('offline', syncOutboxAndNet);
+    window.addEventListener(BROADCAST_OUTBOX_EVENT, handleOutboxChanged);
+
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('online', syncOutboxAndNet);
+      window.removeEventListener('offline', syncOutboxAndNet);
+      window.removeEventListener(BROADCAST_OUTBOX_EVENT, handleOutboxChanged);
+    };
+  }, [loadHistory, lockedComplex?.id]);
 
   const scheduledMessages = useMemo(
     () =>
@@ -286,33 +389,49 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
       publishAtMs = scheduledTimestampMs;
     }
 
-    const pickedComplex = complexes.find((c) => c.id === targetComplexId);
-    const targetComplexName =
-      targetComplexId === 'all' ? 'جميع المجمعات' : pickedComplex?.name || 'المجمع المحدد';
+    const effectiveComplexId = lockedComplex ? lockedComplex.id : targetComplexId;
+    const pickedComplex = complexes.find((c) => c.id === effectiveComplexId);
+    const targetComplexName = lockedComplex
+      ? lockedComplex.name
+      : effectiveComplexId === 'all'
+        ? 'جميع المجمعات'
+        : pickedComplex?.name || 'المجمع المحدد';
 
     setSending(true);
     try {
-      await sendBroadcastMessage({
-        title: title.trim() || 'رسالة من إدارة المنصة',
+      const sentRecord = await sendBroadcastMessage({
+        title: title.trim() || (lockedComplex ? 'رسالة من إدارة المجمع' : 'رسالة من إدارة المنصة'),
         body: body.trim(),
         targetRoles: selectedRoles,
-        targetComplexId,
+        targetComplexId: effectiveComplexId,
         targetComplexName,
         senderName,
         createdBy,
         scheduledAtMs: publishAtMs,
+        targetDb,
+        targetDbConfig,
+        mirrorDbs,
+        mirrorDbConfigs,
+        scopedComplexOnly,
       });
 
       if (editingScheduledId) {
-        await deleteBroadcastMessage(editingScheduledId).catch(() =>
-          deactivateBroadcastMessage(editingScheduledId).catch(() => {})
+        await deleteBroadcastMessage(editingScheduledId, scopeOptions).catch(() =>
+          deactivateBroadcastMessage(editingScheduledId, scopeOptions).catch(() => {})
         );
       }
 
       const wasEditing = Boolean(editingScheduledId);
       resetComposer();
 
-      if (publishAtMs) {
+      if (sentRecord.queuedOffline) {
+        setOutboxItems(getPendingBroadcastOutbox(lockedComplex?.id));
+        setSuccessMsg(
+          publishAtMs
+            ? 'لا يوجد اتصال بالإنترنت حالياً — تم حفظ الرسالة المجدولة في قائمة الانتظار وستُرسل تلقائياً فور عودة الإنترنت لتصل في موعدها.'
+            : 'لا يوجد اتصال بالإنترنت حالياً — تم حفظ الرسالة وستُرسل وتصل للمستلمين تلقائياً فور عودة الإنترنت.'
+        );
+      } else if (publishAtMs) {
         setSuccessMsg(
           wasEditing
             ? `تم تحديث جدولة الرسالة بنجاح! ستصل تلقائياً في موعدها (${formatArabicScheduleLabel(
@@ -328,9 +447,11 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
         );
       }
 
-      await loadHistory();
+      if (!sentRecord.queuedOffline) {
+        await loadHistory();
+      }
     } catch (err: unknown) {
-      if (err instanceof BroadcastRulesPermissionError) {
+      if (err instanceof BroadcastRulesPermissionError && !isQuickSession) {
         setNeedsRulesHelp(true);
       }
       setError(
@@ -348,7 +469,7 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
     setTitle(item.title);
     setBody(item.body);
     setSelectedRoles(item.targetRoles.length > 0 ? [...item.targetRoles] : [...ALL_TARGET_ROLES]);
-    setTargetComplexId(item.targetComplexId || 'all');
+    setTargetComplexId(lockedComplex ? lockedComplex.id : item.targetComplexId || 'all');
     setDeliveryMode('scheduled');
     const targetMs = item.createdAtMs > Date.now() ? item.createdAtMs : Date.now() + 3600000;
     setScheduleDate(toLocalDateInput(targetMs));
@@ -360,12 +481,17 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
     setSuccessMsg(null);
     setBusyActionId(item.id);
     try {
-      await rescheduleBroadcastMessage(item, Date.now());
+      const updated = await rescheduleBroadcastMessage(item, Date.now(), scopeOptions);
       if (editingScheduledId === item.id) {
         resetComposer();
       }
-      setSuccessMsg('تم إرسال الرسالة المجدولة فوراً إلى جميع المستهدفين!');
-      await loadHistory();
+      if (updated.queuedOffline) {
+        setOutboxItems(getPendingBroadcastOutbox(lockedComplex?.id));
+        setSuccessMsg('لا يوجد اتصال بالإنترنت حالياً — تم حفظ الإرسال الفوري وسيُنفذ تلقائياً فور عودة الإنترنت.');
+      } else {
+        setSuccessMsg('تم إرسال الرسالة المجدولة فوراً إلى جميع المستهدفين!');
+        await loadHistory();
+      }
     } catch {
       setError('تعذّر إرسال الرسالة المجدولة الآن.');
     } finally {
@@ -376,7 +502,9 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
   const handleCancelScheduled = async (id: string) => {
     setBusyActionId(id);
     try {
-      await deleteBroadcastMessage(id).catch(() => deactivateBroadcastMessage(id));
+      await deleteBroadcastMessage(id, scopeOptions).catch(() =>
+        deactivateBroadcastMessage(id, scopeOptions)
+      );
       if (editingScheduledId === id) {
         resetComposer();
       }
@@ -391,12 +519,29 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
   const handleDeactivate = async (id: string) => {
     setBusyActionId(id);
     try {
-      await deactivateBroadcastMessage(id);
+      await deactivateBroadcastMessage(id, scopeOptions);
       setHistory((prev) => prev.filter((item) => item.id !== id));
     } catch {
       setError('تعذّر إيقاف الرسالة.');
     } finally {
       setBusyActionId(null);
+    }
+  };
+
+  const handleFlushOutboxNow = async () => {
+    setFlushingOutbox(true);
+    setError(null);
+    try {
+      const res = await flushPendingBroadcastOutbox();
+      setOutboxItems(getPendingBroadcastOutbox(lockedComplex?.id));
+      if (res.sentIds.length > 0) {
+        setSuccessMsg(`تم إرسال ${res.sentIds.length} رسالة معلّقة بنجاح بعد استعادة الاتصال!`);
+        await loadHistory();
+      } else if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        setError('لا يزال الجهاز غير متصل بالإنترنت، سيتم الإرسال تلقائياً فور عودة الشبكة.');
+      }
+    } finally {
+      setFlushingOutbox(false);
     }
   };
 
@@ -445,6 +590,24 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
 
         {/* Body */}
         <div className="overflow-y-auto p-5 sm:p-6 space-y-6">
+          {isOffline && (
+            <div className="rounded-2xl bg-[#FFA900]/12 border-2 border-[#FFA900] px-4 py-3 text-xs sm:text-sm font-bold text-[#7D4E35] flex items-center gap-2.5">
+              <WifiOff className="w-4 h-4 text-[#D98A00] shrink-0" />
+              <span>
+                أنت غير متصل بالإنترنت حالياً — يمكنك كتابة الرسالة وإرسالها أو جدولتها الآن، وسيتم إرسالها وإيصالها للمستلمين تلقائياً فور عودة الإنترنت.
+              </span>
+            </div>
+          )}
+
+          {isSupervisorView && isQuickSession && !isExternalComplex && (
+            <div className="rounded-2xl bg-[#FFA900]/12 border-2 border-[#FFA900] px-4 py-3 text-xs sm:text-sm font-bold text-[#7D4E35] flex items-center gap-2.5">
+              <ShieldAlert className="w-4 h-4 text-[#D98A00] shrink-0" />
+              <span>
+                أنت تتصفح الآن عبر رابط دخول سريع. لإرسال الرسائل على القاعدة الأساسية يُفضّل الدخول بحساب جوجل المرتبط بحساب المشرف.
+              </span>
+            </div>
+          )}
+
           <form onSubmit={handleSend} className="space-y-4">
             {editingScheduledId && (
               <div className="rounded-2xl bg-[#FFF4E6] border-2 border-[#F56900] px-4 py-3 flex items-center justify-between gap-3">
@@ -521,24 +684,36 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label
-                  htmlFor="broadcast-complex"
+                  htmlFor={lockedComplex ? undefined : 'broadcast-complex'}
                   className="block font-display text-xs font-extrabold text-[#4A220D] mb-1.5"
                 >
-                  نطاق المجمعات
+                  {lockedComplex ? 'نطاق الإرسال' : 'نطاق المجمعات'}
                 </label>
-                <select
-                  id="broadcast-complex"
-                  value={targetComplexId}
-                  onChange={(e) => setTargetComplexId(e.target.value)}
-                  className="w-full min-h-[46px] px-3.5 rounded-2xl border-2 border-[#EADBC8] bg-[#FDF6EE]/60 text-sm font-bold text-[#4A220D] focus:outline-none focus:border-[#F56900] focus:bg-white"
-                >
-                  <option value="all">جميع المجمعات في المنصة</option>
-                  {complexes.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
+                {lockedComplex ? (
+                  <div className="w-full min-h-[46px] px-3.5 rounded-2xl border-2 border-[#EADBC8] bg-[#FDF6EE] text-sm font-extrabold text-[#4A220D] flex items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5 truncate">
+                      <Building2 className="w-4 h-4 text-[#F56900] shrink-0" />
+                      <span className="truncate">{lockedComplex.name}</span>
+                    </span>
+                    <span className="text-[11px] font-bold text-[#F56900] whitespace-nowrap shrink-0">
+                      في حدود المجمع
+                    </span>
+                  </div>
+                ) : (
+                  <select
+                    id="broadcast-complex"
+                    value={targetComplexId}
+                    onChange={(e) => setTargetComplexId(e.target.value)}
+                    className="w-full min-h-[46px] px-3.5 rounded-2xl border-2 border-[#EADBC8] bg-[#FDF6EE]/60 text-sm font-bold text-[#4A220D] focus:outline-none focus:border-[#F56900] focus:bg-white"
+                  >
+                    <option value="all">جميع المجمعات في المنصة</option>
+                    {complexes.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
 
               <div>
@@ -554,7 +729,7 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
                   maxLength={140}
-                  placeholder="رسالة من إدارة المنصة"
+                  placeholder={lockedComplex ? 'رسالة من إدارة المجمع' : 'رسالة من إدارة المنصة'}
                   className="w-full min-h-[46px] px-3.5 rounded-2xl border-2 border-[#EADBC8] bg-[#FDF6EE]/60 text-sm font-bold text-[#4A220D] focus:outline-none focus:border-[#F56900] focus:bg-white"
                 />
               </div>
@@ -787,6 +962,56 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
               </button>
             </div>
           </form>
+
+          {/* Pending Offline Outbox */}
+          {outboxItems.length > 0 && (
+            <div className="pt-4 border-t-2 border-[#F7EBDD] space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="font-display text-sm font-extrabold text-[#4A220D] flex items-center gap-2">
+                  <WifiOff className="w-4 h-4 text-[#D98A00]" />
+                  <span>رسائل بانتظار عودة الإنترنت ({outboxItems.length})</span>
+                </h3>
+                <button
+                  type="button"
+                  disabled={flushingOutbox}
+                  onClick={() => void handleFlushOutboxNow()}
+                  className="duo-btn-cream min-h-[38px] px-3 py-1 rounded-xl font-display text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 text-[#F56900] ${flushingOutbox ? 'animate-spin' : ''}`} />
+                  <span>مزامنة الآن</span>
+                </button>
+              </div>
+
+              <div className="space-y-2.5 max-h-52 overflow-y-auto">
+                {outboxItems.map((item) => (
+                  <div
+                    key={item.id}
+                    className="bg-[#FFF9E6] border-2 border-[#FFA900]/45 rounded-2xl p-3 flex items-start justify-between gap-3"
+                  >
+                    <div className="min-w-0 space-y-1">
+                      <p className="font-display text-xs sm:text-sm font-extrabold text-[#4A220D] truncate">
+                        {item.title}
+                      </p>
+                      <p className="text-xs text-[#7D4E35] line-clamp-2">{item.body}</p>
+                      <p className="text-xs font-bold text-[#D98A00]">
+                        ستُرسل تلقائياً فور عودة الاتصال ·{' '}
+                        {item.targetRoles.map((r) => BROADCAST_ROLE_LABELS[r]).join(' · ')}
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => removeOfflineBroadcast(item.id)}
+                      title="إلغاء الرسالة المعلّقة"
+                      className="min-w-[40px] min-h-[40px] rounded-xl border border-[#EADBC8] bg-white hover:border-[#D95338] text-[#D95338] flex items-center justify-center shrink-0 cursor-pointer"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Scheduled Queue */}
           {scheduledMessages.length > 0 && (
