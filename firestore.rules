@@ -583,8 +583,9 @@ service cloud.firestore {
 
     match /inviteLinks/{token} {
       allow get: if isValidId(token);
-      allow list: if isSignedIn() && resource.data.active is bool && (
-        isPlatformAdmin() || isComplexSupervisor(resource.data.complexId)
+      allow list: if isSignedIn() && (
+        isPlatformAdmin()
+        || (resource.data.active is bool && resource.data.complexId is string && isComplexSupervisor(resource.data.complexId))
       );
       allow create: if (isPlatformAdmin() || isComplexSupervisor(incoming().complexId))
         && isValidId(token)
@@ -610,8 +611,9 @@ service cloud.firestore {
 
     match /quickLinks/{token} {
       allow get: if isValidId(token);
-      allow list: if isSignedIn() && resource.data.active is bool && (
-        isPlatformAdmin() || isComplexSupervisor(resource.data.complexId)
+      allow list: if isSignedIn() && (
+        isPlatformAdmin()
+        || (resource.data.active is bool && resource.data.complexId is string && isComplexSupervisor(resource.data.complexId))
       );
       allow create: if (isPlatformAdmin() || isComplexSupervisor(incoming().complexId))
         && isValidId(token)
@@ -637,10 +639,11 @@ service cloud.firestore {
 
     match /stats/{statId} {
       allow get: if isSignedIn() && isValidId(statId);
-      allow list: if isSignedIn() && resource.data.totalVisits is int && (
+      allow list: if isSignedIn() && (
         isPlatformAdmin()
         || (
-          exists(/databases/$(database)/documents/accounts/$(request.auth.uid))
+          resource.data.totalVisits is int
+          && exists(/databases/$(database)/documents/accounts/$(request.auth.uid))
           && get(/databases/$(database)/documents/accounts/$(request.auth.uid)).data.role == 'supervisor'
         )
       );
@@ -842,9 +845,9 @@ service cloud.firestore {
 
     match /broadcasts/{broadcastId} {
       allow get: if isValidId(broadcastId) && (
-        resource.data.active == true || isPlatformAdmin()
+        isPlatformAdmin() || (resource != null && resource.data.active == true)
       );
-      allow list: if resource.data.active == true || isPlatformAdmin();
+      allow list: if isPlatformAdmin() || resource.data.active == true;
       allow create: if isPlatformAdmin()
         && isValidId(broadcastId)
         && isValidBroadcast(incoming(), broadcastId)

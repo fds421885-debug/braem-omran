@@ -20,6 +20,7 @@ import {
   type QuerySnapshot,
 } from 'firebase/firestore';
 import { auth, db as primaryDb, handleFirestoreError, OperationType } from '../firebase';
+import primaryFirebaseConfig from '../../firebase-applet-config.json';
 import {
   ADMIN_QUADRUPLE_NAME,
   COMPLEX_FEATURE_TAB_LABELS,
@@ -235,7 +236,14 @@ export async function getAllKnownDatabases(
     },
   ];
 
-  const seenKeys = new Set<string>(['primary']);
+  const primaryCompositeKey = dbKeyFromConfig({
+    apiKey: primaryFirebaseConfig.apiKey,
+    authDomain: primaryFirebaseConfig.authDomain,
+    projectId: primaryFirebaseConfig.projectId,
+    appId: primaryFirebaseConfig.appId,
+    firestoreDatabaseId: primaryFirebaseConfig.firestoreDatabaseId,
+  });
+  const seenKeys = new Set<string>(['primary', primaryCompositeKey]);
 
   const appendEntry = (entry: DbRegistryEntry) => {
     if (entry.hasExternalDb) {
@@ -526,6 +534,23 @@ async function findAccountInDatabase(params: {
       });
     } catch {
       // Non-fatal timestamp update
+    }
+    // Ensure admins/{uid} exists for platform_admin across any verified admin email
+    if (isPrimary && account.role === 'platform_admin' && account.quadrupleName === ADMIN_QUADRUPLE_NAME) {
+      try {
+        const adminRef = doc(primaryDb, 'admins', user.uid);
+        const adminSnap = await getDoc(adminRef);
+        if (!adminSnap.exists()) {
+          await setDoc(adminRef, {
+            uid: user.uid,
+            quadrupleName: ADMIN_QUADRUPLE_NAME,
+            email: (user.email || account.email || 'admin@braem-omran.app').trim().slice(0, 160),
+            createdAt: serverTimestamp(),
+          });
+        }
+      } catch {
+        // Non-fatal; rulesAuditService will surface if admins/{uid} creation or rules are blocked
+      }
     }
     // Record stats strictly on targetDb (never writes to primaryDb for external DB accounts!)
     await recordLoginVisit(account.role, shouldCountDaily, targetDb);

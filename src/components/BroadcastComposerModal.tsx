@@ -63,9 +63,9 @@ const BROADCAST_RULES_SNIPPET = `    function isValidBroadcast(data, broadcastId
 
     match /broadcasts/{broadcastId} {
       allow get: if isValidId(broadcastId) && (
-        resource.data.active == true || isPlatformAdmin()
+        isPlatformAdmin() || (resource != null && resource.data.active == true)
       );
-      allow list: if resource.data.active == true || isPlatformAdmin();
+      allow list: if isPlatformAdmin() || resource.data.active == true;
       allow create: if isPlatformAdmin()
         && isValidId(broadcastId)
         && isValidBroadcast(incoming(), broadcastId)

@@ -15,12 +15,17 @@ import {
   Megaphone,
   Plus,
   RefreshCw,
+  ShieldAlert,
   ShieldCheck,
   Trash2,
   Users,
   X,
 } from 'lucide-react';
 import { auth } from '../firebase';
+import {
+  auditAllDatabasesRules,
+  type PlatformRulesAuditReport,
+} from '../services/rulesAuditService';
 import {
   deleteDiscoveredComplex,
   getPlatformDashboardStats,
@@ -47,6 +52,7 @@ import { ExternalDbModal } from './ExternalDbModal';
 import { MascotImage } from './MascotImage';
 import { ModernLoader } from './ModernLoader';
 import { PWAInstallButton } from './PWAInstallButton';
+import { RulesHealthModal } from './RulesHealthModal';
 
 interface AdminDashboardProps {
   session: ActiveSession;
@@ -77,6 +83,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
 
   const [addDbModalOpen, setAddDbModalOpen] = useState(false);
   const [messageModalOpen, setMessageModalOpen] = useState(false);
+
+  const [rulesAuditReport, setRulesAuditReport] =
+    useState<PlatformRulesAuditReport | null>(null);
+  const [rulesModalOpen, setRulesModalOpen] = useState(false);
+  const [auditingRules, setAuditingRules] = useState(false);
 
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingComplex, setEditingComplex] = useState<DiscoveredComplex | null>(null);
@@ -113,9 +124,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
     }
   }, []);
 
+  const runRulesAudit = useCallback(
+    async (openEvenIfHealthy = false) => {
+      setAuditingRules(true);
+      try {
+        const report = await auditAllDatabasesRules(
+          session.account.uid || session.account.id,
+          { waitForPropagation: openEvenIfHealthy }
+        );
+        setRulesAuditReport(report);
+        if (!report.allHealthy || openEvenIfHealthy) {
+          setRulesModalOpen(true);
+        }
+      } finally {
+        setAuditingRules(false);
+      }
+    },
+    [session.account.uid, session.account.id]
+  );
+
   useEffect(() => {
-    loadAll();
-  }, [loadAll]);
+    void loadAll();
+    void runRulesAudit(false);
+  }, [loadAll, runRulesAudit]);
 
   const handleOpenEditComplex = async (comp: DiscoveredComplex) => {
     setRefreshing(true);
@@ -235,6 +266,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
 
           {/* Actions */}
           <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 shrink-0">
+            {rulesAuditReport && !rulesAuditReport.allHealthy && (
+              <button
+                type="button"
+                onClick={() => setRulesModalOpen(true)}
+                className="min-h-[42px] px-3 py-2 rounded-xl border-2 border-[#D95338] bg-[#D95338]/10 hover:bg-[#D95338]/18 text-[#D95338] font-display font-extrabold text-xs inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <ShieldAlert className="w-4 h-4 shrink-0" />
+                <span>تحديث Rules ({rulesAuditReport.unhealthyDatabases.length})</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setMessageModalOpen(true)}
@@ -547,19 +588,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
 
             {/* Connected Databases Discovery Bar */}
             <section className="bg-white border-2 border-[#EADBC8] rounded-3xl p-4 sm:p-5 space-y-3">
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="font-display text-sm sm:text-base font-extrabold text-[#4A220D] flex items-center gap-2">
                   <Database className="w-4 h-4 text-[#F56900]" />
                   <span>قواعد البيانات المقروء منها ({connectedDbs.length})</span>
                 </h2>
-                <button
-                  type="button"
-                  onClick={() => loadAll(true)}
-                  className="text-xs font-bold text-[#F56900] hover:underline inline-flex items-center gap-1 cursor-pointer"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>تحديث الجلب</span>
-                </button>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    disabled={auditingRules}
+                    onClick={() => void runRulesAudit(true)}
+                    className="text-xs font-bold text-[#46A302] hover:underline inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    <span>{auditingRules ? 'جاري فحص القواعد...' : 'فحص القواعد'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => loadAll(true)}
+                    className="text-xs font-bold text-[#F56900] hover:underline inline-flex items-center gap-1 cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>تحديث الجلب</span>
+                  </button>
+                </div>
               </div>
               <div className="flex flex-wrap gap-2">
                 {connectedDbs.map((dbInfo) => (
@@ -718,7 +770,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
           onClose={() => setAddDbModalOpen(false)}
           onAdded={() => {
             setAddDbModalOpen(false);
-            loadAll(true);
+            void loadAll(true);
+            void runRulesAudit(false);
           }}
         />
       )}
@@ -749,6 +802,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
           createdBy={session.account.uid || session.account.id}
           complexes={complexes}
           onClose={() => setMessageModalOpen(false)}
+        />
+      )}
+
+      {/* Smart Firestore Rules Health Modal */}
+      {rulesModalOpen && rulesAuditReport && (
+        <RulesHealthModal
+          report={rulesAuditReport}
+          rechecking={auditingRules}
+          onRecheck={() => runRulesAudit(true)}
+          onClose={() => setRulesModalOpen(false)}
         />
       )}
 
