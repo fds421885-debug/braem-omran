@@ -378,6 +378,39 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "BroadcastMessageRecord": {
+      "title": "BroadcastMessageRecord",
+      "description": "Platform-wide or complex-scoped broadcast notifications sent by the programmer admin to selected roles.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "body": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "targetRoles": { "type": "array", "minItems": 1, "maxItems": 3 },
+        "targetComplexId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "targetComplexName": { "type": "string", "maxLength": 160 },
+        "senderName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "active": { "type": "boolean" },
+        "createdAtMs": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "title",
+        "body",
+        "targetRoles",
+        "targetComplexId",
+        "targetComplexName",
+        "senderName",
+        "createdBy",
+        "active",
+        "createdAtMs",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -440,6 +473,10 @@
     "/curricula/{curriculumId}": {
       "schema": { "$ref": "#/entities/CurriculumRecord" },
       "description": "Curricula assignments linking books or Mushaf to halaqat and schedule days."
+    },
+    "/broadcasts/{broadcastId}": {
+      "schema": { "$ref": "#/entities/BroadcastMessageRecord" },
+      "description": "Broadcast notifications from platform admin to supervisors, teachers, and students."
     }
   }
 }

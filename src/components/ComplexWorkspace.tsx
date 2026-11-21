@@ -2033,7 +2033,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
         typeof document !== 'undefined' &&
         createPortal(
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-[#4A220D]/55 backdrop-blur-xs p-4"
+            className="fixed inset-0 z-[90] flex items-center justify-center bg-[#4A220D]/55 backdrop-blur-xs p-4"
             role="dialog"
             aria-modal="true"
           >
@@ -2230,7 +2230,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
         typeof document !== 'undefined' &&
         createPortal(
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-[#4A220D]/55 backdrop-blur-xs p-4"
+            className="fixed inset-0 z-[90] flex items-center justify-center bg-[#4A220D]/55 backdrop-blur-xs p-4"
             role="dialog"
             aria-modal="true"
           >

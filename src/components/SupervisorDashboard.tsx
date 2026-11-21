@@ -37,6 +37,7 @@ import { BookLibrarySection } from './BookLibrarySection';
 import { ComplexWorkspace } from './ComplexWorkspace';
 import { CurriculaSection } from './CurriculaSection';
 import { ModernLoader } from './ModernLoader';
+import { NotificationPermissionButton } from './NotificationPermissionButton';
 import { PWAInstallButton } from './PWAInstallButton';
 import { TeacherDashboardView } from './TeacherDashboardView';
 
@@ -285,11 +286,23 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
     },
   ];
 
+  if (!loading && workspace && teacherContext) {
+    return (
+      <TeacherDashboardView
+        workspace={workspace}
+        context={teacherContext}
+        currentUserId={session.account.uid || session.account.id}
+        currentUserName={session.account.quadrupleName}
+        onReturnToSupervisor={() => setTeacherContext(null)}
+      />
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-[#FDF6EE] text-[#4A220D] flex flex-col justify-between pb-20 md:pb-0">
+    <div className="min-h-screen bg-[#FDF6EE] text-[#4A220D] flex flex-col justify-between pb-24 lg:pb-0">
       {/* Top Clean Navigation Header — Zero DB Details */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b-2 border-[#EADBC8]">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-3">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 min-h-16 py-2 flex flex-wrap items-center justify-between gap-2.5">
           <div className="flex items-center gap-3 min-w-0">
             <img
               src={`${BASE_URL}icon.svg`}
@@ -311,36 +324,34 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
             </div>
           </div>
 
-          {/* Desktop Main Tabs (hidden when acting in Teacher role) */}
-          {!teacherContext && (
-            <nav
-              aria-label="أقسام لوحة المشرف"
-              className="hidden md:flex items-center gap-1 bg-[#FDF6EE] p-1.5 rounded-2xl border border-[#EADBC8] overflow-x-auto"
-            >
-              {navItems.map((item) => {
-                const Icon = item.icon;
-                const active = tab === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => setTab(item.id)}
-                    className={`min-h-[40px] px-2.5 lg:px-3.5 py-1.5 rounded-xl font-display text-xs lg:text-sm font-bold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors ${
-                      active
-                        ? 'bg-[#F56900] text-white'
-                        : 'text-[#7D4E35] hover:text-[#4A220D] hover:bg-white'
-                    }`}
-                  >
-                    <Icon className="w-4 h-4 shrink-0" />
-                    <span>{item.label}</span>
-                  </button>
-                );
-              })}
-            </nav>
-          )}
+          {/* Desktop Main Tabs */}
+          <nav
+            aria-label="أقسام لوحة المشرف"
+            className="hidden lg:flex items-center gap-1 bg-[#FDF6EE] p-1.5 rounded-2xl border border-[#EADBC8]"
+          >
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              const active = tab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setTab(item.id)}
+                  className={`min-h-[40px] px-2.5 xl:px-3.5 py-1.5 rounded-xl font-display text-xs xl:text-sm font-bold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors ${
+                    active
+                      ? 'bg-[#F56900] text-white'
+                      : 'text-[#7D4E35] hover:text-[#4A220D] hover:bg-white'
+                  }`}
+                >
+                  <Icon className="w-4 h-4 shrink-0" />
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </nav>
 
-          <div className="flex items-center gap-2 shrink-0">
-            {!loading && workspace && !teacherContext && (
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {!loading && workspace && (
               <button
                 type="button"
                 onClick={openTeacherPicker}
@@ -351,16 +362,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                 <span className="sm:hidden">دور المعلم</span>
               </button>
             )}
-            {teacherContext && (
-              <button
-                type="button"
-                onClick={() => setTeacherContext(null)}
-                className="duo-btn-orange min-h-[42px] px-3 py-2 rounded-xl font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
-              >
-                <ArrowLeftRight className="w-4 h-4 shrink-0" />
-                <span>العودة لدور المشرف</span>
-              </button>
-            )}
+            <NotificationPermissionButton variant="compact" />
             <PWAInstallButton variant="compact" />
             <button
               type="button"
@@ -852,97 +854,79 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
               </div>
             )}
 
-            {/* ==================== TEACHER ROLE VIEW ==================== */}
-            {teacherContext ? (
-              <TeacherDashboardView
+            {/* ==================== TAB 2: ATTENDANCE & ABSENCE ==================== */}
+            {tab === 'attendance' && (
+              <AttendanceSection
                 workspace={workspace}
-                context={teacherContext}
                 currentUserId={session.account.uid || session.account.id}
                 currentUserName={session.account.quadrupleName}
-                onReturnToSupervisor={() => setTeacherContext(null)}
+                restrictMosqueIds={
+                  restrictMosqueIds.length > 0 ? restrictMosqueIds : undefined
+                }
               />
-            ) : (
-              <>
-                {/* ==================== TAB 1: HOME ANALYTICS ==================== */}
-                {/* (Rendered above when tab === 'home') */}
+            )}
 
-                {/* ==================== TAB 2: ATTENDANCE & ABSENCE ==================== */}
-                {tab === 'attendance' && (
-                  <AttendanceSection
-                    workspace={workspace}
-                    currentUserId={session.account.uid || session.account.id}
-                    currentUserName={session.account.quadrupleName}
-                    restrictMosqueIds={
-                      restrictMosqueIds.length > 0 ? restrictMosqueIds : undefined
-                    }
-                  />
-                )}
+            {/* ==================== TAB 3: ACCOUNTS & MOSQUES (NO DB CONTROLS) ==================== */}
+            {tab === 'accounts_mosques' && (
+              <ComplexWorkspace
+                discovered={workspace.discovered}
+                connectedDbs={[]}
+                onBack={() => setTab('home')}
+                onComplexRelocated={async () => {}}
+                supervisorMode
+                initialWorkspace={workspace}
+                restrictMosqueIds={restrictMosqueIds}
+                onWorkspaceMutated={async () => {
+                  await loadAll(true);
+                }}
+              />
+            )}
 
-                {/* ==================== TAB 3: ACCOUNTS & MOSQUES (NO DB CONTROLS) ==================== */}
-                {tab === 'accounts_mosques' && (
-                  <ComplexWorkspace
-                    discovered={workspace.discovered}
-                    connectedDbs={[]}
-                    onBack={() => setTab('home')}
-                    onComplexRelocated={async () => {}}
-                    supervisorMode
-                    initialWorkspace={workspace}
-                    restrictMosqueIds={restrictMosqueIds}
-                    onWorkspaceMutated={async () => {
-                      await loadAll(true);
-                    }}
-                  />
-                )}
+            {/* ==================== TAB 4: LIBRARY & SMART BOOKS ==================== */}
+            {tab === 'library' && (
+              <BookLibrarySection
+                workspace={workspace}
+                currentUserId={session.account.uid || session.account.id}
+              />
+            )}
 
-                {/* ==================== TAB 4: LIBRARY & SMART BOOKS ==================== */}
-                {tab === 'library' && (
-                  <BookLibrarySection
-                    workspace={workspace}
-                    currentUserId={session.account.uid || session.account.id}
-                  />
-                )}
-
-                {/* ==================== TAB 5: CURRICULA ==================== */}
-                {tab === 'curricula' && (
-                  <CurriculaSection
-                    workspace={workspace}
-                    currentUserId={session.account.uid || session.account.id}
-                    restrictMosqueIds={
-                      restrictMosqueIds.length > 0 ? restrictMosqueIds : undefined
-                    }
-                  />
-                )}
-              </>
+            {/* ==================== TAB 5: CURRICULA ==================== */}
+            {tab === 'curricula' && (
+              <CurriculaSection
+                workspace={workspace}
+                currentUserId={session.account.uid || session.account.id}
+                restrictMosqueIds={
+                  restrictMosqueIds.length > 0 ? restrictMosqueIds : undefined
+                }
+              />
             )}
           </>
         )}
       </main>
 
-      {/* Mobile Bottom Navigation */}
-      {!teacherContext && (
-        <nav
-          aria-label="التنقل السفلي للمشرف"
-          className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-white/95 backdrop-blur-md border-t-2 border-[#EADBC8] px-1.5 py-2 flex items-center justify-around gap-1"
-        >
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const active = tab === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setTab(item.id)}
-                className={`flex-1 min-w-0 min-h-[46px] py-1.5 px-1 rounded-2xl flex flex-col items-center justify-center gap-0.5 font-display text-[10px] sm:text-[11px] font-bold cursor-pointer transition-colors ${
-                  active ? 'bg-[#F56900] text-white' : 'text-[#7D4E35]'
-                }`}
-              >
-                <Icon className="w-4 h-4 shrink-0" />
-                <span className="truncate w-full text-center">{item.label}</span>
-              </button>
-            );
-          })}
-        </nav>
-      )}
+      {/* Mobile & Tablet Bottom Navigation */}
+      <nav
+        aria-label="التنقل السفلي للمشرف"
+        className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-white/95 backdrop-blur-md border-t-2 border-[#EADBC8] px-1.5 py-2 flex items-center justify-around gap-1"
+      >
+        {navItems.map((item) => {
+          const Icon = item.icon;
+          const active = tab === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setTab(item.id)}
+              className={`flex-1 min-w-0 min-h-[46px] py-1.5 px-1 rounded-2xl flex flex-col items-center justify-center gap-0.5 font-display text-[10px] sm:text-xs font-bold cursor-pointer transition-colors ${
+                active ? 'bg-[#F56900] text-white' : 'text-[#7D4E35]'
+              }`}
+            >
+              <Icon className="w-4 h-4 shrink-0" />
+              <span className="truncate w-full text-center">{item.label}</span>
+            </button>
+          );
+        })}
+      </nav>
 
       {/* Switch to Teacher Role Picker Modal */}
       {showTeacherPicker &&
@@ -950,7 +934,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
         typeof document !== 'undefined' &&
         createPortal(
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-[#4A220D]/55 backdrop-blur-xs p-4"
+            className="fixed inset-0 z-[90] flex items-center justify-center bg-[#4A220D]/55 backdrop-blur-xs p-4"
             role="dialog"
             aria-modal="true"
           >
@@ -1059,7 +1043,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
           document.body
         )}
 
-      <footer className="hidden md:block py-4 px-4 text-center text-xs sm:text-sm font-medium text-[#7D4E35]">
+      <footer className="hidden lg:block py-4 px-4 text-center text-xs sm:text-sm font-medium text-[#7D4E35]">
         منصة براعم عمران · جميع الحقوق محفوظة لاستيديو expraiment
       </footer>
     </div>

@@ -359,6 +359,33 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidBroadcast(data, broadcastId) {
+      return data.keys().hasAll([
+          'id', 'title', 'body', 'targetRoles', 'targetComplexId',
+          'targetComplexName', 'senderName', 'createdBy', 'active',
+          'createdAtMs', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'title', 'body', 'targetRoles', 'targetComplexId',
+          'targetComplexName', 'senderName', 'createdBy', 'active',
+          'createdAtMs', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == broadcastId && isValidId(data.id)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && data.body is string && data.body.size() >= 1 && data.body.size() <= 4000
+        && data.targetRoles is list
+        && data.targetRoles.size() >= 1 && data.targetRoles.size() <= 3
+        && data.targetRoles.hasOnly(['supervisor', 'teacher', 'student'])
+        && data.targetComplexId is string && data.targetComplexId.size() >= 1 && data.targetComplexId.size() <= 128
+        && data.targetComplexName is string && data.targetComplexName.size() <= 160
+        && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 120
+        && data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128
+        && data.active is bool
+        && data.createdAtMs is int && data.createdAtMs >= 0
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     match /admins/{userId} {
       allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
       allow list: if false;
@@ -811,6 +838,31 @@ service cloud.firestore {
       allow delete: if isValidId(curriculumId) && (
         isPlatformAdmin() || isComplexSupervisor(existing().complexId)
       );
+    }
+
+    match /broadcasts/{broadcastId} {
+      allow get: if isValidId(broadcastId) && (
+        resource.data.active == true || isPlatformAdmin()
+      );
+      allow list: if resource.data.active == true || isPlatformAdmin();
+      allow create: if isPlatformAdmin()
+        && isValidId(broadcastId)
+        && isValidBroadcast(incoming(), broadcastId)
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isPlatformAdmin()
+        && isValidId(broadcastId)
+        && isValidBroadcast(incoming(), broadcastId)
+        && incoming().id == existing().id
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'title', 'body', 'targetRoles', 'targetComplexId', 'targetComplexName',
+          'active', 'updatedAt'
+        ]);
+      allow delete: if isPlatformAdmin() && isValidId(broadcastId);
     }
   }
 }

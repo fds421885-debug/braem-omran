@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { signOut } from 'firebase/auth';
 import type { Firestore } from 'firebase/firestore';
 import {
@@ -11,6 +12,7 @@ import {
   GraduationCap,
   Home,
   LogOut,
+  Megaphone,
   Plus,
   RefreshCw,
   ShieldCheck,
@@ -38,6 +40,7 @@ import type {
   HalaqaRecord,
   MosqueRecord,
 } from '../types/platform';
+import { BroadcastComposerModal } from './BroadcastComposerModal';
 import { ComplexEditorModal } from './ComplexEditorModal';
 import { ComplexWorkspace } from './ComplexWorkspace';
 import { ExternalDbModal } from './ExternalDbModal';
@@ -73,6 +76,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
   const [selectedComplex, setSelectedComplex] = useState<DiscoveredComplex | null>(null);
 
   const [addDbModalOpen, setAddDbModalOpen] = useState(false);
+  const [messageModalOpen, setMessageModalOpen] = useState(false);
 
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingComplex, setEditingComplex] = useState<DiscoveredComplex | null>(null);
@@ -175,10 +179,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
   const externalOnlyDbs = connectedDbs.filter((d) => !d.isPrimary);
 
   return (
-    <div className="min-h-screen bg-[#FDF6EE] text-[#4A220D] flex flex-col pb-20 md:pb-0">
+    <div className="min-h-screen bg-[#FDF6EE] text-[#4A220D] flex flex-col pb-24 md:pb-0">
       {/* Top Bar */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b-2 border-[#EADBC8]">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4 md:gap-8">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 min-h-16 py-2 flex flex-wrap items-center justify-between gap-2.5 md:gap-6">
           <button
             type="button"
             onClick={() => {
@@ -230,12 +234,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
           </nav>
 
           {/* Actions */}
-          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => setMessageModalOpen(true)}
+              className="duo-btn-orange min-h-[42px] px-3.5 py-2 rounded-xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Megaphone className="w-4 h-4 shrink-0" />
+              <span>رسالة</span>
+            </button>
             <PWAInstallButton variant="compact" />
             <button
               type="button"
               onClick={handleLogout}
-              className="min-h-[44px] px-3 sm:px-4 py-2 rounded-2xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+              className="min-h-[42px] px-3 sm:px-4 py-2 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <LogOut className="w-4 h-4 shrink-0" />
               <span className="hidden sm:inline">تسجيل الخروج</span>
@@ -315,6 +327,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
                     >
                       <Building2 className="w-4 h-4" />
                       <span>إدارة المجمعات ({statsData.totalComplexes})</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMessageModalOpen(true)}
+                      className="duo-btn-green min-h-[46px] px-5 py-2.5 rounded-2xl font-display font-extrabold text-sm inline-flex items-center gap-2 cursor-pointer"
+                    >
+                      <Megaphone className="w-4 h-4" />
+                      <span>إرسال رسالة</span>
                     </button>
                     <button
                       type="button"
@@ -722,39 +742,55 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
         />
       )}
 
-      {/* Delete Complex Confirmation Dialog */}
-      {confirmDeleteComplex && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-[#4A220D]/55 backdrop-blur-xs p-4"
-          role="dialog"
-          aria-modal="true"
-        >
-          <div className="w-full max-w-sm bg-white border-2 border-[#EADBC8] rounded-3xl p-6 text-center space-y-4 shadow-xl">
-            <h3 className="font-display text-lg font-extrabold text-[#4A220D]">
-              حذف مجمع {confirmDeleteComplex.name}؟
-            </h3>
-            <p className="text-sm text-[#7D4E35]">
-              سيتم حذف المجمع وبياناته من قاعدته ({confirmDeleteComplex.ownerDbLabel}).
-            </p>
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={handleDeleteComplex}
-                className="flex-1 min-h-[46px] rounded-2xl bg-[#D95338] text-white font-display font-bold text-sm cursor-pointer"
-              >
-                تأكيد الحذف
-              </button>
-              <button
-                type="button"
-                onClick={() => setConfirmDeleteComplex(null)}
-                className="duo-btn-cream flex-1 min-h-[46px] rounded-2xl font-display font-bold text-sm cursor-pointer"
-              >
-                إلغاء
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* Programmer Broadcast Message Modal */}
+      {messageModalOpen && (
+        <BroadcastComposerModal
+          senderName={session.account.quadrupleName}
+          createdBy={session.account.uid || session.account.id}
+          complexes={complexes}
+          onClose={() => setMessageModalOpen(false)}
+        />
       )}
+
+      {/* Delete Complex Confirmation Dialog */}
+      {confirmDeleteComplex &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[90] flex items-center justify-center bg-[#4A220D]/55 backdrop-blur-xs p-4"
+            role="dialog"
+            aria-modal="true"
+          >
+            <div
+              dir="rtl"
+              className="w-full max-w-sm bg-white border-2 border-[#EADBC8] rounded-3xl p-6 text-center space-y-4 shadow-xl"
+            >
+              <h3 className="font-display text-lg font-extrabold text-[#4A220D]">
+                حذف مجمع {confirmDeleteComplex.name}؟
+              </h3>
+              <p className="text-sm text-[#7D4E35]">
+                سيتم حذف المجمع وبياناته من قاعدته ({confirmDeleteComplex.ownerDbLabel}).
+              </p>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleDeleteComplex}
+                  className="flex-1 min-h-[46px] rounded-2xl bg-[#D95338] text-white font-display font-bold text-sm cursor-pointer"
+                >
+                  تأكيد الحذف
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmDeleteComplex(null)}
+                  className="duo-btn-cream flex-1 min-h-[46px] rounded-2xl font-display font-bold text-sm cursor-pointer"
+                >
+                  إلغاء
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 };

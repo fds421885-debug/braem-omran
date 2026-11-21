@@ -19,6 +19,8 @@ import {
 } from '../types/platform';
 import { AttendanceSection } from './AttendanceSection';
 import { ModernLoader } from './ModernLoader';
+import { NotificationPermissionButton } from './NotificationPermissionButton';
+import { PWAInstallButton } from './PWAInstallButton';
 
 interface TeacherDashboardViewProps {
   workspace: ComplexWorkspaceData;
@@ -76,10 +78,10 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
   ];
 
   return (
-    <div className="min-h-screen bg-[#FDF6EE] text-[#4A220D] flex flex-col">
+    <div className="min-h-screen bg-[#FDF6EE] text-[#4A220D] flex flex-col pb-8">
       {/* Top Bar with Prominent Return to Supervisor Button */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b-2 border-[#EADBC8]">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 min-h-16 py-2.5 flex flex-wrap items-center justify-between gap-3">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 min-h-16 py-2.5 flex flex-wrap items-center justify-between gap-2.5">
           <div className="min-w-0">
             <p className="text-xs font-extrabold text-[#F56900]">
               وضع المعلم · {context.mosqueName}
@@ -89,7 +91,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
             </h1>
           </div>
 
-          <nav className="flex flex-wrap items-center gap-1.5 bg-[#FDF6EE] p-1 rounded-2xl border border-[#EADBC8]">
+          <nav className="flex items-center gap-1.5 bg-[#FDF6EE] p-1 rounded-2xl border border-[#EADBC8] overflow-x-auto max-w-full">
             {navItems.map((item) => {
               const Icon = item.icon;
               const active = tab === item.id;
@@ -98,7 +100,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                   key={item.id}
                   type="button"
                   onClick={() => setTab(item.id)}
-                  className={`min-h-[38px] px-3 py-1.5 rounded-xl font-display text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 cursor-pointer transition-colors ${
+                  className={`min-h-[38px] px-3 py-1.5 rounded-xl font-display text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap shrink-0 ${
                     active
                       ? 'bg-[#F56900] text-white'
                       : 'text-[#7D4E35] hover:text-[#4A220D] hover:bg-white'
@@ -111,14 +113,18 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
             })}
           </nav>
 
-          <button
-            type="button"
-            onClick={onReturnToSupervisor}
-            className="duo-btn-green min-h-[42px] px-4 py-2 rounded-2xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center gap-2 cursor-pointer whitespace-nowrap"
-          >
-            <ArrowRight className="w-4 h-4" />
-            <span>العودة لدور المشرف</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <NotificationPermissionButton variant="compact" />
+            <PWAInstallButton variant="compact" />
+            <button
+              type="button"
+              onClick={onReturnToSupervisor}
+              className="duo-btn-green min-h-[42px] px-4 py-2 rounded-2xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center gap-2 cursor-pointer whitespace-nowrap"
+            >
+              <ArrowRight className="w-4 h-4" />
+              <span>العودة لدور المشرف</span>
+            </button>
+          </div>
         </div>
       </header>
 

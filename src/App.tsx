@@ -7,6 +7,7 @@ import { onAuthStateChanged, type User } from 'firebase/auth';
 import type { Firestore } from 'firebase/firestore';
 import { AdminDashboard } from './components/AdminDashboard';
 import { AuthScreen } from './components/AuthScreen';
+import { BroadcastNotificationsHost } from './components/BroadcastNotificationsHost';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ModernLoader } from './components/ModernLoader';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -366,18 +367,24 @@ function AppContent() {
 
   if (activeSession.account.role === 'supervisor') {
     return (
-      <SupervisorDashboard
-        session={activeSession}
-        onExitQuickSession={exitQuickSession}
-      />
+      <>
+        <SupervisorDashboard
+          session={activeSession}
+          onExitQuickSession={exitQuickSession}
+        />
+        <BroadcastNotificationsHost session={activeSession} />
+      </>
     );
   }
 
   return (
-    <RoleWelcomeView
-      session={activeSession}
-      onExitQuickSession={exitQuickSession}
-    />
+    <>
+      <RoleWelcomeView
+        session={activeSession}
+        onExitQuickSession={exitQuickSession}
+      />
+      <BroadcastNotificationsHost session={activeSession} />
+    </>
   );
 }
 

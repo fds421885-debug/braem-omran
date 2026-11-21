@@ -4,6 +4,7 @@ import { CheckCircle2, LogOut } from 'lucide-react';
 import { getAuthForConfig } from '../services/multiDb';
 import type { ActiveSession } from '../types/platform';
 import { MascotImage } from './MascotImage';
+import { NotificationPermissionButton } from './NotificationPermissionButton';
 import { PWAInstallButton } from './PWAInstallButton';
 
 interface RoleWelcomeViewProps {
@@ -44,7 +45,7 @@ export const RoleWelcomeView: React.FC<RoleWelcomeViewProps> = ({
     <div className="min-h-screen bg-[#FDF6EE] text-[#4A220D] flex flex-col justify-between">
       {/* Header */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b-2 border-[#EADBC8]">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 min-h-16 py-2 flex flex-wrap items-center justify-between gap-2.5">
           <div className="flex items-center gap-2.5 shrink-0">
             <img
               src={`${BASE_URL}icon.svg`}
@@ -56,12 +57,13 @@ export const RoleWelcomeView: React.FC<RoleWelcomeViewProps> = ({
             </span>
           </div>
 
-          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
+            <NotificationPermissionButton variant="compact" />
             <PWAInstallButton variant="compact" />
             <button
               type="button"
               onClick={handleLogout}
-              className="min-h-[44px] px-3.5 py-2 rounded-2xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              className="min-h-[42px] px-3.5 py-2 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
             >
               <LogOut className="w-4 h-4 shrink-0" />
               <span>تسجيل الخروج</span>
@@ -127,6 +129,10 @@ export const RoleWelcomeView: React.FC<RoleWelcomeViewProps> = ({
               )}
             </div>
           )}
+
+          <div className="max-w-lg mx-auto">
+            <NotificationPermissionButton variant="banner" />
+          </div>
         </div>
       </main>
 

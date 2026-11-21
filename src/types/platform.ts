@@ -393,3 +393,26 @@ export interface BookWordAudioRecord {
   updatedAt?: unknown;
 }
 
+export type BroadcastTargetRole = 'supervisor' | 'teacher' | 'student';
+
+export const BROADCAST_ROLE_LABELS: Record<BroadcastTargetRole, string> = {
+  supervisor: 'المشرفون',
+  teacher: 'المعلمون',
+  student: 'الطلاب',
+};
+
+export interface BroadcastMessageRecord {
+  id: string;
+  title: string;
+  body: string;
+  targetRoles: BroadcastTargetRole[];
+  targetComplexId: string;
+  targetComplexName: string;
+  senderName: string;
+  createdBy: string;
+  active: boolean;
+  createdAtMs: number;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+

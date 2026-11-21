@@ -22,6 +22,7 @@ export default defineConfig(() => {
           'pwa-192x192.png',
           'pwa-512x512.png',
           'pwa-maskable-512x512.png',
+          'sw-notifications.js',
         ],
         manifest: {
           id: base,
@@ -57,6 +58,7 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
+          importScripts: [`${base}sw-notifications.js`],
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,jpg,woff,woff2}'],
           navigateFallbackDenylist: [/^\/api\//, /\/pdfjs\//],

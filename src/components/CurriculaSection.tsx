@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertCircle,
   BookMarked,
@@ -555,38 +556,44 @@ export const CurriculaSection: React.FC<CurriculaSectionProps> = ({
       </div>
 
       {/* Delete confirmation modal */}
-      {deletingCurriculum && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-[#4A220D]/55 backdrop-blur-xs p-4"
-          role="dialog"
-          aria-modal="true"
-        >
-          <div className="w-full max-w-sm bg-white border-2 border-[#EADBC8] rounded-3xl p-6 text-center space-y-4 shadow-xl">
-            <h3 className="font-display text-lg font-extrabold text-[#4A220D]">
-              حذف مقرر «{deletingCurriculum.bookTitle}»؟
-            </h3>
-            <p className="text-sm text-[#7D4E35]">
-              سيتم إلغاء ارتباط هذا المقرر بالحلقات المحددة له ولن يظهر في جدولها.
-            </p>
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={handleConfirmDelete}
-                className="flex-1 min-h-[44px] rounded-2xl bg-[#D95338] text-white font-display font-bold text-sm cursor-pointer"
-              >
-                تأكيد الحذف
-              </button>
-              <button
-                type="button"
-                onClick={() => setDeletingCurriculum(null)}
-                className="duo-btn-cream flex-1 min-h-[44px] rounded-2xl font-display font-bold text-sm cursor-pointer"
-              >
-                إلغاء
-              </button>
+      {deletingCurriculum &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[90] flex items-center justify-center bg-[#4A220D]/55 backdrop-blur-xs p-4"
+            role="dialog"
+            aria-modal="true"
+          >
+            <div
+              dir="rtl"
+              className="w-full max-w-sm bg-white border-2 border-[#EADBC8] rounded-3xl p-6 text-center space-y-4 shadow-xl"
+            >
+              <h3 className="font-display text-lg font-extrabold text-[#4A220D]">
+                حذف مقرر «{deletingCurriculum.bookTitle}»؟
+              </h3>
+              <p className="text-sm text-[#7D4E35]">
+                سيتم إلغاء ارتباط هذا المقرر بالحلقات المحددة له ولن يظهر في جدولها.
+              </p>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleConfirmDelete}
+                  className="flex-1 min-h-[44px] rounded-2xl bg-[#D95338] text-white font-display font-bold text-sm cursor-pointer"
+                >
+                  تأكيد الحذف
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDeletingCurriculum(null)}
+                  className="duo-btn-cream flex-1 min-h-[44px] rounded-2xl font-display font-bold text-sm cursor-pointer"
+                >
+                  إلغاء
+                </button>
+              </div>
             </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body
+        )}
     </div>
   );
 };

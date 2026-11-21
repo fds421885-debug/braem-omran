@@ -12,7 +12,7 @@ import {
 export type { PageOcrProgress };
 
 function getPdfJsAssetBaseUrl(): string {
-  const rawBase = import.meta.env.BASE_URL || '/';
+  const rawBase = (typeof import.meta !== 'undefined' && import.meta.env?.BASE_URL) || '/';
   const normalizedBase = rawBase.endsWith('/') ? rawBase : `${rawBase}/`;
   if (typeof window !== 'undefined' && window.location) {
     try {

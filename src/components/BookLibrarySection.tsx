@@ -2271,7 +2271,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
             </div>
 
             {/* Interactive Word / Ayah Reading Inspector */}
-            <div className="lg:col-span-5 lg:sticky lg:top-24 space-y-4">
+            <div className="lg:col-span-5 lg:sticky lg:top-24 lg:max-h-[calc(100vh-7rem)] lg:overflow-y-auto space-y-4">
               {!selectedSegment ? (
                 <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-6 text-center space-y-2">
                   <BookOpen className="w-10 h-10 text-[#F56900] mx-auto" />
@@ -2976,7 +2976,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
         typeof document !== 'undefined' &&
         createPortal(
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-[#4A220D]/55 backdrop-blur-xs p-4"
+            className="fixed inset-0 z-[90] flex items-center justify-center bg-[#4A220D]/55 backdrop-blur-xs p-4"
             role="dialog"
             aria-modal="true"
           >
@@ -3022,7 +3022,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
         typeof document !== 'undefined' &&
         createPortal(
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-[#4A220D]/55 backdrop-blur-xs p-4"
+            className="fixed inset-0 z-[90] flex items-center justify-center bg-[#4A220D]/55 backdrop-blur-xs p-4"
             role="dialog"
             aria-modal="true"
           >

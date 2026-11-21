@@ -64,6 +64,9 @@ service cloud.firestore {
     match /wordAudio/{id} {
       allow read, write: if true;
     }
+    match /broadcasts/{id} {
+      allow read, write: if true;
+    }
   }
 }`;
 

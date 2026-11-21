@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { AlertCircle, Database, X } from 'lucide-react';
 import {
   verifyExternalFirebaseSetup,
@@ -50,9 +51,10 @@ export const ExternalDbModal: React.FC<ExternalDbModalProps> = ({
     }
   };
 
-  return (
+  const modalContent = (
     <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-[#4A220D]/55 backdrop-blur-xs p-0 sm:p-4"
+      dir="rtl"
+      className="fixed inset-0 z-[90] flex items-end sm:items-center justify-center bg-[#4A220D]/55 backdrop-blur-xs p-0 sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="add-ext-db-title"
@@ -125,4 +127,8 @@ export const ExternalDbModal: React.FC<ExternalDbModalProps> = ({
       </div>
     </div>
   );
+
+  return typeof document !== 'undefined'
+    ? createPortal(modalContent, document.body)
+    : modalContent;
 };
