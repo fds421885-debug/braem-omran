@@ -26,6 +26,7 @@ import {
   analyzeBookPageOnServer,
   base64AudioToObjectUrl,
   deleteBookJobLocal,
+  deleteCachedAudioEntry,
   extractBookFilePages,
   generateNoorAlBayanOnServer,
   getBookJobLocal,
@@ -173,6 +174,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
   const [noorSteps, setNoorSteps] = useState<NoorAlBayanStep[]>([]);
   const [noorFullReading, setNoorFullReading] = useState<string>('');
   const [noorDiacritizedWord, setNoorDiacritizedWord] = useState<string>('');
+  const [noorAutoDiacritized, setNoorAutoDiacritized] = useState(false);
   const [audioLoadingMode, setAudioLoadingMode] = useState<AudioMode | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
   const [activeAudioMode, setActiveAudioMode] = useState<AudioMode | null>(null);
@@ -181,20 +183,27 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
   const [audioDuration, setAudioDuration] = useState(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const activeObjectUrlRef = useRef<string | null>(null);
+  const audioRunTokenRef = useRef<number>(0);
   const speechStateRef = useRef<{
     active: boolean;
     text: string;
+    chunks: string[];
+    chunkIndex: number;
     mode: AudioMode;
     startedAtMs: number;
     elapsedBeforePauseMs: number;
     timerId: number | null;
+    startDelayId: number | null;
   }>({
     active: false,
     text: '',
+    chunks: [],
+    chunkIndex: 0,
     mode: 'normal',
     startedAtMs: 0,
     elapsedBeforePauseMs: 0,
     timerId: null,
+    startDelayId: null,
   });
 
   const loadBooksAndJobs = useCallback(async () => {
@@ -229,15 +238,25 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
   // Clean up audio element, SpeechSynthesis & ObjectURLs on unmount
   useEffect(() => {
     return () => {
+      audioRunTokenRef.current++;
       if (audioRef.current) {
+        audioRef.current.onloadedmetadata = null;
+        audioRef.current.ontimeupdate = null;
+        audioRef.current.onplay = null;
+        audioRef.current.onpause = null;
+        audioRef.current.onended = null;
+        audioRef.current.onerror = null;
         audioRef.current.pause();
-        audioRef.current.src = '';
+        audioRef.current.removeAttribute('src');
       }
       if (activeObjectUrlRef.current) {
         URL.revokeObjectURL(activeObjectUrlRef.current);
       }
       if (speechStateRef.current.timerId !== null) {
         window.clearInterval(speechStateRef.current.timerId);
+      }
+      if (speechStateRef.current.startDelayId !== null) {
+        window.clearTimeout(speechStateRef.current.startDelayId);
       }
       if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
         window.speechSynthesis.cancel();
@@ -538,34 +557,58 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
     await runBookPipeline(job);
   };
 
-  const clearSpeechTimer = useCallback(() => {
+  const clearSpeechTimers = useCallback(() => {
     if (speechStateRef.current.timerId !== null) {
       window.clearInterval(speechStateRef.current.timerId);
       speechStateRef.current.timerId = null;
     }
+    if (speechStateRef.current.startDelayId !== null) {
+      window.clearTimeout(speechStateRef.current.startDelayId);
+      speechStateRef.current.startDelayId = null;
+    }
   }, []);
 
-  const stopAndResetAudio = useCallback(() => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
+  const detachAndStopAudioElement = useCallback(() => {
+    const audio = audioRef.current;
+    if (audio) {
+      audio.onloadedmetadata = null;
+      audio.ontimeupdate = null;
+      audio.onplay = null;
+      audio.onpause = null;
+      audio.onended = null;
+      audio.onerror = null;
+      audio.pause();
+      audio.removeAttribute('src');
+      audio.load();
     }
     if (activeObjectUrlRef.current) {
       URL.revokeObjectURL(activeObjectUrlRef.current);
       activeObjectUrlRef.current = null;
     }
-    clearSpeechTimer();
+  }, []);
+
+  const stopAndResetAudio = useCallback(() => {
+    audioRunTokenRef.current++;
+    detachAndStopAudioElement();
+    clearSpeechTimers();
     speechStateRef.current.active = false;
+    speechStateRef.current.chunks = [];
+    speechStateRef.current.chunkIndex = 0;
     speechStateRef.current.elapsedBeforePauseMs = 0;
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
+      try {
+        window.speechSynthesis.resume();
+        window.speechSynthesis.cancel();
+      } catch {
+        // Ignore browser quirk
+      }
     }
     setAudioPlaying(false);
     setAudioCurrentTime(0);
     setAudioDuration(0);
     setActiveAudioMode(null);
     setAudioError(null);
-  }, [clearSpeechTimer]);
+  }, [clearSpeechTimers, detachAndStopAudioElement]);
 
   const openBookReader = async (book: BookRecord) => {
     stopAndResetAudio();
@@ -573,6 +616,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
     setNoorSteps([]);
     setNoorFullReading('');
     setNoorDiacritizedWord('');
+    setNoorAutoDiacritized(false);
     setReaderBook(book);
     setCurrentPageIndex(0);
     setLoadingReader(true);
@@ -594,164 +638,298 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
     setNoorSteps([]);
     setNoorFullReading('');
     setNoorDiacritizedWord('');
+    setNoorAutoDiacritized(false);
     setAudioError(null);
   };
 
-  const playAudioSource = async (
-    mode: AudioMode,
-    url: string,
-    isObjectUrl: boolean
-  ) => {
-    clearSpeechTimer();
-    speechStateRef.current.active = false;
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-    }
-
-    if (!audioRef.current) {
-      audioRef.current = new Audio();
-    }
-    const audio = audioRef.current;
-    audio.pause();
-    if (activeObjectUrlRef.current && activeObjectUrlRef.current !== url) {
-      URL.revokeObjectURL(activeObjectUrlRef.current);
-      activeObjectUrlRef.current = null;
-    }
-    if (isObjectUrl) {
-      activeObjectUrlRef.current = url;
-    }
-
-    audio.src = url;
-    audio.currentTime = 0;
-    audio.onloadedmetadata = () => {
-      setAudioDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
-    };
-    audio.ontimeupdate = () => {
-      setAudioCurrentTime(audio.currentTime || 0);
-      if (Number.isFinite(audio.duration)) {
-        setAudioDuration(audio.duration);
+  const splitArabicSpeechChunks = (text: string): string[] => {
+    const clean = text.replace(/\s+/g, ' ').trim();
+    if (!clean) return [];
+    const rawParts = clean.split(/(?<=[،.؛؟\n])\s*/).map((s) => s.trim()).filter(Boolean);
+    const chunks: string[] = [];
+    let buffer = '';
+    for (const part of rawParts) {
+      if (!buffer) {
+        buffer = part;
+      } else if (buffer.length + part.length + 1 <= 115) {
+        buffer = `${buffer} ${part}`;
+      } else {
+        chunks.push(buffer);
+        buffer = part;
       }
-    };
-    audio.onplay = () => setAudioPlaying(true);
-    audio.onpause = () => setAudioPlaying(false);
-    audio.onended = () => {
-      setAudioPlaying(false);
-      setAudioCurrentTime(audio.duration || 0);
-    };
-    audio.onerror = () => {
-      setAudioPlaying(false);
-      setAudioError('تعذّر تشغيل الملف الصوتي حالياً؛ تأكد من الاتصال وحاول مجدداً.');
-    };
-
-    setActiveAudioMode(mode);
-    await audio.play();
+    }
+    if (buffer) chunks.push(buffer);
+    return chunks.length > 0 ? chunks : [clean];
   };
 
   const playBrowserSpeech = useCallback(
-    (mode: AudioMode, text: string) => {
+    (mode: AudioMode, text: string, startChunkIdx = 0) => {
+      const runToken = ++audioRunTokenRef.current;
+      detachAndStopAudioElement();
+      clearSpeechTimers();
+      setAudioError(null);
+
       if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+        setAudioPlaying(false);
         setAudioError('متصفحك لا يدعم القراءة الصوتية التلقائية بدون خادم.');
         return;
       }
 
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current.src = '';
+      try {
+        window.speechSynthesis.resume();
+        window.speechSynthesis.cancel();
+      } catch {
+        // Ignore browser cancel errors
       }
-      clearSpeechTimer();
-      window.speechSynthesis.cancel();
 
       const cleanText = text.trim();
+      if (!cleanText) return;
+      const chunks = splitArabicSpeechChunks(cleanText);
       const estimatedSeconds = Math.max(
-        1.5,
-        Math.round((cleanText.split(/\s+/).filter(Boolean).length * (mode === 'noor_albayan' ? 0.95 : 0.6)) * 10) / 10
+        1.4,
+        Math.round(
+          cleanText.split(/\s+/).filter(Boolean).length *
+            (mode === 'noor_albayan' ? 0.92 : 0.62) *
+            10
+        ) / 10
       );
-
-      const utterance = new SpeechSynthesisUtterance(cleanText);
-      const voices = window.speechSynthesis.getVoices();
-      const arabicVoice =
-        voices.find((v) => v.lang.toLowerCase().startsWith('ar-sa')) ||
-        voices.find((v) => v.lang.toLowerCase().startsWith('ar'));
-      if (arabicVoice) {
-        utterance.voice = arabicVoice;
-      }
-      utterance.lang = arabicVoice?.lang || 'ar-SA';
-      utterance.rate = mode === 'noor_albayan' ? 0.72 : 0.95;
-      utterance.pitch = 1.0;
 
       speechStateRef.current.active = true;
       speechStateRef.current.text = cleanText;
+      speechStateRef.current.chunks = chunks;
+      speechStateRef.current.chunkIndex = Math.max(0, Math.min(chunks.length - 1, startChunkIdx));
       speechStateRef.current.mode = mode;
       speechStateRef.current.elapsedBeforePauseMs = 0;
       speechStateRef.current.startedAtMs = Date.now();
-
-      utterance.onstart = () => {
-        speechStateRef.current.startedAtMs = Date.now();
-        setAudioDuration(estimatedSeconds);
-        setAudioPlaying(true);
-        clearSpeechTimer();
-        speechStateRef.current.timerId = window.setInterval(() => {
-          const totalMs =
-            speechStateRef.current.elapsedBeforePauseMs +
-            (Date.now() - speechStateRef.current.startedAtMs);
-          setAudioCurrentTime(Math.min(estimatedSeconds, totalMs / 1000));
-        }, 120);
-      };
-
-      utterance.onend = () => {
-        clearSpeechTimer();
-        setAudioPlaying(false);
-        setAudioCurrentTime(estimatedSeconds);
-      };
-
-      utterance.onerror = (ev) => {
-        if (ev.error === 'canceled' || ev.error === 'interrupted') return;
-        clearSpeechTimer();
-        setAudioPlaying(false);
-        setAudioError('تعذّر تشغيل القارئ الصوتي في المتصفح.');
-      };
 
       setActiveAudioMode(mode);
       setAudioDuration(estimatedSeconds);
       setAudioCurrentTime(0);
       setAudioPlaying(true);
-      window.speechSynthesis.speak(utterance);
+
+      const pickArabicVoice = (): SpeechSynthesisVoice | undefined => {
+        const voices = window.speechSynthesis.getVoices() || [];
+        return (
+          voices.find((v) => v.lang.toLowerCase() === 'ar-sa') ||
+          voices.find((v) => v.lang.toLowerCase().startsWith('ar-eg')) ||
+          voices.find((v) => v.lang.toLowerCase().startsWith('ar'))
+        );
+      };
+
+      const speakChunkAt = (idx: number) => {
+        if (audioRunTokenRef.current !== runToken || !speechStateRef.current.active) return;
+        if (idx >= chunks.length) {
+          clearSpeechTimers();
+          speechStateRef.current.active = false;
+          setAudioPlaying(false);
+          setAudioCurrentTime(estimatedSeconds);
+          return;
+        }
+
+        speechStateRef.current.chunkIndex = idx;
+        const chunkText = chunks[idx];
+        const utterance = new SpeechSynthesisUtterance(chunkText);
+        const arVoice = pickArabicVoice();
+        if (arVoice) {
+          utterance.voice = arVoice;
+        }
+        utterance.lang = arVoice?.lang || 'ar-SA';
+        utterance.rate = mode === 'noor_albayan' ? 0.78 : 0.95;
+        utterance.pitch = 1.0;
+
+        utterance.onend = () => {
+          if (audioRunTokenRef.current !== runToken || !speechStateRef.current.active) return;
+          speakChunkAt(idx + 1);
+        };
+
+        utterance.onerror = (ev) => {
+          if (audioRunTokenRef.current !== runToken) return;
+          if (ev.error === 'canceled' || ev.error === 'interrupted') return;
+          // Try next chunk cleanly before surfacing voice missing notice
+          if (idx + 1 < chunks.length) {
+            speakChunkAt(idx + 1);
+            return;
+          }
+          clearSpeechTimers();
+          speechStateRef.current.active = false;
+          setAudioPlaying(false);
+          const hasAnyArabicVoice = (window.speechSynthesis.getVoices() || []).some((v) =>
+            v.lang.toLowerCase().startsWith('ar')
+          );
+          if (!hasAnyArabicVoice) {
+            setAudioError(
+              'لا توجد حزمة صوت عربي مفعّلة في هذا المتصفح حالياً، لكن يمكنك متابعة التهجي البصري خطوة بخطوة بالأسفل.'
+            );
+          } else {
+            setAudioError('تعذّر تشغيل القارئ الصوتي في المتصفح مؤقتاً؛ اضغط أعد المحاولة.');
+          }
+        };
+
+        try {
+          window.speechSynthesis.speak(utterance);
+        } catch {
+          clearSpeechTimers();
+          speechStateRef.current.active = false;
+          setAudioPlaying(false);
+        }
+      };
+
+      // Small 45ms delay prevents Chromium synchronous cancel()+speak() deadlock
+      speechStateRef.current.startDelayId = window.setTimeout(() => {
+        if (audioRunTokenRef.current !== runToken || !speechStateRef.current.active) return;
+        speechStateRef.current.startedAtMs = Date.now();
+        speechStateRef.current.timerId = window.setInterval(() => {
+          if (audioRunTokenRef.current !== runToken) {
+            clearSpeechTimers();
+            return;
+          }
+          const totalMs =
+            speechStateRef.current.elapsedBeforePauseMs +
+            (Date.now() - speechStateRef.current.startedAtMs);
+          setAudioCurrentTime(Math.min(estimatedSeconds, totalMs / 1000));
+        }, 120);
+        speakChunkAt(speechStateRef.current.chunkIndex);
+      }, 45);
     },
-    [clearSpeechTimer]
+    [clearSpeechTimers, detachAndStopAudioElement]
   );
 
-  const handlePlayNoorAlBayan = async () => {
-    if (!selectedSegment) return;
+  const playAudioSource = useCallback(
+    async (
+      mode: AudioMode,
+      url: string,
+      isObjectUrl: boolean,
+      onFallback?: () => void,
+      badCacheKey?: string
+    ) => {
+      const runToken = ++audioRunTokenRef.current;
+      clearSpeechTimers();
+      speechStateRef.current.active = false;
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        try {
+          window.speechSynthesis.cancel();
+        } catch {
+          // Ignore
+        }
+      }
+
+      if (!audioRef.current) {
+        audioRef.current = new Audio();
+      }
+      const audio = audioRef.current;
+      detachAndStopAudioElement();
+      if (isObjectUrl) {
+        activeObjectUrlRef.current = url;
+      }
+
+      let fallbackHandled = false;
+      const triggerFallback = () => {
+        if (fallbackHandled || audioRunTokenRef.current !== runToken) return;
+        fallbackHandled = true;
+        detachAndStopAudioElement();
+        if (badCacheKey) {
+          void deleteCachedAudioEntry(badCacheKey);
+        }
+        if (onFallback) {
+          onFallback();
+        } else {
+          setAudioPlaying(false);
+          setAudioError('تعذّر تشغيل الملف الصوتي حالياً؛ تأكد من الاتصال وحاول مجدداً.');
+        }
+      };
+
+      audio.preload = 'auto';
+      audio.src = url;
+      audio.currentTime = 0;
+      audio.onloadedmetadata = () => {
+        if (audioRunTokenRef.current !== runToken) return;
+        setAudioDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
+      };
+      audio.ontimeupdate = () => {
+        if (audioRunTokenRef.current !== runToken) return;
+        setAudioCurrentTime(audio.currentTime || 0);
+        if (Number.isFinite(audio.duration)) {
+          setAudioDuration(audio.duration);
+        }
+      };
+      audio.onplay = () => {
+        if (audioRunTokenRef.current !== runToken) return;
+        setAudioPlaying(true);
+      };
+      audio.onpause = () => {
+        if (audioRunTokenRef.current !== runToken) return;
+        setAudioPlaying(false);
+      };
+      audio.onended = () => {
+        if (audioRunTokenRef.current !== runToken) return;
+        setAudioPlaying(false);
+        setAudioCurrentTime(audio.duration || 0);
+      };
+      audio.onerror = () => {
+        triggerFallback();
+      };
+
+      setAudioError(null);
+      setActiveAudioMode(mode);
+      try {
+        await audio.play();
+      } catch {
+        triggerFallback();
+      }
+    },
+    [clearSpeechTimers, detachAndStopAudioElement]
+  );
+
+  const handlePlayNoorAlBayan = async (overrideSegment?: BookTextSegment) => {
+    const targetSeg = overrideSegment || selectedSegment;
+    if (!targetSeg) return;
+    const callToken = ++audioRunTokenRef.current;
     setAudioError(null);
     setAudioLoadingMode('noor_albayan');
     setNoorLoading(true);
     try {
-      const cacheKey = `noor_${selectedSegment.text}`;
+      const cacheKey = `noor_v2_${targetSeg.text}`;
       const cached = await getCachedAudioEntry(cacheKey);
-      if (cached && cached.base64Wav) {
+      if (audioRunTokenRef.current !== callToken) return;
+
+      if (cached && cached.base64Wav && cached.base64Wav.length > 120) {
+        const displayWord = cached.diacritizedWord || targetSeg.text;
+        const script = cached.fullReading || displayWord;
         setNoorSteps(cached.steps || []);
-        setNoorFullReading(cached.fullReading || selectedSegment.text);
-        setNoorDiacritizedWord(selectedSegment.text);
+        setNoorFullReading(script);
+        setNoorDiacritizedWord(displayWord);
+        setNoorAutoDiacritized(Boolean(cached.wasAutoDiacritized));
         const url = base64AudioToObjectUrl(cached.base64Wav, cached.mimeType);
-        await playAudioSource('noor_albayan', url, true);
+        await playAudioSource(
+          'noor_albayan',
+          url,
+          true,
+          () => playBrowserSpeech('noor_albayan', script),
+          cacheKey
+        );
         return;
       }
 
       const breakdown = await generateNoorAlBayanOnServer({
-        text: selectedSegment.text,
-        surahName: selectedSegment.surahName,
+        text: targetSeg.text,
+        surahName: targetSeg.surahName,
       });
+      if (audioRunTokenRef.current !== callToken) return;
+
       setNoorDiacritizedWord(breakdown.diacritizedWord);
+      setNoorAutoDiacritized(breakdown.wasAutoDiacritized);
       setNoorSteps(breakdown.steps);
       setNoorFullReading(breakdown.fullReading);
 
       const speechScript =
         breakdown.fullReading ||
         `${breakdown.steps.map((s) => s.reading).join(' ، ')} ، ${breakdown.diacritizedWord}`;
+
       const tts = await synthesizeSpeechOnServer({
         text: speechScript,
         mode: 'noor_albayan',
       });
+      if (audioRunTokenRef.current !== callToken) return;
 
       if (tts.engine === 'browser_speech') {
         playBrowserSpeech('noor_albayan', tts.text);
@@ -762,31 +940,66 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
         key: cacheKey,
         base64Wav: tts.audioBase64,
         mimeType: tts.mimeType,
+        diacritizedWord: breakdown.diacritizedWord,
+        wasAutoDiacritized: breakdown.wasAutoDiacritized,
         steps: breakdown.steps,
         fullReading: speechScript,
         updatedAtMs: Date.now(),
       });
 
       const url = base64AudioToObjectUrl(tts.audioBase64, tts.mimeType);
-      await playAudioSource('noor_albayan', url, true);
-    } catch (err) {
-      setAudioError(err instanceof Error ? err.message : 'تعذّر تشغيل قراءة التهجي.');
+      await playAudioSource(
+        'noor_albayan',
+        url,
+        true,
+        () => playBrowserSpeech('noor_albayan', speechScript),
+        cacheKey
+      );
+    } catch {
+      // Ultimate guarantee: Noor Al-Bayan NEVER deadlocks!
+      const fallback = await generateNoorAlBayanOnServer({
+        text: targetSeg.text,
+        surahName: targetSeg.surahName,
+      }).catch(() => null);
+      if (fallback) {
+        setNoorDiacritizedWord(fallback.diacritizedWord);
+        setNoorAutoDiacritized(fallback.wasAutoDiacritized);
+        setNoorSteps(fallback.steps);
+        setNoorFullReading(fallback.fullReading);
+        playBrowserSpeech('noor_albayan', fallback.fullReading);
+      } else {
+        playBrowserSpeech('noor_albayan', targetSeg.text);
+      }
     } finally {
       setNoorLoading(false);
       setAudioLoadingMode(null);
     }
   };
 
+  const handlePlaySingleNoorStep = (step: NoorAlBayanStep) => {
+    const line = `${step.ruleLabel}، ${step.reading}`;
+    playBrowserSpeech('noor_albayan', line);
+  };
+
   const handlePlayNormalReading = async () => {
     if (!selectedSegment) return;
+    const callToken = ++audioRunTokenRef.current;
     setAudioError(null);
     setAudioLoadingMode('normal');
     try {
-      const cacheKey = `normal_${selectedSegment.text}`;
+      const cacheKey = `normal_v2_${selectedSegment.text}`;
       const cached = await getCachedAudioEntry(cacheKey);
-      if (cached && cached.base64Wav) {
+      if (audioRunTokenRef.current !== callToken) return;
+
+      if (cached && cached.base64Wav && cached.base64Wav.length > 120) {
         const url = base64AudioToObjectUrl(cached.base64Wav, cached.mimeType);
-        await playAudioSource('normal', url, true);
+        await playAudioSource(
+          'normal',
+          url,
+          true,
+          () => playBrowserSpeech('normal', cached.fullReading || selectedSegment.text),
+          cacheKey
+        );
         return;
       }
 
@@ -794,6 +1007,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
         text: selectedSegment.text,
         mode: 'normal',
       });
+      if (audioRunTokenRef.current !== callToken) return;
 
       if (tts.engine === 'browser_speech') {
         playBrowserSpeech('normal', tts.text);
@@ -804,13 +1018,20 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
         key: cacheKey,
         base64Wav: tts.audioBase64,
         mimeType: tts.mimeType,
+        fullReading: tts.text,
         updatedAtMs: Date.now(),
       });
 
       const url = base64AudioToObjectUrl(tts.audioBase64, tts.mimeType);
-      await playAudioSource('normal', url, true);
-    } catch (err) {
-      setAudioError(err instanceof Error ? err.message : 'تعذّر تشغيل القراءة العادية.');
+      await playAudioSource(
+        'normal',
+        url,
+        true,
+        () => playBrowserSpeech('normal', tts.text),
+        cacheKey
+      );
+    } catch {
+      playBrowserSpeech('normal', selectedSegment.text);
     } finally {
       setAudioLoadingMode(null);
     }
@@ -836,9 +1057,11 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
         selectedSegment.surahNumber,
         selectedSegment.ayahNumber
       );
-      await playAudioSource('sheikh', url, false);
-    } catch (err) {
-      setAudioError(err instanceof Error ? err.message : 'تعذّر تشغيل تلاوة الشيخ المختار.');
+      await playAudioSource('sheikh', url, false, () => {
+        playBrowserSpeech('normal', selectedSegment.text);
+      });
+    } catch {
+      playBrowserSpeech('normal', selectedSegment.text);
     } finally {
       setAudioLoadingMode(null);
     }
@@ -849,7 +1072,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
       window.speechSynthesis.pause();
       speechStateRef.current.elapsedBeforePauseMs +=
         Date.now() - speechStateRef.current.startedAtMs;
-      clearSpeechTimer();
+      clearSpeechTimers();
       setAudioPlaying(false);
       return;
     }
@@ -865,27 +1088,40 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
         speechStateRef.current.startedAtMs = Date.now();
         setAudioPlaying(true);
       } else {
-        playBrowserSpeech(speechStateRef.current.mode, speechStateRef.current.text);
+        playBrowserSpeech(
+          speechStateRef.current.mode,
+          speechStateRef.current.text,
+          speechStateRef.current.chunkIndex
+        );
       }
       return;
     }
     if (audioRef.current && audioRef.current.src) {
       await audioRef.current.play().catch(() => {
-        setAudioError('تعذّر إكمال التشغيل؛ اضغط على أعد.');
+        if (selectedSegment) {
+          playBrowserSpeech(activeAudioMode || 'normal', selectedSegment.text);
+        }
       });
     }
   };
 
   const handleRestartAudio = async () => {
-    if (speechStateRef.current.active) {
-      playBrowserSpeech(speechStateRef.current.mode, speechStateRef.current.text);
-      return;
+    if (speechStateRef.current.active || speechStateRef.current.text) {
+      if (!audioRef.current?.src) {
+        playBrowserSpeech(
+          speechStateRef.current.mode,
+          speechStateRef.current.text || selectedSegment?.text || ''
+        );
+        return;
+      }
     }
     if (audioRef.current && audioRef.current.src) {
       audioRef.current.currentTime = 0;
       setAudioCurrentTime(0);
       await audioRef.current.play().catch(() => {
-        setAudioError('تعذّر إعادة التشغيل الآن.');
+        if (selectedSegment) {
+          playBrowserSpeech(activeAudioMode || 'normal', selectedSegment.text);
+        }
       });
     }
   };
@@ -952,6 +1188,10 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
   const handleReanalyzeCurrentPage = async () => {
     if (!readerBook || !currentPage || reanalyzingPage) return;
     stopAndResetAudio();
+    setNoorSteps([]);
+    setNoorFullReading('');
+    setNoorDiacritizedWord('');
+    setNoorAutoDiacritized(false);
     setReanalyzingPage(true);
     setFeedback(null);
     try {
@@ -1262,6 +1502,11 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
                     <p className="font-display text-2xl sm:text-3xl font-extrabold text-[#4A220D] pt-1 leading-relaxed">
                       {noorDiacritizedWord || selectedSegment.text}
                     </p>
+                    {noorAutoDiacritized && (
+                      <p className="text-[11px] font-bold text-[#46A302]">
+                        تم ضبط التشكيل التلقائي لبيان النطق الصحيح للكلمة غير المشكولة
+                      </p>
+                    )}
                   </div>
 
                   {/* Primary Reading Options */}
@@ -1428,14 +1673,21 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
                   ) : (
                     noorSteps.length > 0 && (
                       <div className="bg-[#FDF6EE] border-2 border-[#EADBC8] rounded-2xl p-4 space-y-3">
-                        <p className="font-display text-xs sm:text-sm font-extrabold text-[#4A220D]">
-                          تفصيل التهجي (نور البيان):
-                        </p>
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="font-display text-xs sm:text-sm font-extrabold text-[#4A220D]">
+                            تفصيل التهجي (نور البيان):
+                          </p>
+                          <span className="text-[11px] text-[#7D4E35]">
+                            اضغط على أي خطوة لسماعها
+                          </span>
+                        </div>
                         <div className="space-y-2">
                           {noorSteps.map((step, i) => (
-                            <div
+                            <button
                               key={`${step.part}_${i}`}
-                              className="bg-white border border-[#EADBC8] rounded-xl px-3 py-2 flex items-center justify-between gap-2 text-xs"
+                              type="button"
+                              onClick={() => handlePlaySingleNoorStep(step)}
+                              className="w-full text-right bg-white border border-[#EADBC8] hover:border-[#F56900] rounded-xl px-3 py-2 flex items-center justify-between gap-2 text-xs transition-colors cursor-pointer"
                             >
                               <div className="flex items-center gap-2 min-w-0">
                                 <span className="w-6 h-6 rounded-lg bg-[#F56900]/10 text-[#F56900] font-extrabold inline-flex items-center justify-center shrink-0 tabular-nums">
@@ -1446,10 +1698,11 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
                                 </span>
                                 <span className="text-[#7D4E35] truncate">{step.ruleLabel}</span>
                               </div>
-                              <span className="font-bold text-[#46A302] shrink-0">
-                                {step.reading}
+                              <span className="font-bold text-[#46A302] inline-flex items-center gap-1.5 shrink-0">
+                                <span>{step.reading}</span>
+                                <Volume2 className="w-3.5 h-3.5 text-[#F56900]" />
                               </span>
-                            </div>
+                            </button>
                           ))}
                         </div>
                         {noorFullReading && (

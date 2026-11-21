@@ -107,12 +107,37 @@ interface RawPageAnalysisResponse {
 }
 
 interface RawNoorResponse {
+  diacritizedWord?: string;
+  wasAutoDiacritized?: boolean;
   tahajjiScript?: string;
   steps?: Array<{
     part?: string;
     ruleLabel?: string;
     reading?: string;
   }>;
+}
+
+const noorAlBayanServerCache = new Map<
+  string,
+  {
+    diacritizedWord: string;
+    wasAutoDiacritized: boolean;
+    tahajjiScript: string;
+    fullReading: string;
+    steps: Array<{ part: string; ruleLabel: string; reading: string }>;
+  }
+>();
+
+const ttsAudioServerCache = new Map<string, string>();
+
+function setLruCache<K, V>(cache: Map<K, V>, key: K, val: V, maxSize = 250): void {
+  if (cache.has(key)) {
+    cache.delete(key);
+  } else if (cache.size >= maxSize) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+  cache.set(key, val);
 }
 
 async function startServer() {
@@ -162,6 +187,7 @@ async function startServer() {
    - إذا كانت "kind" تساوي "ayah": حدد بدقة "surahNumber" (رقم السورة 1-114)، و"ayahNumber" (رقم الآية التي تنتمي إليها هذه الكلمة)، و"surahName" (اسم السورة بالعربية مثل الفاتحة، البقرة، الإخلاص).
 
 ملاحظات حاسمة:
+- تعرّف بدقة على النص العربي بمختلف الخطوط العربية (النسخ، الرقعة، الثلث، الديواني، الكوفي، الخط المغربي، والخط العثماني للمصحف)، وأخرج النص بصيغة عربية قياسية واضحة ومشكولة بالكامل.
 - تجاهل تماماً شريط الحالة العلوي للهاتف (الساعة، البطارية، اسم الشبكة مثل salam mobile)، وأزرار التطبيقات الجانبية العائمة أو أشرطة الأدوات، والزخارف الجانبية للمصحف.
 - اقرأ النص بوضوح تام حتى لو كان داخل لقطة شاشة ذات خلفية مظللة (مثل التظليل الأزرق الفاتح أو الأصفر على الآيات) أو بخط المصحف العثماني الدقيق أو بدقة منخفضة.
 - لا تتجاهل أي كلمة عربية أو قرآنية واضحة في متن الصفحة.
@@ -267,7 +293,7 @@ async function startServer() {
     }
   });
 
-  // 2. Generate authentic Noor Al-Bayan spelling breakdown with full Arabic Tashkeel
+  // 2. Generate authentic Noor Al-Bayan spelling breakdown with auto-vocalization for unvocalized words
   app.post('/api/books/noor-albayan', async (req: Request, res: Response) => {
     try {
       const { text } = req.body as { text?: string };
@@ -277,23 +303,34 @@ async function startServer() {
         return;
       }
 
+      const cachedNoor = noorAlBayanServerCache.get(target);
+      if (cachedNoor) {
+        res.json(cachedNoor);
+        return;
+      }
+
       const ai = getGeminiClient();
       const prompt = `أنت معلم متقن لمنهج "نور البيان" في تعليم القراءة العربية والقرآن الكريم.
 حلّل النص التالي بالتهجي التفصيلي حسب قاعدة نور البيان الحرفية حرفاً بحرف:
 النص: "${target}"
 
+قاعدة مهمة للكلمات بدون حركات:
+- إذا كان النص أو بعض كلماته بدون حركات (غير مشكول): اضبطه أولاً بالتشكيل العربي الصحيح الكامل (حسب المعنى القرآني أو القاعدة الصرفية والنحوية وأل القمرية والشمسية)، وضع النتيجة في "diacritizedWord" واجعل "wasAutoDiacritized": true. أما إذا كان مشكولاً بالفعل فضعه كما هو واجعل "wasAutoDiacritized": false.
+
 أرجع JSON يتكون من:
-1. "tahajjiScript": نص التهجي المنطوق بالكامل مضبوطاً بالتشكيل الكامل والحركات الدقيقة ليُقرأ بصوت واضح مع فواصل وقفات قصيرة (،).
+1. "diacritizedWord": النص مضبوطاً بالشكل الكامل (الفتحة والضمة والكسرة والسكون والشدة والتنوين والمد).
+2. "wasAutoDiacritized": boolean هل تم تقدير التشكيل لكلمة كانت بدون حركات؟
+3. "tahajjiScript": نص التهجي المنطوق بالكامل مضبوطاً بالتشكيل الكامل والحركات الدقيقة ليُقرأ بصوت واضح مع فواصل وقفات قصيرة (،).
 مثال توضيحي لكلمة "بَيَانٌ":
-"بَاءٌ فَتْحَة: بَ، يَاءٌ فَتْحَة: يَ، أَلِفٌ مَدٌّ طَبِيعِيٌّ حَرَكَتَانْ: يَا، بَيَا، نُونٌ تَنْوِينٌ بِالضَّمِّ: نُنْ، بَيَانٌ."
-ومثال آخر لكلمة "يَكْتُبُ":
-"يَاءٌ فَتْحَة: يَ، كَافٌ سُكُونْ: يَكْ، تَاءٌ ضَمَّة: تُ، يَكْتُ، بَاءٌ ضَمَّة: بُ، يَكْتُبُ."
-ومثال للشدة مثل "رَبِّ":
-"رَاءٌ فَتْحَة: رَ، بَاءٌ شَدَّةٌ وَكَسْرَة: رَبِّ."
-اجعل كل حرف وحركته ومدّه وسكونه وشدّته وتنوينه واضحة جداً باللغة العربية الفصحى وبالحركات الكاملة.
-2. "steps": مصفوفة من الخطوات البصرية لعرضها أمام الطالب:
+"بَاءٌ فَتْحَة: بَ، يَاءٌ فَتْحَة: يَ، أَلِفٌ مَدٌّ طَبِيعِيٌّ حَرَكَتَانْ: يَا، بَيَا، نُونٌ تَنْوِينٌ بِالضَّمِّ: نُنْ، الْكَلِمَةُ كَامِلَةً: بَيَانٌ."
+ومثال لللام الشمسية مثل "الشَّمْسُ":
+"هَمْزَةُ وَصْلٍ وَلَامٌ شَمْسِيَّةٌ مُدْغَمَةٌ تَسْقُطُ فِي النُّطْقِ، شِينٌ شَدَّةٌ وَفَتْحَة: الشَّ، مِيمٌ سُكُونْ: الشَّمْ، سِينٌ ضَمَّة: الشَّمْسُ."
+ومثال للسكون مثل "يَكْتُبُ":
+"يَاءٌ فَتْحَة: يَ، كَافٌ سُكُونْ: يَكْ، تَاءٌ ضَمَّة: تُ، يَكْتُ، بَاءٌ ضَمَّة: بُ، يَكْتُبُ."
+اجعل كل حرف وحركته ومدّه وسكونه وشدّته وتنوينه وأل القمرية والشمسية والتاء المربوطة واضحة جداً باللغة العربية الفصحى وبالحركات الكاملة.
+4. "steps": مصفوفة من الخطوات البصرية لعرضها أمام الطالب:
    - "part": الحرف أو المقطع
-   - "ruleLabel": القاعدة مثل (فتحة، كسرة، ضمة، مد بالألف حركتان، سكون، شدة وفتحة، تنوين بالضم...)
+   - "ruleLabel": القاعدة مثل (فتحة، كسرة، ضمة، لام قمرية مظهرة، لام شمسية مدغمة، مد بالألف حركتان، سكون، شدة وفتحة، تنوين بالضم...)
    - "reading": النتيجة المجمعة حتى هذه الخطوة بالحركات الكاملة.`;
 
       const result = await withRetry(() =>
@@ -306,6 +343,8 @@ async function startServer() {
             responseSchema: {
               type: Type.OBJECT,
               properties: {
+                diacritizedWord: { type: Type.STRING },
+                wasAutoDiacritized: { type: Type.BOOLEAN },
                 tahajjiScript: { type: Type.STRING },
                 steps: {
                   type: Type.ARRAY,
@@ -320,7 +359,7 @@ async function startServer() {
                   },
                 },
               },
-              required: ['tahajjiScript', 'steps'],
+              required: ['diacritizedWord', 'tahajjiScript', 'steps'],
             },
           },
         })
@@ -328,13 +367,17 @@ async function startServer() {
 
       const rawJson = (result.text ?? '{}').trim();
       const parsed = JSON.parse(rawJson) as RawNoorResponse;
-      const script = String(parsed.tahajjiScript || target).trim();
-      res.json({
-        diacritizedWord: target,
+      const vocalized = String(parsed.diacritizedWord || target).trim();
+      const script = String(parsed.tahajjiScript || vocalized).trim();
+      const payload = {
+        diacritizedWord: vocalized,
+        wasAutoDiacritized: Boolean(parsed.wasAutoDiacritized),
         tahajjiScript: script,
         fullReading: script,
         steps: Array.isArray(parsed.steps) ? parsed.steps : [],
-      });
+      };
+      setLruCache(noorAlBayanServerCache, target, payload, 250);
+      res.json(payload);
     } catch (err) {
       const friendly = getFriendlyGeminiError(err);
       res.status(friendly.status).json({ error: friendly.message });
@@ -357,6 +400,16 @@ async function startServer() {
 
       const readingMode =
         mode === 'tahajji' || mode === 'noor_albayan' ? 'tahajji' : 'normal';
+      const cacheKey = `${readingMode}:${spokenText}`;
+      const cachedWav = ttsAudioServerCache.get(cacheKey);
+      if (cachedWav) {
+        res.json({
+          audioBase64: cachedWav,
+          mimeType: 'audio/wav',
+        });
+        return;
+      }
+
       const stylePrompt =
         readingMode === 'tahajji'
           ? 'Warm, patient Classical Arabic Noor Al-Bayan Quran teacher. Speak slowly and articulate every Arabic letter name, fatha, kasra, damma, sukoon, shadda, tanween, and 2-count madd elongation clearly with short gentle pauses at commas.'
@@ -394,11 +447,12 @@ async function startServer() {
         (p) => Boolean(p.inlineData?.data)
       )?.inlineData?.data;
 
-      if (!base64Audio) {
+      if (!base64Audio || base64Audio.length < 120) {
         res.status(502).json({ error: 'لم يتمكن محرك الصوت من توليد المقطع الصوتي.' });
         return;
       }
 
+      setLruCache(ttsAudioServerCache, cacheKey, base64Audio, 250);
       res.json({
         audioBase64: base64Audio,
         mimeType: 'audio/wav',

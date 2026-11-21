@@ -4,6 +4,7 @@ import {
   analyzeBookPageInBrowser,
   enhanceImageDataUrlForRecognition,
   generateNoorAlBayanClientFallback,
+  inferArabicDiacriticsForWord,
   verifyAndAlignSegmentsWithQuran,
 } from './clientArabicEngine';
 
@@ -69,6 +70,8 @@ export interface AudioCacheEntry {
   key: string;
   base64Wav: string;
   mimeType: string;
+  diacritizedWord?: string;
+  wasAutoDiacritized?: boolean;
   steps?: NoorAlBayanStep[];
   fullReading?: string;
   updatedAtMs: number;
@@ -177,6 +180,21 @@ export async function saveCachedAudioEntry(entry: AudioCacheEntry): Promise<void
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE_AUDIO, 'readwrite');
       tx.objectStore(STORE_AUDIO).put(entry);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  } catch {
+    // Non-fatal
+  }
+}
+
+export async function deleteCachedAudioEntry(key: string): Promise<void> {
+  try {
+    const db = await openBooksDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_AUDIO, 'readwrite');
+      tx.objectStore(STORE_AUDIO).delete(key);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
@@ -571,6 +589,7 @@ export async function generateNoorAlBayanOnServer(params: {
   surahName?: string;
 }): Promise<{
   diacritizedWord: string;
+  wasAutoDiacritized: boolean;
   steps: NoorAlBayanStep[];
   fullReading: string;
 }> {
@@ -585,23 +604,25 @@ export async function generateNoorAlBayanOnServer(params: {
       if (!isStaticMissingApi(res)) {
         const data = (await res.json().catch(() => ({}))) as {
           diacritizedWord?: string;
+          wasAutoDiacritized?: boolean;
           steps?: NoorAlBayanStep[];
           fullReading?: string;
           error?: string;
         };
-        if (res.ok) {
+        if (res.ok && Array.isArray(data.steps) && data.steps.length > 0) {
           staticHostWithoutApi = false;
           return {
             diacritizedWord: String(data.diacritizedWord || params.text),
-            steps: Array.isArray(data.steps) ? data.steps : [],
-            fullReading: String(data.fullReading || params.text),
+            wasAutoDiacritized: Boolean(data.wasAutoDiacritized),
+            steps: data.steps,
+            fullReading: String(data.fullReading || data.diacritizedWord || params.text),
           };
         }
       } else {
         staticHostWithoutApi = true;
       }
     } catch {
-      // Fall back to deterministic in-browser Noor Al-Bayan engine
+      // Fall back cleanly to deterministic in-browser Noor Al-Bayan engine
     }
   }
 
@@ -617,12 +638,25 @@ export async function synthesizeSpeechOnServer(params: {
   mimeType: string;
   text: string;
 }> {
+  const preparedText =
+    params.mode === 'normal'
+      ? params.text
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean)
+          .map((w) => inferArabicDiacriticsForWord(w).vocalized)
+          .join(' ') || params.text
+      : params.text;
+
   if (staticHostWithoutApi !== true) {
     try {
       const res = await fetch('/api/tts/speak', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params),
+        body: JSON.stringify({
+          text: preparedText,
+          mode: params.mode,
+        }),
       });
 
       if (!isStaticMissingApi(res)) {
@@ -631,20 +665,20 @@ export async function synthesizeSpeechOnServer(params: {
           mimeType?: string;
           error?: string;
         };
-        if (res.ok && data.audioBase64) {
+        if (res.ok && data.audioBase64 && data.audioBase64.length > 120) {
           staticHostWithoutApi = false;
           return {
             engine: 'server_wav',
             audioBase64: data.audioBase64,
             mimeType: data.mimeType || 'audio/wav',
-            text: params.text,
+            text: preparedText,
           };
         }
       } else {
         staticHostWithoutApi = true;
       }
     } catch {
-      // Static host without server — use browser SpeechSynthesis
+      // Static host, rate limit, or offline API — fall through to chunked browser SpeechSynthesis
     }
   }
 
@@ -652,7 +686,7 @@ export async function synthesizeSpeechOnServer(params: {
     engine: 'browser_speech',
     audioBase64: '',
     mimeType: 'text/speech',
-    text: params.text,
+    text: preparedText,
   };
 }
 

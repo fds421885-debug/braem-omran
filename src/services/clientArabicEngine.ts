@@ -26,10 +26,39 @@ const QURAN_CACHE_KEY = 'full_quran_simple_v2';
 
 let ocrWorkerPromise: Promise<Worker> | null = null;
 let quranIndexPromise: Promise<QuranIndexData | null> | null = null;
+let loadedQuranWordMap: Map<string, string> | null = null;
+
+/**
+ * Normalizes ALL Arabic fonts & Unicode encodings:
+ * - Presentation Forms-A (U+FB50-FDFF) & Presentation Forms-B (U+FE70-FEFF): Naskh, Ruq'ah, Thuluth, Diwani, Kufi glyph forms & Lam-Alif ligatures
+ * - Extended/Persian/Urdu print codepoints often embedded by PDF fonts (U+06A9 ک, U+06CC ی, U+06C1 ہ, U+06BE ھ, U+06D5 ە, U+06C3 ۃ, U+06D2 ے)
+ * - Removes Tatweel (ـ) and invisible directional marks while keeping Tashkeel intact.
+ */
+export function normalizeAllArabicFontForms(input: string): string {
+  if (!input) return '';
+  let out = input
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '')
+    .replace(/\uFDFD/g, 'بسم الله الرحمن الرحيم')
+    .replace(/\uFDF2/g, 'الله')
+    .replace(/[\u06A9\u06AA]/g, 'ك')
+    .replace(/[\u06CC\u06D0\u06D1]/g, 'ي')
+    .replace(/\u06D2/g, 'ى')
+    .replace(/[\u06C0\u06C1\u06C2\u06BE\u06D5]/g, 'ه')
+    .replace(/\u06C3/g, 'ة')
+    .replace(/\u067E/g, 'ب')
+    .replace(/\u0686/g, 'ج')
+    .replace(/\u0698/g, 'ز')
+    .replace(/\u06AF/g, 'ك')
+    .replace(/\u06A4/g, 'ف')
+    .replace(/\u0640/g, '');
+  // Normalize Uthmani small high maddah / silent markers slightly if needed without stripping vowel marks
+  return out.replace(/\s+/g, ' ').trim();
+}
 
 export function stripArabicDiacriticsForMatch(input: string): string {
-  return input
-    .replace(/[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED\u0640]/g, '')
+  return normalizeAllArabicFontForms(input)
+    .replace(/[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]/g, '')
     .replace(/[أإآٱ]/g, 'ا')
     .replace(/ى/g, 'ي')
     .replace(/ة/g, 'ه')
@@ -78,7 +107,7 @@ function getArabicLetterName(ch: string): string {
     ى: 'أَلِفْ مَقْصُورَة',
     ء: 'هَمْزَة',
     ؤ: 'هَمْزَة عَلَى وَاو',
-    ئ: 'هَمْزَة عَلَى نَبِرَة',
+    ئ: 'هَمْزَة عَلَى يَاء',
   };
   return names[ch] || ch;
 }
@@ -92,6 +121,200 @@ const KASRATAN = '\u064D';
 const SHADDA = '\u0651';
 const SUKOON = '\u0652';
 const DAGGER_ALIF = '\u0670';
+const MADDAH = '\u0653';
+
+const SUN_LETTERS = new Set([
+  'ت',
+  'ث',
+  'د',
+  'ذ',
+  'ر',
+  'ز',
+  'س',
+  'ش',
+  'ص',
+  'ض',
+  'ط',
+  'ظ',
+  'ل',
+  'ن',
+]);
+
+// Curated high-frequency Arabic/Islamic/Noor Al-Bayan lexicon for instant accurate vocalization of undiacritized text
+const COMMON_ARABIC_VOCALIZED_DICT: Record<string, string> = {
+  بسم: 'بِسْمِ',
+  الله: 'اللَّهِ',
+  الرحمن: 'الرَّحْمَٰنِ',
+  الرحيم: 'الرَّحِيمِ',
+  الحمد: 'الْحَمْدُ',
+  لله: 'لِلَّهِ',
+  رب: 'رَبِّ',
+  العالمين: 'الْعَالَمِينَ',
+  مالك: 'مَالِكِ',
+  يوم: 'يَوْمِ',
+  الدين: 'الدِّينِ',
+  نعبد: 'نَعْبُدُ',
+  نستعين: 'نَسْتَعِينُ',
+  اهدنا: 'اهْدِنَا',
+  الصراط: 'الصِّرَاطَ',
+  المستقيم: 'الْمُسْتَقِيمَ',
+  السلام: 'السَّلَامُ',
+  عليكم: 'عَلَيْكُمْ',
+  ورحمة: 'وَرَحْمَةُ',
+  وبركاته: 'وَبَرَكَاتُهُ',
+  سبحان: 'سُبْحَانَ',
+  اكبر: 'أَكْبَرُ',
+  استغفر: 'أَسْتَغْفِرُ',
+  محمد: 'مُحَمَّدٌ',
+  رسول: 'رَسُولُ',
+  نبي: 'نَبِيٌّ',
+  قران: 'قُرْآنٌ',
+  القران: 'الْقُرْآنُ',
+  الكريم: 'الْكَرِيمُ',
+  كتاب: 'كِتَابٌ',
+  الكتاب: 'الْكِتَابُ',
+  قلم: 'قَلَمٌ',
+  القلم: 'الْقَلَمُ',
+  علم: 'عِلْمٌ',
+  العلم: 'الْعِلْمُ',
+  معلم: 'مُعَلِّمٌ',
+  المعلم: 'الْمُعَلِّمُ',
+  طالب: 'طَالِبٌ',
+  الطالب: 'الطَّالِبُ',
+  تلميذ: 'تِلْمِيذٌ',
+  مدرسة: 'مَدْرَسَةٌ',
+  المدرسة: 'الْمَدْرَسَةُ',
+  مسجد: 'مَسْجِدٌ',
+  المسجد: 'الْمَسْجِدُ',
+  بيت: 'بَيْتٌ',
+  البيت: 'الْبَيْتُ',
+  باب: 'بَابٌ',
+  الباب: 'الْبَابُ',
+  نور: 'نُورٌ',
+  بيان: 'بَيَانٌ',
+  البيان: 'الْبَيَانُ',
+  سورة: 'سُورَةُ',
+  ايه: 'آيَةٌ',
+  اية: 'آيَةٌ',
+  صلاه: 'صَلَاةٌ',
+  الصلاه: 'الصَّلَاةُ',
+  زكاه: 'زَكَاةٌ',
+  الزكاه: 'الزَّكَاةُ',
+  صيام: 'صِيَامٌ',
+  حج: 'حَجٌّ',
+  اسلام: 'إِسْلَامٌ',
+  الاسلام: 'الْإِسْلَامُ',
+  ايمان: 'إِيمَانٌ',
+  احسان: 'إِحْسَانٌ',
+  تجويد: 'تَجْوِيدٌ',
+  حرف: 'حَرْفٌ',
+  كلمة: 'كَلِمَةٌ',
+  جملة: 'جُمْلَةٌ',
+  درس: 'دَرْسٌ',
+  فصل: 'فَصْلٌ',
+  صفحة: 'صَفْحَةٌ',
+  حفظ: 'حِفْظٌ',
+  تلاوة: 'تِلَاوَةٌ',
+  قراءة: 'قِرَاءَةٌ',
+  كتابة: 'كِتَابَةٌ',
+  يكتب: 'يَكْتُبُ',
+  تكتب: 'تَكْتُبُ',
+  يقرا: 'يَقْرَأُ',
+  تقرا: 'تَقْرَأُ',
+  اقرا: 'اقْرَأْ',
+  يحفظ: 'يَحْفَظُ',
+  تحفظ: 'تَحْفَظُ',
+  يعلم: 'يَعْلَمُ',
+  يسمع: 'يَسْمَعُ',
+  يفهم: 'يَفْهَمُ',
+  يدرس: 'يَدْرُسُ',
+  يشرح: 'يَشْرَحُ',
+  ذهب: 'ذَهَبَ',
+  رجع: 'رَجَعَ',
+  فتح: 'فَتَحَ',
+  فهم: 'فَهِمَ',
+  كتب: 'كَتَبَ',
+  قرا: 'قَرَأَ',
+  حفظه: 'حَفِظَهُ',
+  شمس: 'شَمْسٌ',
+  الشمس: 'الشَّمْسُ',
+  قمر: 'قَمَرٌ',
+  القمر: 'الْقَمَرُ',
+  سماء: 'سَمَاءٌ',
+  السماء: 'السَّمَاءُ',
+  ارض: 'أَرْضٌ',
+  الارض: 'الْأَرْضُ',
+  ماء: 'مَاءٌ',
+  شجرة: 'شَجَرَةٌ',
+  حديقة: 'حَدِيقَةٌ',
+  طريق: 'طَرِيقٌ',
+  صديق: 'صَدِيقٌ',
+  خير: 'خَيْرٌ',
+  شر: 'شَرٌّ',
+  حق: 'حَقٌّ',
+  الحق: 'الْحَقُّ',
+  عدل: 'عَدْلٌ',
+  صدق: 'صِدْقٌ',
+  امانة: 'أَمَانَةٌ',
+  بر: 'بِرٌّ',
+  والدين: 'وَالِدَيْنِ',
+  جنة: 'جَنَّةٌ',
+  الجنة: 'الْجَنَّةُ',
+  نار: 'نَارٌ',
+  في: 'فِي',
+  من: 'مِنْ',
+  الي: 'إِلَى',
+  على: 'عَلَى',
+  علي: 'عَلَى',
+  عن: 'عَنْ',
+  مع: 'مَعَ',
+  ان: 'إِنَّ',
+  انني: 'إِنَّنِي',
+  كان: 'كَانَ',
+  يكون: 'يَكُونُ',
+  هو: 'هُوَ',
+  هي: 'هِيَ',
+  هم: 'هُمْ',
+  نحن: 'نَحْنُ',
+  انت: 'أَنْتَ',
+  انا: 'أَنَا',
+  هذا: 'هَٰذَا',
+  هذه: 'هَٰذِهِ',
+  ذلك: 'ذَٰلِكَ',
+  تلك: 'تِلْكَ',
+  الذي: 'الَّذِي',
+  التي: 'الَّتِي',
+  الذين: 'الَّذِينَ',
+  اولئك: 'أُولَٰئِكَ',
+  كل: 'كُلُّ',
+  بعض: 'بَعْضُ',
+  ثم: 'ثُمَّ',
+  او: 'أَوْ',
+  لا: 'لَا',
+  نعم: 'نَعَمْ',
+  ما: 'مَا',
+  لم: 'لَمْ',
+  لن: 'لَنْ',
+  قد: 'قَدْ',
+  اذا: 'إِذَا',
+  اذ: 'إِذْ',
+  كيف: 'كَيْفَ',
+  اين: 'أَيْنَ',
+  متى: 'مَتَى',
+  لماذا: 'لِمَاذَا',
+  شكرا: 'شُكْرًا',
+  جدا: 'جِدًّا',
+  صباح: 'صَبَاحُ',
+  مساء: 'مَسَاءُ',
+  ولد: 'وَلَدٌ',
+  بنت: 'بِنْتٌ',
+  رجل: 'رَجُلٌ',
+  امراة: 'امْرَأَةٌ',
+  اب: 'أَبٌ',
+  ام: 'أُمٌّ',
+  اخ: 'أَخٌ',
+  اخت: 'أُخْتٌ',
+};
 
 function isCombiningMark(ch: string): boolean {
   const code = ch.charCodeAt(0);
@@ -114,10 +337,12 @@ interface ParsedUnit {
   hasShadda: boolean;
   hasSukoon: boolean;
   hasDaggerAlif: boolean;
+  hasMaddah: boolean;
 }
 
 function parseArabicWordUnits(word: string): ParsedUnit[] {
-  const chars = Array.from(word.trim());
+  const normalized = normalizeAllArabicFontForms(word);
+  const chars = Array.from(normalized);
   const units: ParsedUnit[] = [];
 
   for (const ch of chars) {
@@ -135,11 +360,12 @@ function parseArabicWordUnits(word: string): ParsedUnit[] {
         if (ch === SHADDA) prev.hasShadda = true;
         if (ch === SUKOON) prev.hasSukoon = true;
         if (ch === DAGGER_ALIF) prev.hasDaggerAlif = true;
+        if (ch === MADDAH) prev.hasMaddah = true;
       }
       continue;
     }
 
-    if (/[\u0621-\u064A]/.test(ch)) {
+    if (/[\u0621-\u064A\u0671]/.test(ch)) {
       units.push({
         letter: ch,
         marks: '',
@@ -152,11 +378,270 @@ function parseArabicWordUnits(word: string): ParsedUnit[] {
         hasShadda: false,
         hasSukoon: false,
         hasDaggerAlif: false,
+        hasMaddah: false,
       });
     }
   }
 
   return units;
+}
+
+function countVocalizedUnits(units: ParsedUnit[]): number {
+  let count = 0;
+  for (const u of units) {
+    if (
+      u.hasFatha ||
+      u.hasDamma ||
+      u.hasKasra ||
+      u.hasFathatan ||
+      u.hasDammatan ||
+      u.hasKasratan ||
+      u.hasShadda ||
+      u.hasSukoon ||
+      u.hasDaggerAlif
+    ) {
+      count++;
+    }
+  }
+  return count;
+}
+
+function diacritizeStemByArabicMorphology(stem: string, hasDefiniteAl: boolean): string {
+  const letters = Array.from(stem);
+  const n = letters.length;
+  if (n === 0) return stem;
+  if (n === 1) return `${letters[0]}${FATHA}`;
+
+  // Preserve leading Alif Madda / Hamza vowel hints
+  const marks = new Array<string>(n).fill('');
+
+  // Ending vowel
+  const last = letters[n - 1];
+  const prevLast = letters[n - 2];
+
+  // Check common morphological templates first
+  // 1) Verbal present prefixes: يَـ / تَـ / نَـ + Cْ + Cُ/َ + Cُ (4 letters starting with ي/ت/ن and 4th not ة/ا)
+  if (
+    !hasDefiniteAl &&
+    n === 4 &&
+    (letters[0] === 'ي' || letters[0] === 'ت' || letters[0] === 'ن') &&
+    last !== 'ة' &&
+    last !== 'ا' &&
+    last !== 'ى' &&
+    letters[1] !== 'ا' &&
+    letters[2] !== 'و' &&
+    letters[2] !== 'ي'
+  ) {
+    return `${letters[0]}${FATHA}${letters[1]}${SUKOON}${letters[2]}${FATHA}${letters[3]}${DAMMA}`;
+  }
+
+  // 2) مَفْعَلَة / مَفْعُول / مِفْعَال / مُفَعِّل
+  if (n >= 4 && letters[0] === 'م') {
+    if (n === 5 && letters[3] === 'و' && last !== 'ة') {
+      // مَفْعُول (مَكْتُوبٌ / مَفْتُوحٌ)
+      return `م${FATHA}${letters[1]}${SUKOON}${letters[2]}${DAMMA}و${letters[4]}${hasDefiniteAl ? DAMMA : DAMMATAN}`;
+    }
+    if (n === 5 && last === 'ة') {
+      // مَدْرَسَةٌ
+      return `م${FATHA}${letters[1]}${SUKOON}${letters[2]}${FATHA}${letters[3]}${FATHA}ة${
+        hasDefiniteAl ? DAMMA : DAMMATAN
+      }`;
+    }
+    if (n === 4 && last !== 'ة' && letters[2] !== 'ا') {
+      // مَسْجِد / مَكْتَب
+      return `م${FATHA}${letters[1]}${SUKOON}${letters[2]}${KASRA}${letters[3]}${
+        hasDefiniteAl ? DAMMA : DAMMATAN
+      }`;
+    }
+  }
+
+  // General vowel placement driven by long vowels (ا و ي ى), initial hamzas, and ending patterns
+  for (let i = 0; i < n; i++) {
+    const ch = letters[i];
+    const next = i + 1 < n ? letters[i + 1] : '';
+    const prev = i > 0 ? letters[i - 1] : '';
+
+    if (i === n - 1) {
+      if (ch === 'ة') {
+        marks[i] = hasDefiniteAl ? DAMMA : DAMMATAN;
+      } else if (ch === 'ا' || ch === 'ى') {
+        marks[i] = '';
+      } else if (prevLast === 'ي' || prevLast === 'و' || prevLast === 'ا') {
+        marks[i] = hasDefiniteAl ? DAMMA : DAMMATAN;
+      } else if (last === 'ي') {
+        marks[i] = '';
+      } else {
+        marks[i] = hasDefiniteAl ? DAMMA : DAMMATAN;
+      }
+      continue;
+    }
+
+    if (ch === 'ا' && i > 0) {
+      // Alif of prolongation after Fatha
+      marks[i] = '';
+      if (i > 0 && !marks[i - 1]) marks[i - 1] = FATHA;
+      continue;
+    }
+
+    if (ch === 'إ') {
+      marks[i] = KASRA;
+      continue;
+    }
+    if (ch === 'أ') {
+      marks[i] = next === 'ي' ? KASRA : next === 'و' ? DAMMA : FATHA;
+      continue;
+    }
+    if (ch === 'آ') {
+      marks[i] = '';
+      continue;
+    }
+
+    // Long vowel triggers from next character
+    if (next === 'ا' || next === 'ى') {
+      marks[i] = FATHA;
+    } else if (next === 'و' && i > 0 && i + 1 < n) {
+      marks[i] = DAMMA;
+    } else if (next === 'ي' && i > 0) {
+      marks[i] = KASRA;
+    } else if ((ch === 'و' || ch === 'ي') && i > 0 && (marks[i - 1] === DAMMA || marks[i - 1] === KASRA)) {
+      // Sustained madd vowel has no haraka
+      marks[i] = '';
+    } else if (i === 0) {
+      marks[i] = next === 'ئ' ? KASRA : FATHA;
+    } else if (i === 1 && n === 3 && next !== 'ا' && next !== 'و' && next !== 'ي' && prev !== 'ا') {
+      // CVCC (قَلْبٌ / بَحْرٌ / دَرْسٌ) vs CVCV — balanced sukoon when prev had fatha
+      marks[i] = SUKOON;
+    } else if (i === 1 && n >= 4 && next !== 'ا' && next !== 'و' && next !== 'ي' && marks[0] === FATHA) {
+      marks[i] = SUKOON;
+    } else {
+      marks[i] = next === 'ة' ? FATHA : FATHA;
+    }
+  }
+
+  let res = '';
+  for (let i = 0; i < n; i++) {
+    res += `${letters[i]}${marks[i]}`;
+  }
+  return res;
+}
+
+/**
+ * Infers full Arabic diacritics for an unvocalized word so Noor Al-Bayan & voice reading
+ * always know HOW the word should be pronounced.
+ */
+export function inferArabicDiacriticsForWord(rawWord: string): {
+  vocalized: string;
+  wasAutoDiacritized: boolean;
+} {
+  const cleaned = normalizeAllArabicFontForms(rawWord)
+    .replace(/^[^\u0621-\u064A\u0671]+|[^\u0621-\u064A\u0671\u064B-\u065F\u0670]+$/g, '')
+    .trim();
+
+  if (!cleaned) {
+    return { vocalized: rawWord, wasAutoDiacritized: false };
+  }
+
+  const units = parseArabicWordUnits(cleaned);
+  if (units.length === 0) {
+    return { vocalized: rawWord, wasAutoDiacritized: false };
+  }
+
+  const vocalizedCount = countVocalizedUnits(units);
+  // Already sufficiently vocalized (e.g., Mushaf or vowelized textbook word)
+  if (vocalizedCount >= Math.max(1, Math.floor(units.length * 0.45))) {
+    return { vocalized: cleaned, wasAutoDiacritized: false };
+  }
+
+  const plainLetters = units.map((u) => u.letter).join('');
+  const bareMatchKey = stripArabicDiacriticsForMatch(plainLetters).replace(/\s+/g, '');
+
+  // 1. Dictionary lookup (including exact Quranic words if index is already loaded)
+  if (loadedQuranWordMap?.has(bareMatchKey)) {
+    return {
+      vocalized: loadedQuranWordMap.get(bareMatchKey)!,
+      wasAutoDiacritized: true,
+    };
+  }
+
+  if (COMMON_ARABIC_VOCALIZED_DICT[bareMatchKey]) {
+    return {
+      vocalized: COMMON_ARABIC_VOCALIZED_DICT[bareMatchKey],
+      wasAutoDiacritized: true,
+    };
+  }
+
+  // 2. Prefix stripping for conjunctions/prepositions (و، ف، ب، ك، ل) + lookup or rules
+  let prefixVocalized = '';
+  let stemLetters = plainLetters;
+
+  if (stemLetters.length >= 4 && (stemLetters[0] === 'و' || stemLetters[0] === 'ف')) {
+    const rest = stemLetters.slice(1);
+    const restBare = stripArabicDiacriticsForMatch(rest);
+    if (COMMON_ARABIC_VOCALIZED_DICT[restBare]) {
+      return {
+        vocalized: `${stemLetters[0]}${FATHA}${COMMON_ARABIC_VOCALIZED_DICT[restBare]}`,
+        wasAutoDiacritized: true,
+      };
+    }
+    prefixVocalized = `${stemLetters[0]}${FATHA}`;
+    stemLetters = rest;
+  } else if (
+    stemLetters.length >= 4 &&
+    (stemLetters[0] === 'ب' || stemLetters[0] === 'ك' || stemLetters[0] === 'ل') &&
+    (stemLetters.startsWith('بال') || stemLetters.startsWith('كال') || stemLetters.startsWith('لل'))
+  ) {
+    if (stemLetters.startsWith('لل')) {
+      const restStem = stemLetters.slice(2);
+      const isSun = SUN_LETTERS.has(restStem[0] || '');
+      const body = diacritizeStemByArabicMorphology(restStem, true);
+      if (isSun && body.length >= 1) {
+        const bodyChars = Array.from(body);
+        const sunRest =
+          bodyChars.length >= 2 && isCombiningMark(bodyChars[1])
+            ? `${bodyChars[0]}${SHADDA}${bodyChars[1]}${bodyChars.slice(2).join('')}`
+            : `${bodyChars[0]}${SHADDA}${FATHA}${bodyChars.slice(1).join('')}`;
+        return {
+          vocalized: `لِـل${sunRest}`.replace('ـ', ''),
+          wasAutoDiacritized: true,
+        };
+      }
+      return { vocalized: `لِلْ${body}`, wasAutoDiacritized: true };
+    }
+    prefixVocalized = `${stemLetters[0]}${stemLetters[0] === 'ك' ? FATHA : KASRA}`;
+    stemLetters = stemLetters.slice(1);
+  }
+
+  // 3. Definite article "ال" (Al-Qamariya vs Al-Shamsiya)
+  if ((stemLetters.startsWith('ال') || stemLetters.startsWith('ٱل')) && stemLetters.length >= 4) {
+    const firstAlif = stemLetters[0];
+    const afterAl = stemLetters.slice(2);
+    const firstRoot = afterAl[0];
+    const isSun = SUN_LETTERS.has(firstRoot);
+    const body = diacritizeStemByArabicMorphology(afterAl, true);
+
+    if (isSun) {
+      const bodyChars = Array.from(body);
+      const hasFirstMark = bodyChars.length >= 2 && isCombiningMark(bodyChars[1]);
+      const shaddaBody = hasFirstMark
+        ? `${bodyChars[0]}${SHADDA}${bodyChars[1]}${bodyChars.slice(2).join('')}`
+        : `${bodyChars[0]}${SHADDA}${FATHA}${bodyChars.slice(1).join('')}`;
+      return {
+        vocalized: `${prefixVocalized}${firstAlif}${FATHA}ل${shaddaBody}`,
+        wasAutoDiacritized: true,
+      };
+    }
+
+    return {
+      vocalized: `${prefixVocalized}${firstAlif}${FATHA}ل${SUKOON}${body}`,
+      wasAutoDiacritized: true,
+    };
+  }
+
+  const finalStem = diacritizeStemByArabicMorphology(stemLetters, false);
+  return {
+    vocalized: `${prefixVocalized}${finalStem}`,
+    wasAutoDiacritized: true,
+  };
 }
 
 function describeUnitRule(unit: ParsedUnit): {
@@ -219,26 +704,41 @@ function describeUnitRule(unit: ParsedUnit): {
 }
 
 /**
- * Generates authentic Noor Al-Bayan spelling breakdown purely in the browser
- * so static hosting (GitHub Pages / Netlify / etc.) works 100% without a backend.
+ * Generates authentic, crystal-clear Noor Al-Bayan spelling breakdown purely in the browser
+ * — including automatic morphological vocalization for UNDIACRITIZED words & all Arabic script fonts!
+ * Works 100% offline / static hosts / zero limits.
  */
 export function generateNoorAlBayanClientFallback(text: string): {
   diacritizedWord: string;
+  wasAutoDiacritized: boolean;
   steps: NoorAlBayanStep[];
   fullReading: string;
 } {
-  const words = text
-    .trim()
+  const normalizedInput = normalizeAllArabicFontForms(text);
+  const rawWords = normalizedInput
     .split(/\s+/)
     .filter(Boolean)
     .slice(0, 6);
 
   const steps: NoorAlBayanStep[] = [];
   const spokenParts: string[] = [];
+  const resolvedWords: string[] = [];
+  let anyAutoDiacritized = false;
 
-  for (const word of words) {
+  for (const rawWord of rawWords) {
+    const inferred = inferArabicDiacriticsForWord(rawWord);
+    const word = inferred.vocalized;
+    if (inferred.wasAutoDiacritized) {
+      anyAutoDiacritized = true;
+    }
+    resolvedWords.push(word);
+
     const units = parseArabicWordUnits(word);
     if (units.length === 0) continue;
+
+    if (inferred.wasAutoDiacritized && rawWords.length <= 2) {
+      spokenParts.push(`الكَلِمَةُ بِتَشْكِيلِ القِرَاءَةِ: ${word}`);
+    }
 
     let cumulative = '';
 
@@ -247,28 +747,77 @@ export function generateNoorAlBayanClientFallback(text: string): {
       const prev = i > 0 ? units[i - 1] : null;
       const next = i + 1 < units.length ? units[i + 1] : null;
 
-      // Detect natural Madd letters (Alif after Fatha, Waw after Damma, Ya after Kasra)
+      // 1. Alif Maddah (آ)
+      if (curr.letter === 'آ' || (curr.letter === 'ا' && curr.hasMaddah)) {
+        cumulative += 'آ';
+        steps.push({
+          part: 'آ',
+          ruleLabel: 'همزة ممدودة بالألف حركتان',
+          reading: cumulative,
+        });
+        spokenParts.push(`هَمْزَةٌ مَمْدُودَةٌ بِالْأَلِفِ حَرَكَتَانْ: آ، ${cumulative}`);
+        continue;
+      }
+
+      // 2. Definite Article "ال" (Al-Qamariya vs Al-Shamsiya)
+      if (
+        i === 0 &&
+        (curr.letter === 'ا' || curr.letter === 'ٱ') &&
+        next &&
+        next.letter === 'ل' &&
+        i + 2 < units.length
+      ) {
+        const afterLam = units[i + 2];
+        const isShamsiya = afterLam.hasShadda || (SUN_LETTERS.has(afterLam.letter) && !next.hasSukoon);
+        if (isShamsiya) {
+          cumulative += `${curr.letter}${curr.marks}ل`;
+          steps.push({
+            part: `${curr.letter}ل`,
+            ruleLabel: 'همزة وصل تسقط ولام شمسية مُدغمة لا تُنطق',
+            reading: `${cumulative}${afterLam.letter}ْ`,
+          });
+          spokenParts.push(
+            `هَمْزَةُ وَصْلٍ وَلاَمٌ شَمْسِيَّةٌ مُدْغَمَةٌ تَسْقُطُ فِي النُّطْقِ`
+          );
+          i++; // skip لام because it assimilates directly with the next Shadda letter
+          continue;
+        } else {
+          cumulative += `${curr.letter}${curr.marks}لْ`;
+          steps.push({
+            part: `${curr.letter}لْ`,
+            ruleLabel: 'همزة وصل ولام قمرية مُظهرة (أَلْ)',
+            reading: cumulative,
+          });
+          spokenParts.push(`أَلِفُ وَصْلٍ وَلاَمٌ قَمَرِيَّةٌ مُظْهَرَة: أَلْ`);
+          i++; // skip لام since we read أَلْ together!
+          continue;
+        }
+      }
+
+      // 3. Natural Madd letters (Alif after Fatha, Waw after Damma, Ya/Maqsura after Kasra/Fatha)
+      const hasAnyMarks = Boolean(curr.marks.replace(MADDAH, ''));
       const isAlifMadd =
         (curr.letter === 'ا' || curr.letter === 'ى') &&
-        !curr.marks &&
+        !hasAnyMarks &&
         prev &&
         (prev.hasFatha || prev.hasFathatan);
       const isWawMadd =
-        curr.letter === 'و' && !curr.marks && prev && prev.hasDamma;
+        curr.letter === 'و' && !hasAnyMarks && prev && prev.hasDamma;
       const isYaMadd =
-        (curr.letter === 'ي' || curr.letter === 'ى') &&
-        !curr.marks &&
-        prev &&
-        prev.hasKasra;
+        curr.letter === 'ي' && !hasAnyMarks && prev && prev.hasKasra;
 
       if (isAlifMadd || isWawMadd || isYaMadd) {
         const maddLabel = isAlifMadd
-          ? 'أَلِفٌ مَدٌّ طَبِيعِيٌّ حَرَكَتَانْ'
+          ? curr.letter === 'ى'
+            ? 'أَلِفٌ مَقْصُورَةٌ مَدٌّ طَبِيعِيٌّ حَرَكَتَانْ'
+            : 'أَلِفٌ مَدٌّ طَبِيعِيٌّ حَرَكَتَانْ'
           : isWawMadd
           ? 'وَاوٌ مَدٌّ طَبِيعِيٌّ حَرَكَتَانْ'
           : 'يَاءٌ مَدٌّ طَبِيعِيٌّ حَرَكَتَانْ';
         const maddRule = isAlifMadd
-          ? 'مد بالألف حركتان'
+          ? curr.letter === 'ى'
+            ? 'ألف مقصورة مد حركتان'
+            : 'مد بالألف حركتان'
           : isWawMadd
           ? 'مد بالواو حركتان'
           : 'مد بالياء حركتان';
@@ -282,27 +831,22 @@ export function generateNoorAlBayanClientFallback(text: string): {
         continue;
       }
 
-      // Silent Alif Lam (Shamsiya / Qamariya) detection at start of word
-      if (
-        i === 0 &&
-        curr.letter === 'ا' &&
-        !curr.marks &&
-        next &&
-        next.letter === 'ل'
-      ) {
+      // 4. Standalone Hamza Wasl at start (non-AL)
+      if (i === 0 && (curr.letter === 'ٱ' || (curr.letter === 'ا' && !hasAnyMarks))) {
         cumulative += curr.letter;
         steps.push({
-          part: 'ا',
-          ruleLabel: 'همزة وصل تسقط وصلاً وتُقرأ أَ',
-          reading: 'أَ',
+          part: curr.letter,
+          ruleLabel: 'همزة وصل يُبتدأ بها مفتوحة أو مكسورة حسب الفعل',
+          reading: cumulative,
         });
-        spokenParts.push('هَمْزَةُ وَصْلٍ: أَ');
+        spokenParts.push(`هَمْزَةُ وَصْلٍ: ${cumulative}`);
         continue;
       }
 
       const unitGlyph = `${curr.letter}${curr.marks}`;
       cumulative += unitGlyph;
 
+      // 5. Dagger Alif (الألف الخنجرية مثل: الرَّحْمَٰنِ، هَٰذَا)
       if (curr.hasDaggerAlif) {
         const letterName = getArabicLetterName(curr.letter);
         steps.push({
@@ -316,37 +860,52 @@ export function generateNoorAlBayanClientFallback(text: string): {
         continue;
       }
 
+      // 6. Standard Unit / Shadda / Sukoon / Tanween / Teh Marbuta
       const { ruleLabel, spokenRule } = describeUnitRule(curr);
       const letterName = getArabicLetterName(curr.letter);
       const syllable =
-        curr.hasSukoon && prev
+        (curr.hasSukoon || curr.hasShadda) && prev
           ? `${prev.letter}${prev.marks}${unitGlyph}`
           : unitGlyph;
 
+      const extraStopHint =
+        curr.letter === 'ة' && i === units.length - 1
+          ? ' (وَتُقْرَأُ هَاءً عِنْدَ الْوَقْفِ)'
+          : '';
+
       steps.push({
         part: unitGlyph,
-        ruleLabel,
+        ruleLabel:
+          curr.letter === 'ة' && i === units.length - 1
+            ? `${ruleLabel} (تاء مربوطة تُنطق هاءً وقفاً)`
+            : ruleLabel,
         reading: cumulative,
       });
 
       if (curr.hasSukoon) {
         spokenParts.push(`${letterName} ${spokenRule}: ${syllable}، ${cumulative}`);
+      } else if (curr.hasShadda) {
+        spokenParts.push(
+          `${letterName} ${spokenRule}: ${syllable}، ${cumulative}`
+        );
       } else {
-        spokenParts.push(`${letterName} ${spokenRule}: ${syllable}`);
-        if (i > 0) {
+        spokenParts.push(`${letterName} ${spokenRule}: ${syllable}${extraStopHint}`);
+        if (i > 0 && i < units.length - 1) {
           spokenParts.push(cumulative);
         }
       }
     }
 
-    spokenParts.push(word);
+    spokenParts.push(`الْكَلِمَةُ كَامِلَةً: ${word}`);
   }
 
+  const finalDisplayWord = resolvedWords.join(' ').trim() || normalizedInput;
   return {
-    diacritizedWord: text,
+    diacritizedWord: finalDisplayWord,
+    wasAutoDiacritized: anyAutoDiacritized,
     steps,
     fullReading:
-      spokenParts.length > 0 ? `${spokenParts.join('، ')}.` : text,
+      spokenParts.length > 0 ? `${spokenParts.join('، ')}.` : finalDisplayWord,
   };
 }
 
@@ -530,6 +1089,18 @@ function buildQuranIndex(ayahs: CompactAyahEntry[]): QuranIndexData {
       }
     }
   }
+
+  // Populate fast vocalization lookup map for instant unvocalized Quran word resolution
+  const qMap = new Map<string, string>();
+  for (const ay of ayahs) {
+    for (let w = 0; w < ay.plainWords.length; w++) {
+      const bare = ay.plainWords[w];
+      if (bare && !qMap.has(bare)) {
+        qMap.set(bare, ay.diacritizedWords[w]);
+      }
+    }
+  }
+  loadedQuranWordMap = qMap;
 
   return {
     ayahs,
@@ -2328,9 +2899,7 @@ export async function enhanceImageDataUrlForRecognition(
 }
 
 function cleanOcrWordText(raw: string): string {
-  return raw
-    .normalize('NFKC')
-    .replace(/[\u200B-\u200F\uFEFF]/g, '')
+  return normalizeAllArabicFontForms(raw)
     .replace(/^[|_~`^]+|[|_~`^]+$/g, '')
     .trim();
 }
@@ -2447,7 +3016,9 @@ async function runOcrPass(
           const cleanText = cleanOcrWordText(word.text || '');
           if (!cleanText) continue;
 
-          const hasArabic = /[\u0621-\u064A]/.test(cleanText);
+          const hasArabic = /[\u0621-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(
+            cleanText
+          );
           const hasDigit = /[0-9\u0660-\u0669]/.test(cleanText);
           const plain = stripArabicDiacriticsForMatch(cleanText);
 
@@ -2571,7 +3142,9 @@ async function runLineByLineOcr(
             const cleanText = cleanOcrWordText(word.text || '');
             if (!cleanText) continue;
 
-            const hasArabic = /[\u0621-\u064A]/.test(cleanText);
+            const hasArabic = /[\u0621-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(
+              cleanText
+            );
             const hasDigit = /[0-9\u0660-\u0669]/.test(cleanText);
             const plain = stripArabicDiacriticsForMatch(cleanText);
 
@@ -2650,11 +3223,11 @@ function isEmbeddedTextReliable(
   }> = [];
 
   for (const seg of embeddedSegments) {
-    const normalized = seg.text.normalize('NFKC').trim();
+    const normalized = normalizeAllArabicFontForms(seg.text || '').trim();
     if (!normalized) continue;
     for (const ch of normalized) {
       totalChars++;
-      if (/[\u0600-\u06FF0-9\s]/.test(ch)) {
+      if (/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF0-9\s]/.test(ch)) {
         validArabicOrDigitChars++;
       } else if (ch === '\uFFFD' || ch === '?') {
         replacementOrGarbage++;
