@@ -20,14 +20,12 @@ import {
   type ActiveSession,
   type BroadcastMessageRecord,
 } from '../types/platform';
-import { MascotImage } from './MascotImage';
 
 interface BroadcastNotificationsHostProps {
   session: ActiveSession;
 }
 
 const BASE_URL = import.meta.env.BASE_URL;
-const WAVING_FOX_PATH = `${BASE_URL}src/assets/images/fox_welcome_wave_1794991801893.jpg`;
 
 function formatArabicDateTime(ms: number): string {
   if (!ms) return 'الآن';
@@ -200,13 +198,12 @@ export const BroadcastNotificationsHost: React.FC<BroadcastNotificationsHostProp
         {/* Duolingo Mascot + Speech Bubble Banner */}
         <div className="bg-gradient-to-l from-[#FFF4E6] via-[#FDF6EE] to-[#FFFFFF] px-5 sm:px-6 pt-5 pb-4 border-b-2 border-[#EADBC8] flex items-center justify-between gap-4">
           <div className="flex items-center gap-3.5 min-w-0">
-            <div className="w-16 h-16 rounded-2xl bg-white border-2 border-[#EADBC8] p-1 shrink-0 flex items-center justify-center">
-              <MascotImage
-                src={WAVING_FOX_PATH}
-                alt="براعم عمران"
-                className="w-full h-full object-contain"
-              />
-            </div>
+            <img
+              src={`${BASE_URL}icon.svg`}
+              alt="براعم عمران"
+              referrerPolicy="no-referrer"
+              className="w-14 h-14 rounded-2xl border border-[#EADBC8] shadow-sm shrink-0 select-none"
+            />
             <div className="min-w-0 space-y-1">
               <div className="inline-flex items-center gap-1.5 bg-[#F56900] text-white px-3 py-1 rounded-xl border-b-2 border-[#C95200] text-xs font-display font-extrabold">
                 <Megaphone className="w-3.5 h-3.5 shrink-0" />
