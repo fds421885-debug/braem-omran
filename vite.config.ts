@@ -14,12 +14,13 @@ export default defineConfig(() => {
     base,
     define: {
       __APP_BUILD_ID__: JSON.stringify(buildId),
+      'import.meta.env.VITE_APP_BUILD_ID': JSON.stringify(buildId),
     },
     plugins: [
       react(),
       tailwindcss(),
       VitePWA({
-        registerType: 'prompt',
+        registerType: 'autoUpdate',
         includeAssets: [
           'icon.svg',
           'apple-touch-icon.png',
@@ -63,6 +64,8 @@ export default defineConfig(() => {
         },
         workbox: {
           importScripts: [`${base}sw-notifications.js`],
+          skipWaiting: true,
+          clientsClaim: true,
           cleanupOutdatedCaches: true,
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,jpg,woff,woff2}'],
@@ -103,8 +106,7 @@ export default defineConfig(() => {
           ],
         },
         devOptions: {
-          enabled: true,
-          type: 'module',
+          enabled: false,
         },
       }),
       // Serve pdfjs-dist worker, wasm (JBIG2/OpenJPEG/QCMS), cmaps, iccs, and standard_fonts

@@ -232,24 +232,31 @@ export async function showSystemBroadcastNotification(msg: {
   }
 }
 
+let inMemoryNotifSystemVersion: string | null = null;
+
 export function getSavedNotificationSystemVersion(): string | null {
-  if (typeof window === 'undefined') return null;
+  if (typeof window === 'undefined') return inMemoryNotifSystemVersion;
   try {
-    return window.localStorage.getItem(NOTIF_SYSTEM_VERSION_KEY);
+    return window.localStorage.getItem(NOTIF_SYSTEM_VERSION_KEY) || inMemoryNotifSystemVersion;
   } catch {
-    return null;
+    return inMemoryNotifSystemVersion;
   }
 }
 
 export function saveNotificationSystemVersion(
   version = CURRENT_NOTIFICATION_SYSTEM_VERSION
 ): void {
+  inMemoryNotifSystemVersion = version;
   if (typeof window === 'undefined') return;
   try {
     window.localStorage.setItem(NOTIF_SYSTEM_VERSION_KEY, version);
+  } catch {
+    // Ignore storage quota / iframe restrictions; inMemoryNotifSystemVersion handles active session
+  }
+  try {
     window.dispatchEvent(new CustomEvent(NOTIFICATION_SYSTEM_UPGRADED_EVENT));
   } catch {
-    // Ignore storage errors
+    // Ignore event errors
   }
 }
 
@@ -287,11 +294,16 @@ export async function requestAppNotificationPermission(): Promise<NotificationPe
 }
 
 export async function upgradeNotificationSystem(): Promise<{ upgradedVersion: string }> {
+  saveNotificationSystemVersion(CURRENT_NOTIFICATION_SYSTEM_VERSION);
+
   if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
     try {
       const reg = await navigator.serviceWorker.getRegistration();
       if (reg) {
-        await reg.update().catch(() => {});
+        await Promise.race([
+          reg.update().catch(() => {}),
+          new Promise<void>((resolve) => window.setTimeout(resolve, 1500)),
+        ]);
         if (reg.waiting) {
           reg.waiting.postMessage({ type: 'SKIP_WAITING' });
         }
@@ -301,16 +313,18 @@ export async function upgradeNotificationSystem(): Promise<{ upgradedVersion: st
     }
   }
 
-  saveNotificationSystemVersion(CURRENT_NOTIFICATION_SYSTEM_VERSION);
-  await flushPendingBroadcastOutbox().catch(() => {});
+  void flushPendingBroadcastOutbox().catch(() => {});
 
   if (getNotificationPermissionState() === 'granted') {
     playBroadcastChime();
-    await showSystemBroadcastNotification({
-      id: 'notif_system_upgraded',
-      title: 'براعم عمران · تم تحديث نظام الإشعارات',
-      body: 'أصبح جهازك مهيأً الآن لاستقبال الإشعارات المجدولة ورسائل المجمعات والتوصيل بعد عودة الإنترنت.',
-    });
+    await Promise.race([
+      showSystemBroadcastNotification({
+        id: 'notif_system_upgraded',
+        title: 'براعم عمران · تم تحديث نظام الإشعارات',
+        body: 'أصبح جهازك مهيأً الآن لاستقبال الإشعارات المجدولة ورسائل المجمعات والتوصيل بعد عودة الإنترنت.',
+      }).catch(() => false),
+      new Promise<void>((resolve) => window.setTimeout(resolve, 1500)),
+    ]);
   }
 
   return { upgradedVersion: CURRENT_NOTIFICATION_SYSTEM_VERSION };

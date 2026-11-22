@@ -3,6 +3,7 @@ import { saveNotificationSystemVersion } from './notificationService';
 
 const BASE_URL =
   (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.BASE_URL) || '/';
+const IS_DEV = Boolean(typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV);
 const FORCED_RELOAD_BUILD_KEY = 'braem_last_forced_reload_build_v1';
 
 export interface AppUpdateState {
@@ -49,11 +50,78 @@ export function subscribeToAppUpdateState(cb: (state: AppUpdateState) => void): 
   };
 }
 
+function getCurrentEmbeddedBuildId(): string {
+  try {
+    const fromEnv =
+      typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_APP_BUILD_ID;
+    if (typeof fromEnv === 'string' && fromEnv.trim()) {
+      return fromEnv.trim();
+    }
+  } catch {
+    // Ignore
+  }
+  return '';
+}
+
+function stripCacheBustQueryParam(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const url = new URL(window.location.href);
+    if (url.searchParams.has('_v')) {
+      url.searchParams.delete('_v');
+      window.history.replaceState(null, '', url.toString());
+    }
+  } catch {
+    // Ignore URL/history restrictions
+  }
+}
+
+async function cleanupLegacyDevServiceWorker(): Promise<void> {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+  try {
+    const regs = await navigator.serviceWorker.getRegistrations();
+    for (const reg of regs) {
+      const urls = [reg.active?.scriptURL, reg.waiting?.scriptURL, reg.installing?.scriptURL].filter(
+        Boolean
+      ) as string[];
+      if (urls.some((u) => u.includes('dev-sw.js'))) {
+        await reg.unregister().catch(() => {});
+      }
+    }
+    const existing = await navigator.serviceWorker.getRegistration();
+    if (!existing) {
+      swRegistration = await navigator.serviceWorker
+        .register(`${BASE_URL}sw-notifications.js`, { scope: BASE_URL })
+        .catch(() => null);
+    } else {
+      swRegistration = existing;
+    }
+  } catch {
+    // Non-fatal in dev
+  }
+}
+
+async function waitForControllerChange(timeoutMs = 1500): Promise<boolean> {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return false;
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (changed: boolean) => {
+      if (settled) return;
+      settled = true;
+      navigator.serviceWorker.removeEventListener('controllerchange', onChange);
+      resolve(changed);
+    };
+    const onChange = () => finish(true);
+    navigator.serviceWorker.addEventListener('controllerchange', onChange);
+    window.setTimeout(() => finish(false), timeoutMs);
+  });
+}
+
 async function checkRemoteVersionJson(): Promise<void> {
   if (typeof window === 'undefined') return;
   if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
 
-  const currentBuild = typeof __APP_BUILD_ID__ !== 'undefined' ? __APP_BUILD_ID__ : '';
+  const currentBuild = getCurrentEmbeddedBuildId();
   if (!currentBuild) return;
 
   try {
@@ -98,16 +166,20 @@ export async function checkForPlatformUpdatesNow(): Promise<void> {
   emitUpdateState();
 
   try {
-    if ('serviceWorker' in navigator) {
+    if (!IS_DEV && 'serviceWorker' in navigator) {
       const reg = swRegistration || (await navigator.serviceWorker.getRegistration().catch(() => null));
       if (reg) {
         swRegistration = reg;
-        if (reg.waiting && !swNeedRefresh) {
-          swNeedRefresh = true;
-        }
         await reg.update().catch(() => {});
-        if (reg.waiting && !swNeedRefresh) {
-          swNeedRefresh = true;
+        if (reg.waiting) {
+          // Try immediate activation; only prompt if it stays waiting
+          reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+          await waitForControllerChange(600);
+          if (reg.waiting && !swNeedRefresh) {
+            swNeedRefresh = true;
+          } else if (!reg.waiting && swNeedRefresh) {
+            swNeedRefresh = false;
+          }
         }
       }
     }
@@ -129,6 +201,9 @@ export async function applyPendingAppUpdate(): Promise<void> {
   }
 
   saveNotificationSystemVersion();
+  swNeedRefresh = false;
+  remoteBuildMismatch = null;
+  emitUpdateState();
 
   if ('caches' in window) {
     try {
@@ -139,56 +214,89 @@ export async function applyPendingAppUpdate(): Promise<void> {
     }
   }
 
-  if (updateSWRunner && swNeedRefresh) {
+  if ('serviceWorker' in navigator) {
     try {
-      await Promise.race([
-        updateSWRunner(true),
-        new Promise<void>((resolve) => window.setTimeout(resolve, 2500)),
-      ]);
-    } catch {
-      // Fallback reload below
-    }
-  } else if ('serviceWorker' in navigator) {
-    try {
-      const reg = swRegistration || (await navigator.serviceWorker.getRegistration().catch(() => null));
-      if (reg?.waiting) {
-        reg.waiting.postMessage({ type: 'SKIP_WAITING' });
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 700));
+      const regs = await navigator.serviceWorker.getRegistrations();
+      for (const reg of regs) {
+        if (reg.waiting) {
+          const controllerChanged = waitForControllerChange(1200);
+          reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+          await controllerChanged;
+          if (reg.waiting) {
+            // Force-clear stubborn waiting Service Workers so reload never loops
+            await reg.unregister().catch(() => {});
+          }
+        } else if (IS_DEV && reg.active?.scriptURL.includes('dev-sw.js')) {
+          await reg.unregister().catch(() => {});
+        }
       }
     } catch {
-      // Fallback reload below
+      // Non-fatal
     }
   }
 
-  window.location.reload();
+  if (updateSWRunner && !IS_DEV) {
+    try {
+      await Promise.race([
+        updateSWRunner(false),
+        new Promise<void>((resolve) => window.setTimeout(resolve, 600)),
+      ]);
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  try {
+    const rootUrl = new URL(BASE_URL, window.location.origin).toString();
+    await Promise.race([
+      fetch(rootUrl, { cache: 'reload' }).catch(() => {}),
+      new Promise<void>((resolve) => window.setTimeout(resolve, 1200)),
+    ]);
+  } catch {
+    // Non-fatal
+  }
+
+  try {
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.set('_v', String(Date.now()));
+    window.location.replace(nextUrl.toString());
+  } catch {
+    window.location.reload();
+  }
 }
 
 export function initPwaAndNotificationUpdater(): void {
   if (typeof window === 'undefined' || initialized) return;
   initialized = true;
 
-  try {
-    updateSWRunner = registerSW({
-      immediate: true,
-      onNeedRefresh() {
-        swNeedRefresh = true;
-        emitUpdateState();
-      },
-      onRegisteredSW(_swUrl, registration) {
-        if (registration) {
-          swRegistration = registration;
-          if (registration.waiting) {
-            swNeedRefresh = true;
-            emitUpdateState();
+  stripCacheBustQueryParam();
+
+  if (IS_DEV) {
+    void cleanupLegacyDevServiceWorker();
+  } else {
+    try {
+      updateSWRunner = registerSW({
+        immediate: true,
+        onNeedRefresh() {
+          if (swRegistration?.waiting) {
+            swRegistration.waiting.postMessage({ type: 'SKIP_WAITING' });
           }
-          if (typeof navigator === 'undefined' || navigator.onLine !== false) {
-            void registration.update().catch(() => {});
+        },
+        onRegisteredSW(_swUrl, registration) {
+          if (registration) {
+            swRegistration = registration;
+            if (registration.waiting) {
+              registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+            }
+            if (typeof navigator === 'undefined' || navigator.onLine !== false) {
+              void registration.update().catch(() => {});
+            }
           }
-        }
-      },
-    });
-  } catch {
-    // Service Worker unavailable in restricted environments
+        },
+      });
+    } catch {
+      // Service Worker unavailable in restricted environments
+    }
   }
 
   void checkForPlatformUpdatesNow();

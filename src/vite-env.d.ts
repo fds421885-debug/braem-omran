@@ -1,4 +1,13 @@
 /// <reference types="vite/client" />
 /// <reference types="vite-plugin-pwa/client" />
 
+interface ImportMetaEnv {
+  readonly VITE_BASE_PATH?: string;
+  readonly VITE_APP_BUILD_ID?: string;
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}
+
 declare const __APP_BUILD_ID__: string;
