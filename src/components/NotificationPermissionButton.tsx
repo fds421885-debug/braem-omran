@@ -1,9 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Bell, BellRing, CheckCircle2, Info, X } from 'lucide-react';
+import { Bell, BellRing, CheckCircle2, Info, RefreshCw, X } from 'lucide-react';
 import {
+  NOTIFICATION_SYSTEM_UPGRADED_EVENT,
   getNotificationPermissionState,
+  isNotificationSystemVersionOutdated,
   requestAppNotificationPermission,
+  upgradeNotificationSystem,
   type NotificationPermissionState,
 } from '../services/notificationService';
 
@@ -17,15 +20,21 @@ export const NotificationPermissionButton: React.FC<NotificationPermissionButton
   const [permission, setPermission] = useState<NotificationPermissionState>(() =>
     getNotificationPermissionState()
   );
+  const [outdated, setOutdated] = useState<boolean>(() => isNotificationSystemVersionOutdated());
   const [requesting, setRequesting] = useState(false);
   const [showHelpModal, setShowHelpModal] = useState(false);
 
   useEffect(() => {
-    const sync = () => setPermission(getNotificationPermissionState());
+    const sync = () => {
+      setPermission(getNotificationPermissionState());
+      setOutdated(isNotificationSystemVersionOutdated());
+    };
     window.addEventListener('focus', sync);
+    window.addEventListener(NOTIFICATION_SYSTEM_UPGRADED_EVENT, sync);
     document.addEventListener('visibilitychange', sync);
     return () => {
       window.removeEventListener('focus', sync);
+      window.removeEventListener(NOTIFICATION_SYSTEM_UPGRADED_EVENT, sync);
       document.removeEventListener('visibilitychange', sync);
     };
   }, []);
@@ -37,6 +46,8 @@ export const NotificationPermissionButton: React.FC<NotificationPermissionButton
   const handleClick = async () => {
     const current = getNotificationPermissionState();
     setPermission(current);
+    const isOutdatedNow = isNotificationSystemVersionOutdated();
+    setOutdated(isOutdatedNow);
 
     if (current === 'denied') {
       setShowHelpModal(true);
@@ -44,6 +55,16 @@ export const NotificationPermissionButton: React.FC<NotificationPermissionButton
     }
 
     if (current === 'granted') {
+      if (isOutdatedNow) {
+        setRequesting(true);
+        try {
+          await upgradeNotificationSystem();
+          setOutdated(isNotificationSystemVersionOutdated());
+        } finally {
+          setRequesting(false);
+        }
+        return;
+      }
       setShowHelpModal(true);
       return;
     }
@@ -52,6 +73,7 @@ export const NotificationPermissionButton: React.FC<NotificationPermissionButton
     try {
       const next = await requestAppNotificationPermission();
       setPermission(next);
+      setOutdated(isNotificationSystemVersionOutdated());
       if (next === 'denied') {
         setShowHelpModal(true);
       }
@@ -125,7 +147,7 @@ export const NotificationPermissionButton: React.FC<NotificationPermissionButton
       : null;
 
   if (variant === 'banner') {
-    if (permission === 'granted') {
+    if (permission === 'granted' && !outdated) {
       return (
         <>
           <div className="bg-[#58CC02]/10 border-2 border-[#58CC02]/40 rounded-2xl px-4 py-3 flex items-center justify-between gap-3 text-right">
@@ -141,6 +163,38 @@ export const NotificationPermissionButton: React.FC<NotificationPermissionButton
               </div>
             </div>
             <CheckCircle2 className="w-5 h-5 text-[#46A302] shrink-0" />
+          </div>
+          {helpModal}
+        </>
+      );
+    }
+
+    if (permission === 'granted' && outdated) {
+      return (
+        <>
+          <div className="bg-[#F56900]/10 border-2 border-[#F56900]/40 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-right">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-11 h-11 rounded-2xl bg-[#F56900] text-white flex items-center justify-center shrink-0">
+                <RefreshCw className={`w-5 h-5 ${requesting ? 'animate-spin' : ''}`} />
+              </div>
+              <div className="min-w-0">
+                <p className="font-display text-sm sm:text-base font-extrabold text-[#4A220D]">
+                  تحديث نظام الإشعارات مطلوب
+                </p>
+                <p className="text-xs text-[#7D4E35]">
+                  أنت على نسخة قديمة؛ حدّث الآن لتفعيل الجدولة والتوصيل بعد انقطاع الإنترنت.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleClick}
+              disabled={requesting}
+              className="duo-btn-orange min-h-[44px] px-4 py-2 rounded-2xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
+            >
+              <RefreshCw className={`w-4 h-4 shrink-0 ${requesting ? 'animate-spin' : ''}`} />
+              <span>{requesting ? 'جاري التحديث...' : 'تحديث الإشعارات'}</span>
+            </button>
           </div>
           {helpModal}
         </>
@@ -186,19 +240,26 @@ export const NotificationPermissionButton: React.FC<NotificationPermissionButton
         disabled={requesting}
         title={
           permission === 'granted'
-            ? 'إشعارات الهاتف مفعّلة'
+            ? outdated
+              ? 'تحديث نظام الإشعارات'
+              : 'إشعارات الهاتف مفعّلة'
             : 'تفعيل الإشعارات الفورية على الهاتف'
         }
         className={`min-h-[42px] px-3 py-2 rounded-xl font-display font-bold text-xs inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
-          permission === 'granted'
+          permission === 'granted' && !outdated
             ? 'bg-[#58CC02]/12 border-2 border-[#58CC02]/50 text-[#46A302] hover:bg-[#58CC02]/20'
             : 'duo-btn-cream'
         }`}
       >
-        {permission === 'granted' ? (
+        {permission === 'granted' && !outdated ? (
           <>
             <BellRing className="w-4 h-4 text-[#46A302] shrink-0" />
             <span className="hidden sm:inline">الإشعارات مفعّلة</span>
+          </>
+        ) : permission === 'granted' && outdated ? (
+          <>
+            <RefreshCw className={`w-4 h-4 text-[#F56900] shrink-0 ${requesting ? 'animate-spin' : ''}`} />
+            <span>{requesting ? 'تحديث...' : 'تحديث الإشعارات'}</span>
           </>
         ) : (
           <>

@@ -1,8 +1,8 @@
 import {createRoot} from 'react-dom/client';
-import {registerSW} from 'virtual:pwa-register';
+import {initPwaAndNotificationUpdater} from './services/pwaUpdateService';
 import App from './App.tsx';
 import './index.css';
 
-registerSW({immediate: true});
+initPwaAndNotificationUpdater();
 
 createRoot(document.getElementById('root')!).render(<App />);

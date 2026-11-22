@@ -1,5 +1,15 @@
 /* eslint-disable no-restricted-globals */
-// Service Worker extension for braem-omran notifications & deep-link focus
+// Service Worker extension for braem-omran notifications, immediate updates & deep-link focus
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(self.clients.claim());
+});
+
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
 

@@ -8,14 +8,18 @@ import {VitePWA} from 'vite-plugin-pwa';
 export default defineConfig(() => {
   const rawBase = process.env.VITE_BASE_PATH || '/';
   const base = rawBase.endsWith('/') ? rawBase : `${rawBase}/`;
+  const buildId = `v${Date.now()}`;
 
   return {
     base,
+    define: {
+      __APP_BUILD_ID__: JSON.stringify(buildId),
+    },
     plugins: [
       react(),
       tailwindcss(),
       VitePWA({
-        registerType: 'autoUpdate',
+        registerType: 'prompt',
         includeAssets: [
           'icon.svg',
           'apple-touch-icon.png',
@@ -59,10 +63,15 @@ export default defineConfig(() => {
         },
         workbox: {
           importScripts: [`${base}sw-notifications.js`],
+          cleanupOutdatedCaches: true,
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,jpg,woff,woff2}'],
-          navigateFallbackDenylist: [/^\/api\//, /\/pdfjs\//],
+          navigateFallbackDenylist: [/^\/api\//, /\/pdfjs\//, /\/version\.json/],
           runtimeCaching: [
+            {
+              urlPattern: /\/version\.json(\?.*)?$/i,
+              handler: 'NetworkOnly',
+            },
             {
               urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
               handler: 'CacheFirst',
@@ -106,6 +115,12 @@ export default defineConfig(() => {
           const pdfjsRoot = path.resolve(__dirname, 'node_modules/pdfjs-dist');
           server.middlewares.use((req, res, next) => {
             const reqUrl = (req.url || '').split('?')[0];
+            if (reqUrl === `${base}version.json` || reqUrl === '/version.json') {
+              res.setHeader('Content-Type', 'application/json; charset=utf-8');
+              res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+              res.end(JSON.stringify({ buildId }));
+              return;
+            }
             const prefix = `${base}pdfjs/`;
             const altPrefix = '/pdfjs/';
             let relPath: string | null = null;
@@ -176,6 +191,13 @@ export default defineConfig(() => {
           const fallback404 = path.resolve(distDir, '404.html');
           if (fs.existsSync(indexHtml)) {
             fs.copyFileSync(indexHtml, fallback404);
+          }
+          if (fs.existsSync(distDir)) {
+            fs.writeFileSync(
+              path.resolve(distDir, 'version.json'),
+              JSON.stringify({ buildId }),
+              'utf8'
+            );
           }
         },
       },

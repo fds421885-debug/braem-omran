@@ -12,6 +12,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { ModernLoader } from './components/ModernLoader';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { RoleWelcomeView } from './components/RoleWelcomeView';
+import { StartupNotificationGate } from './components/StartupNotificationGate';
 import { SupervisorDashboard } from './components/SupervisorDashboard';
 import { auth as primaryAuth, db as primaryDb } from './firebase';
 import { getAuthForConfig } from './services/multiDb';
@@ -405,6 +406,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <AppContent />
+      <StartupNotificationGate />
       <OfflineIndicator />
     </ErrorBoundary>
   );

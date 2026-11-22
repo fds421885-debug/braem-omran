@@ -32,7 +32,10 @@ const DISMISSED_STORAGE_PREFIX = 'braem_dismissed_broadcasts_v1_';
 const NOTIFIED_OS_STORAGE_PREFIX = 'braem_notified_broadcasts_v1_';
 const OUTBOX_STORAGE_KEY = 'braem_broadcast_outbox_v1';
 const CACHE_STORAGE_PREFIX = 'braem_cached_broadcasts_v1_';
+const NOTIF_SYSTEM_VERSION_KEY = 'braem_notif_system_version_v1';
+export const CURRENT_NOTIFICATION_SYSTEM_VERSION = '2026.11.22.1';
 export const BROADCAST_OUTBOX_EVENT = 'braem-broadcast-outbox-changed';
+export const NOTIFICATION_SYSTEM_UPGRADED_EVENT = 'braem-notification-system-upgraded';
 const BROADCAST_WRITE_TIMEOUT_MS = 7000;
 
 export interface PendingBroadcastOutboxItem {
@@ -229,6 +232,33 @@ export async function showSystemBroadcastNotification(msg: {
   }
 }
 
+export function getSavedNotificationSystemVersion(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage.getItem(NOTIF_SYSTEM_VERSION_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function saveNotificationSystemVersion(
+  version = CURRENT_NOTIFICATION_SYSTEM_VERSION
+): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(NOTIF_SYSTEM_VERSION_KEY, version);
+    window.dispatchEvent(new CustomEvent(NOTIFICATION_SYSTEM_UPGRADED_EVENT));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+export function isNotificationSystemVersionOutdated(): boolean {
+  if (typeof window === 'undefined') return false;
+  if (getNotificationPermissionState() !== 'granted') return false;
+  return getSavedNotificationSystemVersion() !== CURRENT_NOTIFICATION_SYSTEM_VERSION;
+}
+
 export async function requestAppNotificationPermission(): Promise<NotificationPermissionState> {
   if (typeof window === 'undefined' || typeof Notification === 'undefined') {
     return 'unsupported';
@@ -236,17 +266,54 @@ export async function requestAppNotificationPermission(): Promise<NotificationPe
   try {
     const result = await Notification.requestPermission();
     if (result === 'granted') {
+      saveNotificationSystemVersion(CURRENT_NOTIFICATION_SYSTEM_VERSION);
+      if ('serviceWorker' in navigator) {
+        void navigator.serviceWorker
+          .getRegistration()
+          .then((reg) => reg?.update().catch(() => {}))
+          .catch(() => {});
+      }
       playBroadcastChime();
       await showSystemBroadcastNotification({
         id: 'welcome_enabled',
         title: 'براعم عمران · تم تفعيل الإشعارات',
-        body: 'ستصلك الآن إشعارات المنصة ورسائل الإدارة مباشرة على جهازك.',
+        body: 'ستصلك الآن إشعارات المنصة والمجمع الفورية والمجدولة وحتى بعد عودة الإنترنت مباشرة.',
       });
     }
     return result as NotificationPermissionState;
   } catch {
     return getNotificationPermissionState();
   }
+}
+
+export async function upgradeNotificationSystem(): Promise<{ upgradedVersion: string }> {
+  if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+    try {
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (reg) {
+        await reg.update().catch(() => {});
+        if (reg.waiting) {
+          reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+        }
+      }
+    } catch {
+      // Non-fatal if offline or no SW registered yet
+    }
+  }
+
+  saveNotificationSystemVersion(CURRENT_NOTIFICATION_SYSTEM_VERSION);
+  await flushPendingBroadcastOutbox().catch(() => {});
+
+  if (getNotificationPermissionState() === 'granted') {
+    playBroadcastChime();
+    await showSystemBroadcastNotification({
+      id: 'notif_system_upgraded',
+      title: 'براعم عمران · تم تحديث نظام الإشعارات',
+      body: 'أصبح جهازك مهيأً الآن لاستقبال الإشعارات المجدولة ورسائل المجمعات والتوصيل بعد عودة الإنترنت.',
+    });
+  }
+
+  return { upgradedVersion: CURRENT_NOTIFICATION_SYSTEM_VERSION };
 }
 
 function normalizeBroadcastDoc(id: string, raw: Record<string, unknown>): BroadcastMessageRecord {
