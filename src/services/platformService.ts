@@ -24,6 +24,8 @@ import primaryFirebaseConfig from '../../firebase-applet-config.json';
 import {
   ADMIN_QUADRUPLE_NAME,
   COMPLEX_FEATURE_TAB_LABELS,
+  QURAN_REVIEW_TYPE_LABELS,
+  SPARK_FREE_TIER_BYTES,
   TAB_SHARD_MAX_BYTES,
   type AccountRecord,
   type ActiveSession,
@@ -34,18 +36,26 @@ import {
   type BookRecord,
   type BookTextSegment,
   type BookWordAudioRecord,
+  type CollectionUsageStat,
   type ComplexFeatureTabKey,
   type ComplexRecord,
   type ConnectedDatabaseInfo,
   type CurriculumRecord,
   type DailyStatsRecord,
+  type DatabaseUsageDashboardReport,
   type DbRegistryEntry,
   type ExternalFirebaseConfig,
   type HalaqaRankingItem,
   type HalaqaRecord,
   type InviteLinkRecord,
   type MosqueRecord,
+  type PhysicalDatabaseUsageSummary,
   type QuickLinkRecord,
+  type QuranReviewType,
+  type StudentMushafMistakesRecord,
+  type StudentQuranNewHifzItem,
+  type StudentQuranPlanRecord,
+  type StudentQuranReviewItem,
   type StudentRankingItem,
   type TabDbPoolMap,
   type TabDbShard,
@@ -4361,7 +4371,7 @@ async function measureTabUsageOnDb(
   let docsCount = 0;
   const colMap: Record<ComplexFeatureTabKey, string[]> = {
     attendance: ['attendance'],
-    curricula: ['curricula'],
+    curricula: ['curricula', 'studentQuranPlans', 'studentMushafMistakes'],
     library: ['books', 'bookPages', 'wordAudio'],
     mosques_halaqat: ['mosques', 'halaqat'],
     accounts_invites: ['accounts', 'inviteLinks', 'quickLinks'],
@@ -4423,27 +4433,31 @@ async function migrateSingleTabRecords(params: {
 
   if (tabKey === 'curricula') {
     for (const sDb of uniqueSources) {
-      const snap = await getDocsFresh(
-        query(collection(sDb, 'curricula'), where('complexId', '==', complexId))
-      ).catch(() => null);
-      if (!snap) continue;
-      for (const d of snap.docs) {
-        const data = d.data() as Record<string, unknown>;
-        movedBytes += estimateRecordBytes(data);
-        if (sDb !== destDb) {
-          await copyDocWithTimestamp(destDb, 'curricula', d.id, data);
-          await deleteDoc(doc(sDb, 'curricula', d.id)).catch(() => {});
+      for (const colName of ['curricula', 'studentQuranPlans', 'studentMushafMistakes']) {
+        const snap = await getDocsFresh(
+          query(collection(sDb, colName), where('complexId', '==', complexId))
+        ).catch(() => null);
+        if (!snap) continue;
+        for (const d of snap.docs) {
+          const data = d.data() as Record<string, unknown>;
+          movedBytes += estimateRecordBytes(data);
+          if (sDb !== destDb) {
+            await copyDocWithTimestamp(destDb, colName, d.id, data);
+            await deleteDoc(doc(sDb, colName, d.id)).catch(() => {});
+          }
+          movedCount++;
         }
-        movedCount++;
       }
     }
     if (destDb !== primaryDb) {
-      const pSnap = await getDocs(
-        query(collection(primaryDb, 'curricula'), where('complexId', '==', complexId))
-      ).catch(() => null);
-      if (pSnap) {
-        for (const d of pSnap.docs) {
-          await deleteDoc(doc(primaryDb, 'curricula', d.id)).catch(() => {});
+      for (const colName of ['curricula', 'studentQuranPlans', 'studentMushafMistakes']) {
+        const pSnap = await getDocs(
+          query(collection(primaryDb, colName), where('complexId', '==', complexId))
+        ).catch(() => null);
+        if (pSnap) {
+          for (const d of pSnap.docs) {
+            await deleteDoc(doc(primaryDb, colName, d.id)).catch(() => {});
+          }
         }
       }
     }
@@ -5092,6 +5106,44 @@ export async function cloneComplexToBackupDatabase(params: {
     totalCopiedDocs++;
   }
 
+  const curriculaReadDbs = getReadDbsForComplexTab(workspace, 'curricula');
+  const seenQuranPlanIds = new Set<string>();
+  const seenMistakeIds = new Set<string>();
+  for (const curDb of curriculaReadDbs) {
+    const qpSnap = await getDocsFresh(
+      query(collection(curDb, 'studentQuranPlans'), where('complexId', '==', workspace.complex.id))
+    ).catch(() => null);
+    if (qpSnap) {
+      for (const d of qpSnap.docs) {
+        if (seenQuranPlanIds.has(d.id)) continue;
+        seenQuranPlanIds.add(d.id);
+        await upsertTransferredDoc(
+          backupDb,
+          'studentQuranPlans',
+          d.id,
+          d.data() as Record<string, unknown>
+        );
+        totalCopiedDocs++;
+      }
+    }
+    const mmSnap = await getDocsFresh(
+      query(collection(curDb, 'studentMushafMistakes'), where('complexId', '==', workspace.complex.id))
+    ).catch(() => null);
+    if (mmSnap) {
+      for (const d of mmSnap.docs) {
+        if (seenMistakeIds.has(d.id)) continue;
+        seenMistakeIds.add(d.id);
+        await upsertTransferredDoc(
+          backupDb,
+          'studentMushafMistakes',
+          d.id,
+          d.data() as Record<string, unknown>
+        );
+        totalCopiedDocs++;
+      }
+    }
+  }
+
   return { totalCopiedDocs };
 }
 
@@ -5118,7 +5170,32 @@ export async function exportComplexTabJsonPayload(
     data = { attendance: records };
   } else if (tabKey === 'curricula') {
     const records = await listCurriculaInComplex(workspace);
-    data = { curricula: records };
+    const qpMap = new Map<string, StudentQuranPlanRecord>();
+    const mmMap = new Map<string, StudentMushafMistakesRecord>();
+    for (const curDb of getReadDbsForComplexTab(workspace, 'curricula')) {
+      const [qpSnap, mmSnap] = await Promise.all([
+        getDocsFresh(
+          query(collection(curDb, 'studentQuranPlans'), where('complexId', '==', workspace.complex.id))
+        ).catch(() => null),
+        getDocsFresh(
+          query(
+            collection(curDb, 'studentMushafMistakes'),
+            where('complexId', '==', workspace.complex.id)
+          )
+        ).catch(() => null),
+      ]);
+      qpSnap?.forEach((d) => {
+        if (!qpMap.has(d.id)) qpMap.set(d.id, d.data() as StudentQuranPlanRecord);
+      });
+      mmSnap?.forEach((d) => {
+        if (!mmMap.has(d.id)) mmMap.set(d.id, d.data() as StudentMushafMistakesRecord);
+      });
+    }
+    data = {
+      curricula: records,
+      studentQuranPlans: Array.from(qpMap.values()),
+      studentMushafMistakes: Array.from(mmMap.values()),
+    };
   } else if (tabKey === 'library') {
     const books = await listBooksInComplex(workspace);
     const bookPages: BookPageRecord[] = [];
@@ -5283,6 +5360,65 @@ export async function importComplexTabJsonPayload(params: {
         true,
         async (writeDb) => {
           await upsertTransferredDoc(writeDb, 'curricula', cur.id, payload);
+        }
+      );
+      importedCount++;
+    }
+
+    const quranPlans = Array.isArray(sourceData.studentQuranPlans)
+      ? (sourceData.studentQuranPlans as StudentQuranPlanRecord[])
+      : [];
+    for (const qp of quranPlans) {
+      if (!qp || !qp.studentId || !qp.dateKey) continue;
+      const planId = buildQuranPlanDocId(qp.studentId, qp.dateKey);
+      const payload = {
+        id: planId,
+        complexId,
+        mosqueId: qp.mosqueId || '',
+        halaqaId: qp.halaqaId || '',
+        studentId: qp.studentId,
+        studentName: String(qp.studentName || 'طالب').slice(0, 120),
+        dateKey: qp.dateKey,
+        todayNew: sanitizeNewHifzItem(qp.todayNew),
+        todayReviews: sanitizeReviewItems(qp.todayReviews),
+        tomorrowNew: sanitizeNewHifzItem(qp.tomorrowNew),
+        tomorrowReviews: sanitizeReviewItems(qp.tomorrowReviews),
+        recordedBy: qp.recordedBy || auth.currentUser?.uid || 'admin',
+        recordedByName: String(qp.recordedByName || 'استيراد JSON').slice(0, 120),
+      };
+      await executeTabWriteWithRollover(
+        workspace,
+        'curricula',
+        estimateRecordBytes(payload),
+        true,
+        async (writeDb) => {
+          await upsertTransferredDoc(writeDb, 'studentQuranPlans', planId, payload);
+        }
+      );
+      importedCount++;
+    }
+
+    const mistakesList = Array.isArray(sourceData.studentMushafMistakes)
+      ? (sourceData.studentMushafMistakes as StudentMushafMistakesRecord[])
+      : [];
+    for (const mm of mistakesList) {
+      if (!mm || !mm.studentId) continue;
+      const recId = buildMushafMistakesDocId(mm.studentId);
+      const payload = {
+        id: recId,
+        complexId,
+        studentId: mm.studentId,
+        studentName: String(mm.studentName || 'طالب').slice(0, 120),
+        mistakes: sanitizeMistakesMap(mm.mistakes),
+        updatedBy: mm.updatedBy || auth.currentUser?.uid || 'admin',
+      };
+      await executeTabWriteWithRollover(
+        workspace,
+        'curricula',
+        estimateRecordBytes(payload),
+        true,
+        async (writeDb) => {
+          await upsertTransferredDoc(writeDb, 'studentMushafMistakes', recId, payload);
         }
       );
       importedCount++;
@@ -5470,4 +5606,657 @@ export async function importComplexTabJsonPayload(params: {
 
   return { importedCount };
 }
+
+// ============================================================================
+// STUDENT QURAN PLANS (الحفظ والمراجعة اليومية والغد) & PER-STUDENT MUSHAF MISTAKES
+// ============================================================================
+
+export function buildQuranPlanDocId(studentId: string, dateKey: string): string {
+  const cleanStudent = studentId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const cleanDate = dateKey.replace(/[^0-9-]/g, '');
+  return `qp_${cleanStudent}_${cleanDate}`.slice(0, 128);
+}
+
+export function buildMushafMistakesDocId(studentId: string): string {
+  const cleanStudent = studentId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return `mm_${cleanStudent}`.slice(0, 128);
+}
+
+function clampSurahNum(n: unknown): number {
+  const num = Number(n);
+  if (!Number.isFinite(num)) return 1;
+  return Math.max(1, Math.min(114, Math.floor(num)));
+}
+
+function clampAyahNum(n: unknown): number {
+  const num = Number(n);
+  if (!Number.isFinite(num)) return 1;
+  return Math.max(1, Math.min(286, Math.floor(num)));
+}
+
+function sanitizeNewHifzItem(
+  raw: StudentQuranNewHifzItem | null | undefined
+): StudentQuranNewHifzItem | null {
+  if (!raw || typeof raw !== 'object') return null;
+  return {
+    startSurah: clampSurahNum(raw.startSurah),
+    startAyah: clampAyahNum(raw.startAyah),
+    endSurah: clampSurahNum(raw.endSurah),
+    endAyah: clampAyahNum(raw.endAyah),
+    ...(raw.reciterId ? { reciterId: String(raw.reciterId).slice(0, 64) } : {}),
+    ...(raw.note ? { note: String(raw.note).trim().slice(0, 240) } : {}),
+    ...(typeof raw.completed === 'boolean' ? { completed: raw.completed } : {}),
+  };
+}
+
+function sanitizeReviewItems(rawList: unknown): StudentQuranReviewItem[] {
+  if (!Array.isArray(rawList)) return [];
+  const validTypes = new Set<QuranReviewType>(Object.keys(QURAN_REVIEW_TYPE_LABELS) as QuranReviewType[]);
+  return rawList.slice(0, 50).map((raw) => {
+    const r = (raw || {}) as Partial<StudentQuranReviewItem>;
+    const reviewType: QuranReviewType =
+      r.reviewType && validTypes.has(r.reviewType) ? r.reviewType : 'surah_review';
+    return {
+      id: r.id && typeof r.id === 'string' ? r.id.slice(0, 64) : generateValidId('rev'),
+      reviewType,
+      ...(r.customLabel ? { customLabel: String(r.customLabel).trim().slice(0, 80) } : {}),
+      startSurah: clampSurahNum(r.startSurah),
+      startAyah: clampAyahNum(r.startAyah),
+      endSurah: clampSurahNum(r.endSurah),
+      endAyah: clampAyahNum(r.endAyah),
+      ...(r.note ? { note: String(r.note).trim().slice(0, 240) } : {}),
+      ...(typeof r.completed === 'boolean' ? { completed: r.completed } : {}),
+    };
+  });
+}
+
+function sanitizeMistakesMap(raw: unknown): Record<string, number> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const clean: Record<string, number> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!/^\d{1,3}:\d{1,3}$/.test(k)) continue;
+    const count = Math.floor(Number(v));
+    if (Number.isFinite(count) && count >= 1 && count <= 999) {
+      clean[k] = count;
+    }
+  }
+  return clean;
+}
+
+export async function listStudentQuranPlanHistory(
+  workspace: ComplexWorkspaceData,
+  studentId: string
+): Promise<StudentQuranPlanRecord[]> {
+  try {
+    const readDbs = getReadDbsForComplexTab(workspace, 'curricula');
+    const byId = new Map<string, StudentQuranPlanRecord>();
+    await Promise.all(
+      readDbs.map(async (db) => {
+        const snap = await getDocsFresh(
+          query(collection(db, 'studentQuranPlans'), where('studentId', '==', studentId))
+        ).catch(() => null);
+        snap?.forEach((d) => {
+          const rec = d.data() as StudentQuranPlanRecord;
+          if (rec.complexId === workspace.complex.id) {
+            byId.set(rec.id, rec);
+          }
+        });
+      })
+    );
+    return Array.from(byId.values()).sort((a, b) => b.dateKey.localeCompare(a.dateKey));
+  } catch {
+    return [];
+  }
+}
+
+export async function loadStudentQuranPlanForDate(params: {
+  workspace: ComplexWorkspaceData;
+  studentId: string;
+  dateKey: string;
+}): Promise<{
+  savedPlan: StudentQuranPlanRecord | null;
+  historyRecords: StudentQuranPlanRecord[];
+  carriedFromDate: string | null;
+  effectiveTodayNew: StudentQuranNewHifzItem | null;
+  effectiveTodayReviews: StudentQuranReviewItem[];
+  effectiveTomorrowNew: StudentQuranNewHifzItem | null;
+  effectiveTomorrowReviews: StudentQuranReviewItem[];
+}> {
+  const { workspace, studentId, dateKey } = params;
+  const historyRecords = await listStudentQuranPlanHistory(workspace, studentId);
+  const exact = historyRecords.find((r) => r.dateKey === dateKey) || null;
+
+  if (exact) {
+    return {
+      savedPlan: exact,
+      historyRecords,
+      carriedFromDate: null,
+      effectiveTodayNew: exact.todayNew || null,
+      effectiveTodayReviews: Array.isArray(exact.todayReviews) ? exact.todayReviews : [],
+      effectiveTomorrowNew: exact.tomorrowNew || null,
+      effectiveTomorrowReviews: Array.isArray(exact.tomorrowReviews) ? exact.tomorrowReviews : [],
+    };
+  }
+
+  // Carry over automatically from the most recent recorded date prior to `dateKey`
+  const prior = historyRecords.find(
+    (r) => r.dateKey < dateKey && (r.tomorrowNew !== null || (r.tomorrowReviews || []).length > 0)
+  );
+
+  if (prior) {
+    return {
+      savedPlan: null,
+      historyRecords,
+      carriedFromDate: prior.dateKey,
+      effectiveTodayNew: prior.tomorrowNew
+        ? { ...prior.tomorrowNew, completed: false }
+        : null,
+      effectiveTodayReviews: (prior.tomorrowReviews || []).map((rev) => ({
+        ...rev,
+        id: generateValidId('rev'),
+        completed: false,
+      })),
+      effectiveTomorrowNew: null,
+      effectiveTomorrowReviews: [],
+    };
+  }
+
+  return {
+    savedPlan: null,
+    historyRecords,
+    carriedFromDate: null,
+    effectiveTodayNew: null,
+    effectiveTodayReviews: [],
+    effectiveTomorrowNew: null,
+    effectiveTomorrowReviews: [],
+  };
+}
+
+export async function saveStudentQuranPlan(params: {
+  workspace: ComplexWorkspaceData;
+  mosqueId: string;
+  halaqaId: string;
+  studentId: string;
+  studentName: string;
+  dateKey: string;
+  todayNew: StudentQuranNewHifzItem | null;
+  todayReviews: StudentQuranReviewItem[];
+  tomorrowNew: StudentQuranNewHifzItem | null;
+  tomorrowReviews: StudentQuranReviewItem[];
+  recordedBy: string;
+  recordedByName: string;
+}): Promise<StudentQuranPlanRecord> {
+  const { workspace, mosqueId, halaqaId, studentId, studentName, dateKey, recordedBy, recordedByName } =
+    params;
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
+    throw new Error('صيغة التاريخ غير صالحة.');
+  }
+
+  const planId = buildQuranPlanDocId(studentId, dateKey);
+  const cleanTodayNew = sanitizeNewHifzItem(params.todayNew);
+  const cleanTodayReviews = sanitizeReviewItems(params.todayReviews);
+  const cleanTomorrowNew = sanitizeNewHifzItem(params.tomorrowNew);
+  const cleanTomorrowReviews = sanitizeReviewItems(params.tomorrowReviews);
+  const cleanStudentName = (studentName || 'طالب').trim().slice(0, 120) || 'طالب';
+  const cleanRecorder = (recordedBy || auth.currentUser?.uid || 'teacher').slice(0, 128);
+  const cleanRecorderName = (recordedByName || 'المعلم').trim().slice(0, 120) || 'المعلم';
+
+  const located = await findExistingDocInTabPool(
+    workspace,
+    'curricula',
+    'studentQuranPlans',
+    planId
+  );
+
+  if (located.exists) {
+    await updateDoc(doc(located.db, 'studentQuranPlans', planId), {
+      mosqueId: (mosqueId || '').slice(0, 128),
+      halaqaId: (halaqaId || '').slice(0, 128),
+      studentName: cleanStudentName,
+      todayNew: cleanTodayNew,
+      todayReviews: cleanTodayReviews,
+      tomorrowNew: cleanTomorrowNew,
+      tomorrowReviews: cleanTomorrowReviews,
+      recordedBy: cleanRecorder,
+      recordedByName: cleanRecorderName,
+      updatedAt: serverTimestamp(),
+    });
+  } else {
+    const payload = {
+      id: planId,
+      complexId: workspace.complex.id,
+      mosqueId: (mosqueId || '').slice(0, 128),
+      halaqaId: (halaqaId || '').slice(0, 128),
+      studentId,
+      studentName: cleanStudentName,
+      dateKey,
+      todayNew: cleanTodayNew,
+      todayReviews: cleanTodayReviews,
+      tomorrowNew: cleanTomorrowNew,
+      tomorrowReviews: cleanTomorrowReviews,
+      recordedBy: cleanRecorder,
+      recordedByName: cleanRecorderName,
+    };
+    const byteSize = estimateRecordBytes(payload);
+    await executeTabWriteWithRollover(workspace, 'curricula', byteSize, true, async (targetDb) => {
+      await setDoc(doc(targetDb, 'studentQuranPlans', planId), {
+        ...payload,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    });
+  }
+
+  return {
+    id: planId,
+    complexId: workspace.complex.id,
+    mosqueId: (mosqueId || '').slice(0, 128),
+    halaqaId: (halaqaId || '').slice(0, 128),
+    studentId,
+    studentName: cleanStudentName,
+    dateKey,
+    todayNew: cleanTodayNew,
+    todayReviews: cleanTodayReviews,
+    tomorrowNew: cleanTomorrowNew,
+    tomorrowReviews: cleanTomorrowReviews,
+    recordedBy: cleanRecorder,
+    recordedByName: cleanRecorderName,
+  };
+}
+
+export async function loadStudentMushafMistakes(
+  workspace: ComplexWorkspaceData,
+  studentId: string
+): Promise<Record<string, number>> {
+  const docId = buildMushafMistakesDocId(studentId);
+  const readDbs = getReadDbsForComplexTab(workspace, 'curricula');
+  for (const db of readDbs) {
+    const snap = await getDocFresh(doc(db, 'studentMushafMistakes', docId)).catch(() => null);
+    if (snap?.exists()) {
+      const data = snap.data() as StudentMushafMistakesRecord;
+      return sanitizeMistakesMap(data.mistakes);
+    }
+  }
+  return {};
+}
+
+export async function saveStudentMushafMistakes(params: {
+  workspace: ComplexWorkspaceData;
+  studentId: string;
+  studentName: string;
+  mistakes: Record<string, number>;
+  updatedBy: string;
+}): Promise<Record<string, number>> {
+  const { workspace, studentId, studentName, updatedBy } = params;
+  const docId = buildMushafMistakesDocId(studentId);
+  const cleanMistakes = sanitizeMistakesMap(params.mistakes);
+  const cleanStudentName = (studentName || 'طالب').trim().slice(0, 120) || 'طالب';
+  const cleanUpdater = (updatedBy || auth.currentUser?.uid || 'teacher').slice(0, 128);
+
+  const located = await findExistingDocInTabPool(
+    workspace,
+    'curricula',
+    'studentMushafMistakes',
+    docId
+  );
+
+  if (located.exists) {
+    await updateDoc(doc(located.db, 'studentMushafMistakes', docId), {
+      studentName: cleanStudentName,
+      mistakes: cleanMistakes,
+      updatedBy: cleanUpdater,
+      updatedAt: serverTimestamp(),
+    });
+  } else {
+    const payload = {
+      id: docId,
+      complexId: workspace.complex.id,
+      studentId,
+      studentName: cleanStudentName,
+      mistakes: cleanMistakes,
+      updatedBy: cleanUpdater,
+    };
+    const byteSize = estimateRecordBytes(payload);
+    await executeTabWriteWithRollover(workspace, 'curricula', byteSize, true, async (targetDb) => {
+      await setDoc(doc(targetDb, 'studentMushafMistakes', docId), {
+        ...payload,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    });
+  }
+
+  return cleanMistakes;
+}
+
+// ============================================================================
+// STANDALONE TEACHER WORKSPACE LOADER
+// ============================================================================
+
+export async function loadTeacherWorkspace(session: ActiveSession): Promise<{
+  workspace: ComplexWorkspaceData;
+  teacherAccount: AccountRecord;
+}> {
+  const workspace = await loadSupervisorWorkspace(session);
+  const realAcc =
+    workspace.accounts.find((a) => a.id === session.account.id) ||
+    (session.account.uid
+      ? workspace.accounts.find((a) => a.uid === session.account.uid)
+      : undefined) ||
+    session.account;
+  return { workspace, teacherAccount: realAcc };
+}
+
+// ============================================================================
+// LIVE MULTI-DATABASE USAGE TELEMETRY FOR PROGRAMMER ADMIN ("قواعد البيانات")
+// ============================================================================
+
+const ALL_TRACKED_COLLECTIONS: {
+  col: string;
+  label: string;
+  tabGroup: ComplexFeatureTabKey | 'core_broadcasts';
+  primaryOnly?: boolean;
+}[] = [
+  { col: 'complexes', label: 'المجمعات', tabGroup: 'mosques_halaqat' },
+  { col: 'mosques', label: 'المساجد', tabGroup: 'mosques_halaqat' },
+  { col: 'halaqat', label: 'الحلقات', tabGroup: 'mosques_halaqat' },
+  { col: 'accounts', label: 'الحسابات والأعضاء', tabGroup: 'accounts_invites' },
+  { col: 'nameIndex', label: 'فهرس الأسماء الفريدة', tabGroup: 'accounts_invites' },
+  { col: 'inviteLinks', label: 'روابط التسجيل', tabGroup: 'accounts_invites' },
+  { col: 'quickLinks', label: 'روابط الدخول السريع', tabGroup: 'accounts_invites' },
+  { col: 'attendance', label: 'الحضور والغياب', tabGroup: 'attendance' },
+  { col: 'books', label: 'الكتب والملفات', tabGroup: 'library' },
+  { col: 'bookPages', label: 'صفحات الكتب والصور', tabGroup: 'library' },
+  { col: 'wordAudio', label: 'صوتيات الكلمات والتهجي', tabGroup: 'library' },
+  { col: 'curricula', label: 'المقررات', tabGroup: 'curricula' },
+  { col: 'studentQuranPlans', label: 'خطط الحفظ والمراجعة', tabGroup: 'curricula' },
+  { col: 'studentMushafMistakes', label: 'أخطاء تلاوة الطلاب', tabGroup: 'curricula' },
+  { col: 'broadcasts', label: 'الإشعارات والرسائل', tabGroup: 'core_broadcasts' },
+  { col: 'stats', label: 'الإحصائيات', tabGroup: 'core_broadcasts' },
+  { col: 'dbRegistry', label: 'سجل القواعد المرتبطة', tabGroup: 'core_broadcasts', primaryOnly: true },
+];
+
+export async function inspectAllDatabasesUsage(params: {
+  complexes: DiscoveredComplex[];
+  selectedComplexId: string; // 'all' | 'primary' | complexId
+}): Promise<DatabaseUsageDashboardReport> {
+  const { complexes, selectedComplexId } = params;
+  const nowMs = Date.now();
+
+  interface DbTargetMeta {
+    dbKey: string;
+    dbLabel: string;
+    projectId: string;
+    firestoreDatabaseId: string;
+    isPrimary: boolean;
+    db: Firestore;
+    roleTags: Set<string>;
+    complexIds: Set<string>;
+    complexNames: Set<string>;
+    limitBytes: number;
+  }
+
+  const dbMap = new Map<string, DbTargetMeta>();
+  const primaryProjectId = primaryFirebaseConfig.projectId;
+  const primaryDbId = primaryFirebaseConfig.firestoreDatabaseId || '(default)';
+
+  const ensureEntry = (meta: {
+    dbKey: string;
+    dbLabel: string;
+    projectId: string;
+    firestoreDatabaseId: string;
+    isPrimary: boolean;
+    db: Firestore;
+    limitBytes?: number;
+  }): DbTargetMeta => {
+    const existing = dbMap.get(meta.dbKey);
+    if (existing) {
+      if (meta.limitBytes && meta.limitBytes > existing.limitBytes) {
+        existing.limitBytes = meta.limitBytes;
+      }
+      return existing;
+    }
+    const created: DbTargetMeta = {
+      dbKey: meta.dbKey,
+      dbLabel: meta.dbLabel,
+      projectId: meta.projectId,
+      firestoreDatabaseId: meta.firestoreDatabaseId,
+      isPrimary: meta.isPrimary,
+      db: meta.db,
+      roleTags: new Set<string>(),
+      complexIds: new Set<string>(),
+      complexNames: new Set<string>(),
+      limitBytes: meta.limitBytes || SPARK_FREE_TIER_BYTES,
+    };
+    dbMap.set(meta.dbKey, created);
+    return created;
+  };
+
+  if (selectedComplexId === 'all' || selectedComplexId === 'primary') {
+    const pMeta = ensureEntry({
+      dbKey: 'primary',
+      dbLabel: 'القاعدة الأساسية للموقع',
+      projectId: primaryProjectId,
+      firestoreDatabaseId: primaryDbId,
+      isPrimary: true,
+      db: primaryDb,
+      limitBytes: SPARK_FREE_TIER_BYTES,
+    });
+    pMeta.roleTags.add('قاعدة المنصة الرئيسية (Primary)');
+  }
+
+  const targetComplexes =
+    selectedComplexId === 'all'
+      ? complexes
+      : selectedComplexId === 'primary'
+      ? complexes.filter((c) => !c.isExternal)
+      : complexes.filter((c) => c.id === selectedComplexId);
+
+  for (const comp of targetComplexes) {
+    const ownerProject = comp.ownerConfig?.projectId || primaryProjectId;
+    const ownerDbId = comp.ownerConfig?.firestoreDatabaseId || '(default)';
+    const ownerMeta = ensureEntry({
+      dbKey: comp.isExternal ? comp.ownerDbKey : 'primary',
+      dbLabel: comp.isExternal ? comp.ownerDbLabel : 'القاعدة الأساسية للموقع',
+      projectId: ownerProject,
+      firestoreDatabaseId: ownerDbId,
+      isPrimary: !comp.isExternal,
+      db: comp.ownerDb,
+      limitBytes: SPARK_FREE_TIER_BYTES,
+    });
+    ownerMeta.roleTags.add(`قاعدة مجمع: ${comp.name}`);
+    ownerMeta.complexIds.add(comp.id);
+    ownerMeta.complexNames.add(comp.name);
+
+    // Inspect tabPools & mosques/halaqat configs for this complex
+    const ws = await loadComplexWorkspace(comp).catch(() => null);
+    if (ws) {
+      for (const [mId, conf] of Object.entries(ws.mosqueConfigMap)) {
+        if (!conf) continue;
+        const mKey = dbKeyFromConfig(conf);
+        const mObj = ws.mosques.find((m) => m.id === mId);
+        const entry = ensureEntry({
+          dbKey: mKey,
+          dbLabel: `قاعدة منفصلة (${getDbDisplayLabel(conf)})`,
+          projectId: conf.projectId,
+          firestoreDatabaseId: conf.firestoreDatabaseId || '(default)',
+          isPrimary: false,
+          db: getFirestoreForConfig(conf),
+          limitBytes: SPARK_FREE_TIER_BYTES,
+        });
+        entry.roleTags.add(`مسجد: ${mObj?.name || mId}`);
+        entry.complexIds.add(comp.id);
+        entry.complexNames.add(comp.name);
+      }
+
+      for (const tabKey of ALL_FEATURE_TAB_KEYS) {
+        const shards = ws.tabPools?.[tabKey] || [];
+        shards.forEach((sh, idx) => {
+          const sKey = dbKeyFromConfig(sh.config);
+          const entry = ensureEntry({
+            dbKey: sKey,
+            dbLabel: `قاعدة منفصلة (${getDbDisplayLabel(sh.config)})`,
+            projectId: sh.config.projectId,
+            firestoreDatabaseId: sh.config.firestoreDatabaseId || '(default)',
+            isPrimary: false,
+            db: getFirestoreForConfig(sh.config),
+            limitBytes: sh.maxBytes || TAB_SHARD_MAX_BYTES,
+          });
+          const statusAr =
+            sh.status === 'active' ? 'نشطة' : sh.status === 'full' ? 'ممتلئة' : 'احتياط';
+          entry.roleTags.add(
+            `${COMPLEX_FEATURE_TAB_LABELS[tabKey]} · شريحة #${idx + 1} (${statusAr})`
+          );
+          entry.complexIds.add(comp.id);
+          entry.complexNames.add(comp.name);
+        });
+      }
+    }
+  }
+
+  // Also include standalone external DBs from registry when viewing 'all'
+  if (selectedComplexId === 'all') {
+    const known = await getAllKnownDatabases();
+    for (const k of known) {
+      if (k.isPrimary || !k.config) continue;
+      const entry = ensureEntry({
+        dbKey: k.key,
+        dbLabel: k.label,
+        projectId: k.config.projectId,
+        firestoreDatabaseId: k.config.firestoreDatabaseId || '(default)',
+        isPrimary: false,
+        db: k.db,
+        limitBytes: SPARK_FREE_TIER_BYTES,
+      });
+      if (entry.roleTags.size === 0) {
+        entry.roleTags.add('قاعدة خارجية مربوطة بالسجل');
+      }
+    }
+  }
+
+  const tabAggMap = new Map<
+    ComplexFeatureTabKey | 'core_broadcasts',
+    { label: string; usedBytes: number; docsCount: number }
+  >([
+    ['mosques_halaqat', { label: COMPLEX_FEATURE_TAB_LABELS.mosques_halaqat, usedBytes: 0, docsCount: 0 }],
+    ['accounts_invites', { label: COMPLEX_FEATURE_TAB_LABELS.accounts_invites, usedBytes: 0, docsCount: 0 }],
+    ['attendance', { label: COMPLEX_FEATURE_TAB_LABELS.attendance, usedBytes: 0, docsCount: 0 }],
+    ['library', { label: COMPLEX_FEATURE_TAB_LABELS.library, usedBytes: 0, docsCount: 0 }],
+    ['curricula', { label: COMPLEX_FEATURE_TAB_LABELS.curricula, usedBytes: 0, docsCount: 0 }],
+    ['core_broadcasts', { label: 'الإشعارات والنظام', usedBytes: 0, docsCount: 0 }],
+  ]);
+
+  const scopeSpecificComplex =
+    selectedComplexId !== 'all' && selectedComplexId !== 'primary';
+
+  const databaseSummaries: PhysicalDatabaseUsageSummary[] = await Promise.all(
+    Array.from(dbMap.values()).map(async (meta) => {
+      const colsToRead = ALL_TRACKED_COLLECTIONS.filter(
+        (c) => !c.primaryOnly || meta.isPrimary
+      );
+      let reachable = false;
+      let usedBytes = 0;
+      let totalDocs = 0;
+      const collectionStats: CollectionUsageStat[] = [];
+
+      await Promise.all(
+        colsToRead.map(async (cMeta) => {
+          try {
+            const shouldFilterByComplex =
+              scopeSpecificComplex &&
+              meta.isPrimary &&
+              !['stats', 'dbRegistry', 'broadcasts'].includes(cMeta.col);
+
+            const qRef =
+              shouldFilterByComplex && cMeta.col === 'complexes'
+                ? query(collection(meta.db, cMeta.col), where('id', '==', selectedComplexId))
+                : shouldFilterByComplex
+                ? query(collection(meta.db, cMeta.col), where('complexId', '==', selectedComplexId))
+                : collection(meta.db, cMeta.col);
+
+            const snap = await getDocsFresh(qRef);
+            reachable = true;
+            let colBytes = 0;
+            let colDocs = 0;
+            snap.forEach((d) => {
+              colDocs++;
+              colBytes += estimateRecordBytes(d.data());
+            });
+            totalDocs += colDocs;
+            usedBytes += colBytes;
+            collectionStats.push({
+              collection: cMeta.col,
+              label: cMeta.label,
+              docsCount: colDocs,
+              usedBytes: colBytes,
+            });
+            const agg = tabAggMap.get(cMeta.tabGroup);
+            if (agg) {
+              agg.usedBytes += colBytes;
+              agg.docsCount += colDocs;
+            }
+          } catch {
+            // Skip inaccessible collection cleanly; overall reachability checked below
+          }
+        })
+      );
+
+      collectionStats.sort((a, b) => b.usedBytes - a.usedBytes);
+      const limitBytes = Math.max(SPARK_FREE_TIER_BYTES, meta.limitBytes);
+      const remainingBytes = Math.max(0, limitBytes - usedBytes);
+      const usagePercent = Math.min(100, Number(((usedBytes / limitBytes) * 100).toFixed(4)));
+
+      return {
+        dbKey: meta.dbKey,
+        dbLabel: meta.dbLabel,
+        projectId: meta.projectId,
+        firestoreDatabaseId: meta.firestoreDatabaseId,
+        isPrimary: meta.isPrimary,
+        reachable,
+        ...(!reachable ? { errorMessage: 'تعذّر قراءة القاعدة أو الصلاحيات غير مكتملة.' } : {}),
+        roleTags: Array.from(meta.roleTags),
+        complexIds: Array.from(meta.complexIds),
+        complexNames: Array.from(meta.complexNames),
+        totalDocs,
+        usedBytes,
+        limitBytes,
+        remainingBytes,
+        usagePercent,
+        collections: collectionStats,
+        checkedAtMs: nowMs,
+      };
+    })
+  );
+
+  // Order Primary DB first (if present), then most used descending
+  databaseSummaries.sort((a, b) => {
+    if (a.isPrimary && !b.isPrimary) return -1;
+    if (!a.isPrimary && b.isPrimary) return 1;
+    return b.usedBytes - a.usedBytes;
+  });
+
+  const totalDocsCount = databaseSummaries.reduce((acc, d) => acc + d.totalDocs, 0);
+  const totalUsedBytes = databaseSummaries.reduce((acc, d) => acc + d.usedBytes, 0);
+  const totalLimitBytes = databaseSummaries.reduce((acc, d) => acc + d.limitBytes, 0);
+  const totalRemainingBytes = Math.max(0, totalLimitBytes - totalUsedBytes);
+
+  return {
+    checkedAtMs: nowMs,
+    selectedComplexId,
+    databases: databaseSummaries,
+    totalDatabasesCount: databaseSummaries.length,
+    totalDocsCount,
+    totalUsedBytes,
+    totalLimitBytes,
+    totalRemainingBytes,
+    byTabSummary: Array.from(tabAggMap.entries()).map(([tabKey, val]) => ({
+      tabKey,
+      label: val.label,
+      usedBytes: val.usedBytes,
+      docsCount: val.docsCount,
+    })),
+  };
+}
+
 

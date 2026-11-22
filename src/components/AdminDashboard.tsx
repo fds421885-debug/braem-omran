@@ -48,6 +48,7 @@ import type {
 import { BroadcastComposerModal } from './BroadcastComposerModal';
 import { ComplexEditorModal } from './ComplexEditorModal';
 import { ComplexWorkspace } from './ComplexWorkspace';
+import { DatabaseUsageDashboard } from './DatabaseUsageDashboard';
 import { ExternalDbModal } from './ExternalDbModal';
 import { MascotImage } from './MascotImage';
 import { ModernLoader } from './ModernLoader';
@@ -58,7 +59,7 @@ interface AdminDashboardProps {
   session: ActiveSession;
 }
 
-type AdminPage = 'home' | 'complexes';
+type AdminPage = 'home' | 'complexes' | 'databases';
 
 const BASE_URL = import.meta.env.BASE_URL;
 const WAVING_FOX_PATH = `${BASE_URL}src/assets/images/fox_welcome_wave_1794991801893.jpg`;
@@ -261,6 +262,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
               }`}
             >
               المجمعات
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedComplex(null);
+                setPage('databases');
+              }}
+              className={`min-h-[44px] px-3 font-display text-sm font-bold whitespace-nowrap shrink-0 border-b-2 transition-colors cursor-pointer ${
+                page === 'databases' && !selectedComplex
+                  ? 'border-[#F56900] text-[#F56900]'
+                  : 'border-transparent text-[#7D4E35] hover:text-[#4A220D]'
+              }`}
+            >
+              قواعد البيانات
             </button>
           </nav>
 
@@ -722,13 +737,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
               </div>
             )}
           </div>
+        ) : !loading && page === 'databases' ? (
+          <DatabaseUsageDashboard complexes={complexes} />
         ) : null}
       </main>
 
       {/* Mobile Bottom Nav */}
       <nav
         aria-label="تنقل المشرف للهاتف"
-        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t-2 border-[#EADBC8] h-16 px-4 grid grid-cols-2 items-center"
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t-2 border-[#EADBC8] h-16 px-4 grid grid-cols-3 items-center"
       >
         <button
           type="button"
@@ -756,6 +773,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
         >
           <Building2 className="w-5 h-5" />
           <span className="font-display text-xs font-bold">المجمعات</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setSelectedComplex(null);
+            setPage('databases');
+          }}
+          className={`min-h-[48px] flex flex-col items-center justify-center gap-0.5 rounded-xl cursor-pointer ${
+            page === 'databases' && !selectedComplex ? 'text-[#F56900]' : 'text-[#7D4E35]'
+          }`}
+        >
+          <Database className="w-5 h-5" />
+          <span className="font-display text-xs font-bold">قواعد البيانات</span>
         </button>
       </nav>
 

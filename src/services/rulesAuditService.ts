@@ -67,6 +67,8 @@ const PRIMARY_READ_CHECK_COLLECTIONS: PrimaryCollectionProbe[] = [
   { col: 'wordAudio', label: 'صوتيات القراءة والتهجي (wordAudio)', mode: 'list_unfiltered' },
   { col: 'attendance', label: 'الحضور والغياب (attendance)', mode: 'list_unfiltered' },
   { col: 'curricula', label: 'المقررات (curricula)', mode: 'list_unfiltered' },
+  { col: 'studentQuranPlans', label: 'خطط حفظ ومراجعة الطلاب (studentQuranPlans)', mode: 'list_unfiltered' },
+  { col: 'studentMushafMistakes', label: 'أخطاء تلاوة الطلاب بالمصحف (studentMushafMistakes)', mode: 'list_unfiltered' },
   { col: 'broadcasts', label: 'الإشعارات والرسائل الفورية (broadcasts)', mode: 'list_unfiltered' },
   { col: 'dbRegistry', label: 'سجل ربط القواعد (dbRegistry)', mode: 'list_active_true' },
   { col: 'stats', label: 'الإحصائيات (stats)', mode: 'get_global_doc' },
@@ -86,6 +88,8 @@ const EXTERNAL_ALL_COLLECTIONS: { col: string; label: string }[] = [
   { col: 'bookPages', label: 'صفحات الكتب (bookPages)' },
   { col: 'attendance', label: 'الحضور والغياب (attendance)' },
   { col: 'curricula', label: 'المقررات (curricula)' },
+  { col: 'studentQuranPlans', label: 'خطط حفظ ومراجعة الطلاب (studentQuranPlans)' },
+  { col: 'studentMushafMistakes', label: 'أخطاء تلاوة الطلاب بالمصحف (studentMushafMistakes)' },
   { col: 'wordAudio', label: 'صوتيات القراءة والتهجي (wordAudio)' },
   { col: 'broadcasts', label: 'الإشعارات والرسائل الفورية (broadcasts)' },
 ];

@@ -386,6 +386,55 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidQuranPlan(data, planId) {
+      return data.keys().hasAll([
+          'id', 'complexId', 'mosqueId', 'halaqaId', 'studentId', 'studentName',
+          'dateKey', 'todayNew', 'todayReviews', 'tomorrowNew', 'tomorrowReviews',
+          'recordedBy', 'recordedByName', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'complexId', 'mosqueId', 'halaqaId', 'studentId', 'studentName',
+          'dateKey', 'todayNew', 'todayReviews', 'tomorrowNew', 'tomorrowReviews',
+          'recordedBy', 'recordedByName', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == planId && isValidId(data.id)
+        && data.complexId is string && isValidId(data.complexId)
+        && data.mosqueId is string && data.mosqueId.size() <= 128
+        && data.halaqaId is string && data.halaqaId.size() <= 128
+        && data.studentId is string && isValidId(data.studentId)
+        && data.studentName is string && data.studentName.size() >= 1 && data.studentName.size() <= 120
+        && data.dateKey is string && data.dateKey.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && (data.todayNew == null || data.todayNew is map)
+        && data.todayReviews is list && data.todayReviews.size() <= 50
+        && (data.todayReviews.size() == 0 || data.todayReviews[0] is map)
+        && (data.tomorrowNew == null || data.tomorrowNew is map)
+        && data.tomorrowReviews is list && data.tomorrowReviews.size() <= 50
+        && (data.tomorrowReviews.size() == 0 || data.tomorrowReviews[0] is map)
+        && data.recordedBy is string && data.recordedBy.size() >= 1 && data.recordedBy.size() <= 128
+        && data.recordedByName is string && data.recordedByName.size() >= 1 && data.recordedByName.size() <= 120
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidMushafMistakes(data, recordId) {
+      return data.keys().hasAll([
+          'id', 'complexId', 'studentId', 'studentName', 'mistakes',
+          'updatedBy', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'complexId', 'studentId', 'studentName', 'mistakes',
+          'updatedBy', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == recordId && isValidId(data.id)
+        && data.complexId is string && isValidId(data.complexId)
+        && data.studentId is string && isValidId(data.studentId)
+        && data.studentName is string && data.studentName.size() >= 1 && data.studentName.size() <= 120
+        && data.mistakes is map && data.mistakes.size() <= 6236
+        && data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 128
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     match /admins/{userId} {
       allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
       allow list: if false;
@@ -900,5 +949,78 @@ service cloud.firestore {
         )
       );
     }
+
+    match /studentQuranPlans/{planId} {
+      allow get: if isSignedIn() && isValidId(planId) && (
+        isPlatformAdmin()
+        || isComplexStaff(existing().complexId)
+        || (isVerifiedUser() && existing().studentId == request.auth.uid)
+      );
+      allow list: if isSignedIn() && (
+        isPlatformAdmin()
+        || (resource.data.complexId is string && isComplexStaff(resource.data.complexId))
+        || (isVerifiedUser() && resource.data.studentId == request.auth.uid)
+      );
+      allow create: if (isPlatformAdmin() || isComplexStaff(incoming().complexId))
+        && isValidId(planId)
+        && isValidQuranPlan(incoming(), planId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if (
+          isPlatformAdmin()
+          || (isComplexStaff(existing().complexId) && incoming().complexId == existing().complexId)
+        )
+        && isValidId(planId)
+        && isValidQuranPlan(incoming(), planId)
+        && incoming().id == existing().id
+        && incoming().complexId == existing().complexId
+        && incoming().studentId == existing().studentId
+        && incoming().dateKey == existing().dateKey
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'mosqueId', 'halaqaId', 'studentName', 'todayNew', 'todayReviews',
+          'tomorrowNew', 'tomorrowReviews', 'recordedBy', 'recordedByName', 'updatedAt'
+        ]);
+      allow delete: if isValidId(planId) && (
+        isPlatformAdmin() || isComplexStaff(existing().complexId)
+      );
+    }
+
+    match /studentMushafMistakes/{recordId} {
+      allow get: if isSignedIn() && isValidId(recordId) && (
+        isPlatformAdmin()
+        || isComplexStaff(existing().complexId)
+        || (isVerifiedUser() && existing().studentId == request.auth.uid)
+      );
+      allow list: if isSignedIn() && (
+        isPlatformAdmin()
+        || (resource.data.complexId is string && isComplexStaff(resource.data.complexId))
+        || (isVerifiedUser() && resource.data.studentId == request.auth.uid)
+      );
+      allow create: if (isPlatformAdmin() || isComplexStaff(incoming().complexId))
+        && isValidId(recordId)
+        && isValidMushafMistakes(incoming(), recordId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if (
+          isPlatformAdmin()
+          || (isComplexStaff(existing().complexId) && incoming().complexId == existing().complexId)
+        )
+        && isValidId(recordId)
+        && isValidMushafMistakes(incoming(), recordId)
+        && incoming().id == existing().id
+        && incoming().complexId == existing().complexId
+        && incoming().studentId == existing().studentId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'studentName', 'mistakes', 'updatedBy', 'updatedAt'
+        ]);
+      allow delete: if isValidId(recordId) && (
+        isPlatformAdmin() || isComplexSupervisor(existing().complexId)
+      );
+    }
   }
 }
+

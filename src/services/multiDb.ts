@@ -67,6 +67,12 @@ service cloud.firestore {
     match /broadcasts/{id} {
       allow read, write: if true;
     }
+    match /studentQuranPlans/{id} {
+      allow read, write: if true;
+    }
+    match /studentMushafMistakes/{id} {
+      allow read, write: if true;
+    }
   }
 }`;
 

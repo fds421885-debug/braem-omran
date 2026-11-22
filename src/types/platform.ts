@@ -417,3 +417,115 @@ export interface BroadcastMessageRecord {
   queuedOffline?: boolean;
 }
 
+export type QuranReviewType =
+  | 'surah_review'
+  | 'cumulative_review'
+  | 'near_review'
+  | 'juz_review'
+  | 'custom';
+
+export const QURAN_REVIEW_TYPE_LABELS: Record<QuranReviewType, string> = {
+  surah_review: 'مراجعة سور',
+  cumulative_review: 'مراجعة تراكمية',
+  near_review: 'مراجعة قريبة (ربط)',
+  juz_review: 'مراجعة أجزاء',
+  custom: 'مراجعة مخصصة',
+};
+
+export interface QuranRangeRef {
+  startSurah: number;
+  startAyah: number;
+  endSurah: number;
+  endAyah: number;
+}
+
+export interface StudentQuranNewHifzItem extends QuranRangeRef {
+  reciterId?: string;
+  note?: string;
+  completed?: boolean;
+}
+
+export interface StudentQuranReviewItem extends QuranRangeRef {
+  id: string;
+  reviewType: QuranReviewType;
+  customLabel?: string;
+  note?: string;
+  completed?: boolean;
+}
+
+export interface StudentQuranPlanRecord {
+  id: string;
+  complexId: string;
+  mosqueId: string;
+  halaqaId: string;
+  studentId: string;
+  studentName: string;
+  dateKey: string; // YYYY-MM-DD
+  todayNew: StudentQuranNewHifzItem | null;
+  todayReviews: StudentQuranReviewItem[];
+  tomorrowNew: StudentQuranNewHifzItem | null;
+  tomorrowReviews: StudentQuranReviewItem[];
+  recordedBy: string;
+  recordedByName: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface StudentMushafMistakesRecord {
+  id: string;
+  complexId: string;
+  studentId: string;
+  studentName: string;
+  mistakes: Record<string, number>; // key: "surah:ayah", value: mistakes count
+  updatedBy: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export const SPARK_FREE_TIER_BYTES = 1024 * 1024 * 1024; // 1 GiB Firebase Spark Free Tier Storage Cap
+
+export interface CollectionUsageStat {
+  collection: string;
+  label: string;
+  docsCount: number;
+  usedBytes: number;
+}
+
+export interface PhysicalDatabaseUsageSummary {
+  dbKey: string;
+  dbLabel: string;
+  projectId: string;
+  firestoreDatabaseId: string;
+  isPrimary: boolean;
+  reachable: boolean;
+  errorMessage?: string;
+  roleTags: string[];
+  complexIds: string[];
+  complexNames: string[];
+  totalDocs: number;
+  usedBytes: number;
+  limitBytes: number;
+  remainingBytes: number;
+  usagePercent: number;
+  collections: CollectionUsageStat[];
+  checkedAtMs: number;
+}
+
+export interface DatabaseUsageDashboardReport {
+  checkedAtMs: number;
+  selectedComplexId: string;
+  databases: PhysicalDatabaseUsageSummary[];
+  totalDatabasesCount: number;
+  totalDocsCount: number;
+  totalUsedBytes: number;
+  totalLimitBytes: number;
+  totalRemainingBytes: number;
+  byTabSummary: {
+    tabKey: ComplexFeatureTabKey | 'core_broadcasts';
+    label: string;
+    usedBytes: number;
+    docsCount: number;
+  }[];
+}
+
+

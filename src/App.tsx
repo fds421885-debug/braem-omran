@@ -14,6 +14,7 @@ import { OfflineIndicator } from './components/OfflineIndicator';
 import { RoleWelcomeView } from './components/RoleWelcomeView';
 import { StartupNotificationGate } from './components/StartupNotificationGate';
 import { SupervisorDashboard } from './components/SupervisorDashboard';
+import { TeacherSessionHost } from './components/TeacherSessionHost';
 import { auth as primaryAuth, db as primaryDb } from './firebase';
 import { getAuthForConfig } from './services/multiDb';
 import {
@@ -383,6 +384,18 @@ function AppContent() {
     return (
       <>
         <SupervisorDashboard
+          session={activeSession}
+          onExitQuickSession={exitQuickSession}
+        />
+        <BroadcastNotificationsHost session={activeSession} />
+      </>
+    );
+  }
+
+  if (activeSession.account.role === 'teacher') {
+    return (
+      <>
+        <TeacherSessionHost
           session={activeSession}
           onExitQuickSession={exitQuickSession}
         />
