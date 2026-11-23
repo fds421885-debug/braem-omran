@@ -81,7 +81,14 @@ function isModelRetryableOrFallbackError(err: unknown): boolean {
   if (statusCode === 429 || statusCode === 500 || statusCode === 503 || statusCode === 504) {
     return true;
   }
-  if (lower.includes('timeout') || lower.includes('network') || lower.includes('resource_exhausted')) {
+  if (
+    lower.includes('timeout') ||
+    lower.includes('network') ||
+    lower.includes('resource_exhausted') ||
+    lower.includes('unavailable') ||
+    lower.includes('high demand') ||
+    lower.includes('no longer available')
+  ) {
     return true;
   }
   return false;
@@ -157,6 +164,16 @@ function getFriendlyGeminiError(err: unknown): { status: number; message: string
       message: 'تم الوصول للحد المؤقت من الطلبات، انتظر لحظات ثم أعد المحاولة.',
     };
   }
+  if (
+    statusCode === 503 ||
+    lower.includes('unavailable') ||
+    lower.includes('high demand')
+  ) {
+    return {
+      status: 503,
+      message: 'خوادم الذكاء الاصطناعي تشهد ضغطاً مؤقتاً الآن؛ يرجى إعادة المحاولة بعد ثوانٍ.',
+    };
+  }
   return {
     status: 500,
     message: 'تعذّر إتمام المعالجة الذكية حالياً، يرجى المحاولة مرة أخرى.',
@@ -170,17 +187,24 @@ async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 2): Promise<T> {
       return await fn();
     } catch (err) {
       lastError = err;
+      const errObj = err as { status?: number; code?: number };
+      const statusCode = Number(errObj?.status || errObj?.code || 0);
       const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
       const retryable =
+        statusCode === 429 ||
+        statusCode === 503 ||
+        statusCode === 500 ||
         msg.includes('429') ||
         msg.includes('503') ||
         msg.includes('500') ||
+        msg.includes('unavailable') ||
+        msg.includes('high demand') ||
         msg.includes('timeout') ||
         msg.includes('network');
       if (!retryable || attempt === maxAttempts) {
         throw err;
       }
-      await new Promise((r) => setTimeout(r, 500 * attempt));
+      await new Promise((r) => setTimeout(r, 450 * attempt));
     }
   }
   throw lastError;
@@ -444,7 +468,7 @@ async function startServer() {
 
       const analyzeCandidates = buildOrderedModels(
         ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'],
-        ['gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+        ['gemini-3.8-flash', 'gemini-3.5-flash-lite'],
         shouldPreferPublicGeminiModels()
       );
       let result;
@@ -601,7 +625,7 @@ async function startServer() {
 
       const noorCandidates = buildOrderedModels(
         ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'],
-        ['gemini-2.5-flash-lite', 'gemini-2.5-flash'],
+        ['gemini-3.5-flash-lite', 'gemini-3.8-flash'],
         shouldPreferPublicGeminiModels()
       );
       let result;
@@ -673,9 +697,9 @@ async function startServer() {
       const ai = getGeminiClient();
       const ttsCandidates = buildOrderedModels(
         ['gemini-3.8-flash-lite-tts'],
-        ['gemini-2.5-flash-preview-tts'],
+        ['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts'],
         shouldPreferPublicGeminiModels()
-      );
+      ).filter((m, idx, arr) => arr.indexOf(m) === idx);
       let response;
       let lastTtsErr: unknown;
       for (const candidateModel of ttsCandidates) {
@@ -799,23 +823,27 @@ ${safeContext || 'لم يتم إرفاق بيانات بعد.'}`;
       const startedAt = Date.now();
       const callModel = async (modelName: string, timeoutMs: number) => {
         return await withTimeout(
-          ai.models.generateContent({
-            model: modelName,
-            contents,
-            config: {
-              ...(isAiStudioManagedModel(modelName)
-                ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
-                : {}),
-              systemInstruction,
-            },
-          }),
+          withRetry(
+            () =>
+              ai.models.generateContent({
+                model: modelName,
+                contents,
+                config: {
+                  ...(isAiStudioManagedModel(modelName)
+                    ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+                    : {}),
+                  systemInstruction,
+                },
+              }),
+            2
+          ),
           timeoutMs
         );
       };
 
       const chatCandidates = buildOrderedModels(
         ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'],
-        ['gemini-2.5-flash-lite', 'gemini-2.5-flash'],
+        ['gemini-3.5-flash-lite', 'gemini-3.8-flash'],
         shouldPreferPublicGeminiModels(trimmedCustomKey)
       );
 
