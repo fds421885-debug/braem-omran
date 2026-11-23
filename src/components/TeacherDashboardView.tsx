@@ -4,29 +4,45 @@ import {
   BookMarked,
   BookOpen,
   CalendarDays,
+  CheckCircle2,
   ChevronLeft,
   ClipboardCheck,
   GraduationCap,
   LogOut,
   Users,
 } from 'lucide-react';
+import { getTodayDateKey } from '../services/multiDb';
 import { toArabicIndicDigits } from '../services/mushafService';
 import {
+  listBooksInComplex,
   listCurriculaInComplex,
+  loadHalaqaCurriculaStatusesForDate,
   type ComplexWorkspaceData,
+  type HalaqaStudentCurriculaStatus,
 } from '../services/platformService';
 import {
   QURAN_MUSHAF_BOOK_ID,
   QURAN_MUSHAF_TITLE,
   WEEK_DAYS,
   type AccountRecord,
+  type BookRecord,
   type CurriculumRecord,
   type TeacherRoleContext,
 } from '../types/platform';
 import { AttendanceSection } from './AttendanceSection';
+import { KingFahdMushafReader } from './KingFahdMushafReader';
 import { ModernLoader } from './ModernLoader';
 import { NotificationPermissionButton } from './NotificationPermissionButton';
 import { PWAInstallButton } from './PWAInstallButton';
+import { TeacherBookReaderModal } from './TeacherBookReaderModal';
+import { TeacherBookWorkspace } from './TeacherBookWorkspace';
+import {
+  BatchBookCorrectionModal,
+  BatchQuranTasmeeModal,
+  BookReachedPropagationModal,
+  GroupBookHomeworkModal,
+  GroupQuranPlanModal,
+} from './TeacherCurriculaGroupModals';
 import { TeacherMushafWorkspace } from './TeacherMushafWorkspace';
 
 interface TeacherDashboardViewProps {
@@ -54,6 +70,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
 }) => {
   const [tab, setTab] = useState<TeacherViewTab>('overview');
   const [curricula, setCurricula] = useState<CurriculumRecord[]>([]);
+  const [books, setBooks] = useState<BookRecord[]>([]);
   const [loadingCurricula, setLoadingCurricula] = useState(true);
 
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
@@ -61,6 +78,42 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
     student: AccountRecord;
     studentNumber: number;
   } | null>(null);
+  const [activeBookSession, setActiveBookSession] = useState<{
+    student: AccountRecord;
+    studentNumber: number;
+    curriculum: CurriculumRecord;
+    matchedBook: BookRecord | null;
+  } | null>(null);
+
+  // Batch student assignment status badges (for today's tomorrow-plans)
+  const [studentStatuses, setStudentStatuses] = useState<
+    Record<string, HalaqaStudentCurriculaStatus>
+  >({});
+  const [loadingStatuses, setLoadingStatuses] = useState(false);
+
+  // General teacher bookmark state (persisted per halaqa so teacher stays on their stopped page)
+  const [teacherMushafPage, setTeacherMushafPage] = useState<number>(1);
+  const [teacherBookPages, setTeacherBookPages] = useState<Record<string, number>>({});
+
+  // Teacher General Readers & Collective Assignment Modals
+  const [generalMushafOpen, setGeneralMushafOpen] = useState(false);
+  const [generalBookReader, setGeneralBookReader] = useState<{
+    curriculum: CurriculumRecord;
+    matchedBook: BookRecord | null;
+    initialPage: number;
+  } | null>(null);
+  const [bookPropagationPrompt, setBookPropagationPrompt] = useState<{
+    curriculum: CurriculumRecord;
+    stoppedPage: number;
+  } | null>(null);
+  const [groupBookHomeworkModal, setGroupBookHomeworkModal] = useState<{
+    curriculum: CurriculumRecord;
+    matchedBook: BookRecord | null;
+  } | null>(null);
+  const [groupQuranModalOpen, setGroupQuranModalOpen] = useState(false);
+  const [batchQuranTasmeeOpen, setBatchQuranTasmeeOpen] = useState(false);
+  const [batchBookCorrectionBookId, setBatchBookCorrectionBookId] = useState<string | null>(null);
+  const [groupFeedback, setGroupFeedback] = useState<string | null>(null);
 
   const halaqaStudents = useMemo(
     () =>
@@ -75,25 +128,123 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
     [curricula, context.halaqaId]
   );
 
+  // Load saved teacher general stopped pages for current halaqa
+  useEffect(() => {
+    try {
+      const mRaw = window.localStorage.getItem(
+        `braem_teacher_general_mushaf_${context.halaqaId}`
+      );
+      const mPage = Number(mRaw);
+      setTeacherMushafPage(
+        Number.isFinite(mPage) && mPage >= 1 && mPage <= 604 ? Math.floor(mPage) : 1
+      );
+
+      const bRaw = window.localStorage.getItem(
+        `braem_teacher_general_books_${context.halaqaId}`
+      );
+      if (bRaw) {
+        const parsed = JSON.parse(bRaw) as Record<string, number>;
+        setTeacherBookPages(parsed && typeof parsed === 'object' ? parsed : {});
+      } else {
+        setTeacherBookPages({});
+      }
+    } catch {
+      setTeacherMushafPage(1);
+      setTeacherBookPages({});
+    }
+  }, [context.halaqaId]);
+
+  const saveTeacherMushafBookmark = useCallback(
+    (pageNum: number) => {
+      const clean = Math.max(1, Math.min(604, Math.floor(pageNum || 1)));
+      setTeacherMushafPage(clean);
+      try {
+        window.localStorage.setItem(
+          `braem_teacher_general_mushaf_${context.halaqaId}`,
+          String(clean)
+        );
+      } catch {
+        // Ignore storage quota errors
+      }
+    },
+    [context.halaqaId]
+  );
+
+  const saveTeacherBookBookmark = useCallback(
+    (bookId: string, pageNum: number) => {
+      const clean = Math.max(1, Math.min(2000, Math.floor(pageNum || 1)));
+      setTeacherBookPages((prev) => {
+        const next = { ...prev, [bookId]: clean };
+        try {
+          window.localStorage.setItem(
+            `braem_teacher_general_books_${context.halaqaId}`,
+            JSON.stringify(next)
+          );
+        } catch {
+          // Ignore storage quota errors
+        }
+        return next;
+      });
+    },
+    [context.halaqaId]
+  );
+
   // Clear selected student when switching halaqa context
   useEffect(() => {
     setSelectedStudentId(null);
     setActiveQuranStudent(null);
+    setActiveBookSession(null);
+    setGeneralMushafOpen(false);
+    setGeneralBookReader(null);
+    setBookPropagationPrompt(null);
+    setGroupBookHomeworkModal(null);
+    setGroupQuranModalOpen(false);
+    setGroupFeedback(null);
   }, [context.halaqaId]);
 
   const loadCurricula = useCallback(async () => {
     setLoadingCurricula(true);
     try {
-      const list = await listCurriculaInComplex(workspace);
+      const [list, bookList] = await Promise.all([
+        listCurriculaInComplex(workspace),
+        listBooksInComplex(workspace).catch(() => []),
+      ]);
       setCurricula(list);
+      setBooks(bookList);
     } finally {
       setLoadingCurricula(false);
     }
   }, [workspace]);
 
+  const refreshStudentStatuses = useCallback(async () => {
+    if (halaqaStudents.length === 0) {
+      setStudentStatuses({});
+      return;
+    }
+    setLoadingStatuses(true);
+    try {
+      const map = await loadHalaqaCurriculaStatusesForDate({
+        workspace,
+        studentIds: halaqaStudents.map((s) => s.id),
+        dateKey: getTodayDateKey(),
+      });
+      setStudentStatuses(map);
+    } catch {
+      // Keep previous status snapshot
+    } finally {
+      setLoadingStatuses(false);
+    }
+  }, [workspace, halaqaStudents]);
+
   useEffect(() => {
     void loadCurricula();
   }, [loadCurricula]);
+
+  useEffect(() => {
+    if (tab === 'curricula') {
+      void refreshStudentStatuses();
+    }
+  }, [tab, refreshStudentStatuses]);
 
   const selectedStudentEntry = useMemo(() => {
     if (!selectedStudentId) return null;
@@ -172,6 +323,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                     setTab(item.id);
                     if (item.id !== 'curricula') {
                       setActiveQuranStudent(null);
+                      setActiveBookSession(null);
                     }
                   }}
                   className={`min-h-[38px] px-3 py-1.5 rounded-xl font-display text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap shrink-0 ${
@@ -292,10 +444,213 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
               studentNumber={activeQuranStudent.studentNumber}
               currentUserId={currentUserId}
               currentUserName={currentUserName}
-              onBack={() => setActiveQuranStudent(null)}
+              onBack={() => {
+                setActiveQuranStudent(null);
+                void refreshStudentStatuses();
+              }}
+            />
+          ) : activeBookSession ? (
+            <TeacherBookWorkspace
+              workspace={workspace}
+              context={context}
+              student={activeBookSession.student}
+              studentNumber={activeBookSession.studentNumber}
+              curriculum={activeBookSession.curriculum}
+              matchedBook={activeBookSession.matchedBook}
+              currentUserId={currentUserId}
+              currentUserName={currentUserName}
+              onBack={() => {
+                setActiveBookSession(null);
+                void refreshStudentStatuses();
+              }}
             />
           ) : (
             <div className="space-y-5">
+              {/* General Daily Curricula Section for the Teacher (Top Section Above Students List) */}
+              <section className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 sm:p-6 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h2 className="font-display text-lg sm:text-xl font-extrabold text-[#4A220D]">
+                      مقررات اليوم العامة للمعلم
+                    </h2>
+                    <p className="text-xs sm:text-sm text-[#7D4E35]">
+                      اقرأ واشرح من المصحف أو الكتب، أو نفّذ التسميع الجماعي وتصحيح الواجبات الجماعي وتعيين الغد لكل الطلاب بسرعة.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    {loadingStatuses && (
+                      <span className="text-xs font-bold text-[#F56900]">
+                        جاري تحديث حالة الطلاب...
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      disabled={halaqaStudents.length === 0}
+                      onClick={() => setBatchQuranTasmeeOpen(true)}
+                      className="duo-btn-green min-h-[40px] px-3.5 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                    >
+                      <CheckCircle2 className="w-4 h-4 shrink-0" />
+                      <span>التسميع الجماعي لليوم</span>
+                    </button>
+                    {otherCurricula.length > 0 && (
+                      <button
+                        type="button"
+                        disabled={halaqaStudents.length === 0}
+                        onClick={() =>
+                          setBatchBookCorrectionBookId(otherCurricula[0]?.bookId || null)
+                        }
+                        className="duo-btn-orange min-h-[40px] px-3.5 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                      >
+                        <ClipboardCheck className="w-4 h-4 shrink-0" />
+                        <span>التصحيح الجماعي للواجبات</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {groupFeedback && (
+                  <div className="bg-[#58CC02]/12 border-2 border-[#58CC02]/50 rounded-2xl px-4 py-2.5 text-xs sm:text-sm font-extrabold text-[#46A302] flex items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5">
+                      <CheckCircle2 className="w-4 h-4 shrink-0" />
+                      <span>{groupFeedback}</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setGroupFeedback(null)}
+                      className="text-xs font-bold underline cursor-pointer"
+                    >
+                      إخفاء
+                    </button>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                  {/* Teacher General Quran Card */}
+                  <div className="bg-[#FDF6EE] border-2 border-[#58CC02]/60 rounded-2xl p-4 flex flex-col justify-between gap-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-10 h-10 rounded-xl bg-[#58CC02]/15 text-[#46A302] flex items-center justify-center shrink-0">
+                          <BookOpen className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <h3 className="font-display font-extrabold text-base text-[#4A220D]">
+                            {quranCurriculumRecord?.bookTitle || QURAN_MUSHAF_TITLE}
+                          </h3>
+                          <p className="text-xs font-bold text-[#46A302]">
+                            توقف المعلم: صفحة {toArabicIndicDigits(teacherMushafPage)} من ٦٠٤
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setGeneralMushafOpen(true)}
+                        className="duo-btn-orange flex-1 min-h-[42px] px-3 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
+                      >
+                        <BookOpen className="w-4 h-4 shrink-0" />
+                        <span>فتح المصحف للشرح</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={halaqaStudents.length === 0}
+                        onClick={() => setBatchQuranTasmeeOpen(true)}
+                        className="duo-btn-cream flex-1 min-h-[42px] px-3 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
+                      >
+                        <CheckCircle2 className="w-4 h-4 text-[#46A302] shrink-0" />
+                        <span>التسميع الجماعي</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={halaqaStudents.length === 0}
+                        onClick={() => setGroupQuranModalOpen(true)}
+                        className="duo-btn-green flex-1 min-h-[42px] px-3 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
+                      >
+                        <Users className="w-4 h-4 shrink-0" />
+                        <span>تعيين حفظ الغد جماعياً</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Teacher General Assigned Books Cards */}
+                  {otherCurricula.map((cur) => {
+                    const matchedBook = books.find((b) => b.id === cur.bookId) || null;
+                    const stoppedPage = teacherBookPages[cur.bookId] || 1;
+                    return (
+                      <div
+                        key={`general_${cur.id}`}
+                        className="bg-[#FDF6EE] border-2 border-[#EADBC8] rounded-2xl p-4 flex flex-col justify-between gap-3"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="w-10 h-10 rounded-xl bg-[#F56900]/12 text-[#F56900] flex items-center justify-center shrink-0">
+                              <BookMarked className="w-5 h-5" />
+                            </div>
+                            <div className="min-w-0">
+                              <h3 className="font-display font-extrabold text-base text-[#4A220D] truncate">
+                                {cur.bookTitle}
+                              </h3>
+                              <p className="text-xs font-bold text-[#7D4E35]">
+                                توقف المعلم: صفحة {toArabicIndicDigits(stoppedPage)}
+                                {matchedBook
+                                  ? ` من ${toArabicIndicDigits(matchedBook.totalPages)}`
+                                  : ''}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setGeneralBookReader({
+                                curriculum: cur,
+                                matchedBook,
+                                initialPage: stoppedPage,
+                              })
+                            }
+                            className="duo-btn-orange flex-1 min-h-[42px] px-3 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
+                          >
+                            <BookOpen className="w-4 h-4 shrink-0" />
+                            <span>فتح الكتاب للشرح</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={halaqaStudents.length === 0}
+                            onClick={() => setBatchBookCorrectionBookId(cur.bookId)}
+                            className="duo-btn-cream flex-1 min-h-[42px] px-3 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
+                          >
+                            <ClipboardCheck className="w-4 h-4 text-[#F56900] shrink-0" />
+                            <span>التصحيح الجماعي</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={halaqaStudents.length === 0}
+                            onClick={() =>
+                              setGroupBookHomeworkModal({
+                                curriculum: cur,
+                                matchedBook,
+                              })
+                            }
+                            className="duo-btn-green flex-1 min-h-[42px] px-3 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
+                          >
+                            <Users className="w-4 h-4 shrink-0" />
+                            <span>تعيين واجب غد جماعياً</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+
               {/* Step 1: Numbered Student List */}
               <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 sm:p-6 space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -328,6 +683,8 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                             quranCurriculumRecord.days.includes(d.key)
                           ).map((d) => d.label)
                         : [];
+                      const stStatus = studentStatuses[st.id];
+                      const quranAssigned = Boolean(stStatus?.quranTomorrowAssigned);
 
                       return (
                         <div
@@ -357,7 +714,68 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                               >
                                 {toArabicIndicDigits(num)}
                               </span>
-                              <div className="min-w-0">
+                              <div className="min-w-0 space-y-1">
+                                {/* Status Badges directly above Student Name */}
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span
+                                    className={`px-2 py-0.5 rounded-lg border text-[11px] font-extrabold ${
+                                      quranAssigned
+                                        ? 'bg-[#58CC02]/15 border-[#58CC02]/60 text-[#46A302]'
+                                        : 'bg-[#FDF6EE] border-[#EADBC8] text-[#7D4E35]'
+                                    }`}
+                                  >
+                                    {quranAssigned ? '✓ تم تحديد الحفظ' : 'لم يتم تعيين الحفظ'}
+                                  </span>
+
+                                  {otherCurricula.length === 1 && (() => {
+                                    const bId = otherCurricula[0].bookId;
+                                    const bStat = stStatus?.books?.[bId];
+                                    const hwAssigned = Boolean(bStat?.tomorrowHomeworkAssigned);
+                                    return (
+                                      <>
+                                        <span
+                                          className={`px-2 py-0.5 rounded-lg border text-[11px] font-extrabold ${
+                                            hwAssigned
+                                              ? 'bg-[#58CC02]/15 border-[#58CC02]/60 text-[#46A302]'
+                                              : 'bg-[#FDF6EE] border-[#EADBC8] text-[#7D4E35]'
+                                          }`}
+                                        >
+                                          {hwAssigned
+                                            ? '✓ تم تعيين الواجب'
+                                            : 'لم يتم تعيين الواجب'}
+                                        </span>
+                                        {bStat && bStat.whereWeReachedPage > 1 && (
+                                          <span className="px-2 py-0.5 rounded-lg border border-[#EADBC8] bg-white text-[11px] font-bold text-[#F56900] tabular-nums">
+                                            وصل: ص {toArabicIndicDigits(bStat.whereWeReachedPage)}
+                                          </span>
+                                        )}
+                                      </>
+                                    );
+                                  })()}
+
+                                  {otherCurricula.length > 1 &&
+                                    otherCurricula.map((cur) => {
+                                      const bStat = stStatus?.books?.[cur.bookId];
+                                      const hwAssigned = Boolean(
+                                        bStat?.tomorrowHomeworkAssigned
+                                      );
+                                      return (
+                                        <span
+                                          key={`st_badge_${st.id}_${cur.bookId}`}
+                                          className={`px-2 py-0.5 rounded-lg border text-[11px] font-extrabold ${
+                                            hwAssigned
+                                              ? 'bg-[#58CC02]/15 border-[#58CC02]/60 text-[#46A302]'
+                                              : 'bg-[#FDF6EE] border-[#EADBC8] text-[#7D4E35]'
+                                          }`}
+                                        >
+                                          {hwAssigned
+                                            ? `✓ واجب ${cur.bookTitle}`
+                                            : `لم يُعيّن واجب ${cur.bookTitle}`}
+                                        </span>
+                                      );
+                                    })}
+                                </div>
+
                                 <p className="font-display font-extrabold text-sm sm:text-base text-[#4A220D] truncate">
                                   {st.quadrupleName}
                                 </p>
@@ -448,39 +866,62 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                                   const dayLabels = WEEK_DAYS.filter((d) =>
                                     cur.days.includes(d.key)
                                   ).map((d) => d.label);
+                                  const matchedBook =
+                                    books.find((b) => b.id === cur.bookId) || null;
                                   return (
-                                    <div
+                                    <button
                                       key={cur.id}
-                                      className="bg-white border-2 border-[#EADBC8] rounded-2xl p-4 space-y-2.5"
+                                      type="button"
+                                      onClick={() =>
+                                        setActiveBookSession({
+                                          student: st,
+                                          studentNumber: num,
+                                          curriculum: cur,
+                                          matchedBook,
+                                        })
+                                      }
+                                      className="text-right bg-white border-2 border-[#EADBC8] hover:border-[#F56900] rounded-2xl p-4 space-y-2.5 transition-colors cursor-pointer group"
                                     >
-                                      <div className="flex items-center gap-2.5">
-                                        <div className="w-10 h-10 rounded-xl bg-[#F56900]/12 text-[#F56900] flex items-center justify-center shrink-0">
-                                          <BookMarked className="w-5 h-5" />
+                                      <div className="flex items-center justify-between gap-2">
+                                        <div className="flex items-center gap-2.5 min-w-0">
+                                          <div className="w-10 h-10 rounded-xl bg-[#F56900]/12 text-[#F56900] flex items-center justify-center shrink-0">
+                                            <BookMarked className="w-5 h-5" />
+                                          </div>
+                                          <div className="min-w-0">
+                                            <h3 className="font-display font-extrabold text-base text-[#4A220D] group-hover:text-[#F56900] truncate">
+                                              {cur.bookTitle}
+                                            </h3>
+                                            <p className="text-xs font-bold text-[#7D4E35]">
+                                              أين وصلنا · واجبات اليوم وواجبات غد
+                                              {matchedBook
+                                                ? ` · ${toArabicIndicDigits(matchedBook.totalPages)} صفحة`
+                                                : ''}
+                                            </p>
+                                          </div>
                                         </div>
-                                        <div>
-                                          <h3 className="font-display font-extrabold text-base text-[#4A220D]">
-                                            {cur.bookTitle}
-                                          </h3>
-                                          <p className="text-xs text-[#7D4E35]">مقرر الحلقة</p>
+                                        <ChevronLeft className="w-5 h-5 text-[#F56900] shrink-0" />
+                                      </div>
+
+                                      {dayLabels.length > 0 && (
+                                        <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-bold">
+                                          <CalendarDays className="w-3.5 h-3.5 text-[#46A302]" />
+                                          {dayLabels.map((lbl) => (
+                                            <span
+                                              key={lbl}
+                                              className="px-2 py-0.5 rounded-lg bg-[#58CC02]/15 text-[#46A302]"
+                                            >
+                                              {lbl}
+                                            </span>
+                                          ))}
                                         </div>
-                                      </div>
-                                      <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-bold">
-                                        <CalendarDays className="w-3.5 h-3.5 text-[#46A302]" />
-                                        {dayLabels.map((lbl) => (
-                                          <span
-                                            key={lbl}
-                                            className="px-2 py-0.5 rounded-lg bg-[#58CC02]/15 text-[#46A302]"
-                                          >
-                                            {lbl}
-                                          </span>
-                                        ))}
-                                      </div>
+                                      )}
+
                                       {cur.scheduleNote && (
                                         <p className="text-xs text-[#7D4E35] bg-[#FDF6EE] border border-[#EADBC8] rounded-xl px-3 py-1.5">
                                           {cur.scheduleNote}
                                         </p>
                                       )}
-                                    </div>
+                                    </button>
                                   );
                                 })}
                               </div>
@@ -492,49 +933,181 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                   </div>
                 )}
 
-                {selectedStudentEntry && (
-                  <p className="text-xs font-bold text-[#7D4E35]">
-                    الطالب المحدد حالياً: {toArabicIndicDigits(selectedStudentEntry.studentNumber)}.{' '}
-                    {selectedStudentEntry.student.quadrupleName}
-                  </p>
-                )}
-              </div>
-            </div>
-          ))}
-
-        {tab === 'students' && (
-          <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 sm:p-6 space-y-4">
-            <h2 className="font-display text-lg font-extrabold text-[#4A220D]">
-              طلاب حلقة {context.halaqaName} ({halaqaStudents.length})
-            </h2>
-            {halaqaStudents.length === 0 ? (
-              <p className="text-sm text-[#7D4E35]">لا يوجد طلاب مسجلون في هذه الحلقة.</p>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {halaqaStudents.map((st, idx) => (
-                  <div
-                    key={st.id}
-                    className="bg-[#FDF6EE] border-2 border-[#EADBC8] rounded-2xl p-4 flex items-center gap-3"
-                  >
-                    <span className="w-8 h-8 rounded-xl bg-white border border-[#EADBC8] font-display font-extrabold text-xs text-[#7D4E35] inline-flex items-center justify-center shrink-0 tabular-nums">
-                      {toArabicIndicDigits(idx + 1)}
-                    </span>
-                    <div className="min-w-0">
-                      <p className="font-display font-extrabold text-sm text-[#4A220D] truncate">
-                        {st.quadrupleName}
-                      </p>
-                      <p className="text-xs text-[#7D4E35] truncate">
-                        {st.email || 'مسجل بالدخول السريع'}
-                      </p>
-                    </div>
-                  </div>
-                ))}
-              </div>
+            {selectedStudentEntry && (
+              <p className="text-xs font-bold text-[#7D4E35]">
+                الطالب المحدد حالياً: {toArabicIndicDigits(selectedStudentEntry.studentNumber)}.{' '}
+                {selectedStudentEntry.student.quadrupleName}
+              </p>
             )}
           </div>
-        )}
-      </main>
-    </div>
+        </div>
+      ))}
+
+      {tab === 'students' && (
+        <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 sm:p-6 space-y-4">
+          <h2 className="font-display text-lg font-extrabold text-[#4A220D]">
+            طلاب حلقة {context.halaqaName} ({halaqaStudents.length})
+          </h2>
+          {halaqaStudents.length === 0 ? (
+            <p className="text-sm text-[#7D4E35]">لا يوجد طلاب مسجلون في هذه الحلقة.</p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {halaqaStudents.map((st, idx) => (
+                <div
+                  key={st.id}
+                  className="bg-[#FDF6EE] border-2 border-[#EADBC8] rounded-2xl p-4 flex items-center gap-3"
+                >
+                  <span className="w-8 h-8 rounded-xl bg-white border border-[#EADBC8] font-display font-extrabold text-xs text-[#7D4E35] inline-flex items-center justify-center shrink-0 tabular-nums">
+                    {toArabicIndicDigits(idx + 1)}
+                  </span>
+                  <div className="min-w-0">
+                    <p className="font-display font-extrabold text-sm text-[#4A220D] truncate">
+                      {st.quadrupleName}
+                    </p>
+                    <p className="text-xs text-[#7D4E35] truncate">
+                      {st.email || 'مسجل بالدخول السريع'}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </main>
+
+    {/* General Teacher Mushaf Modal */}
+    {generalMushafOpen && (
+      <KingFahdMushafReader
+        studentName="الشرح العام للمعلم"
+        headerSubtitle={`مصحف الملك فهد · القراءة والشرح العام لحلقة ${context.halaqaName}`}
+        readOnlyMistakes
+        initialPage={teacherMushafPage}
+        highlightRanges={[]}
+        mistakes={{}}
+        onMistakesChange={() => {}}
+        onCloseWithPage={(p) => saveTeacherMushafBookmark(p)}
+        onClose={() => setGeneralMushafOpen(false)}
+      />
+    )}
+
+    {/* General Teacher Interactive Book Reader Modal */}
+    {generalBookReader && (
+      <TeacherBookReaderModal
+        workspace={workspace}
+        bookId={generalBookReader.curriculum.bookId}
+        bookTitle={generalBookReader.curriculum.bookTitle}
+        studentName="الشرح العام للمعلم"
+        totalPagesHint={generalBookReader.matchedBook?.totalPages || 1}
+        initialPage={generalBookReader.initialPage}
+        mode="read"
+        currentUserId={currentUserId}
+        onStoppedAtPage={(stoppedPage) => {
+          saveTeacherBookBookmark(generalBookReader.curriculum.bookId, stoppedPage);
+          if (halaqaStudents.length > 0) {
+            setBookPropagationPrompt({
+              curriculum: generalBookReader.curriculum,
+              stoppedPage,
+            });
+          } else {
+            setGroupFeedback(
+              `تم حفظ موضع توقف المعلم عند صفحة ${toArabicIndicDigits(stoppedPage)}.`
+            );
+          }
+        }}
+        onClose={() => setGeneralBookReader(null)}
+      />
+    )}
+
+    {/* Prompt: Propagate Reached Book Page to Checked Students */}
+    {bookPropagationPrompt && (
+      <BookReachedPropagationModal
+        workspace={workspace}
+        context={context}
+        curriculum={bookPropagationPrompt.curriculum}
+        stoppedPage={bookPropagationPrompt.stoppedPage}
+        students={halaqaStudents}
+        currentUserId={currentUserId}
+        currentUserName={currentUserName}
+        onSuccess={(msg) => {
+          setGroupFeedback(msg);
+          void refreshStudentStatuses();
+        }}
+        onClose={() => setBookPropagationPrompt(null)}
+      />
+    )}
+
+    {/* Group Book Tomorrow Homework Modal */}
+    {groupBookHomeworkModal && (
+      <GroupBookHomeworkModal
+        workspace={workspace}
+        context={context}
+        curriculum={groupBookHomeworkModal.curriculum}
+        totalPagesHint={groupBookHomeworkModal.matchedBook?.totalPages || 1}
+        defaultPage={teacherBookPages[groupBookHomeworkModal.curriculum.bookId] || 1}
+        students={halaqaStudents}
+        statuses={studentStatuses}
+        currentUserId={currentUserId}
+        currentUserName={currentUserName}
+        onSuccess={(msg) => {
+          setGroupFeedback(msg);
+          void refreshStudentStatuses();
+        }}
+        onClose={() => setGroupBookHomeworkModal(null)}
+      />
+    )}
+
+    {/* Group Quran Tomorrow Hifz & Reviews Modal */}
+    {groupQuranModalOpen && (
+      <GroupQuranPlanModal
+        workspace={workspace}
+        context={context}
+        students={halaqaStudents}
+        statuses={studentStatuses}
+        currentUserId={currentUserId}
+        currentUserName={currentUserName}
+        onSuccess={(msg) => {
+          setGroupFeedback(msg);
+          void refreshStudentStatuses();
+        }}
+        onClose={() => setGroupQuranModalOpen(false)}
+      />
+    )}
+
+    {/* Batch Quran Today Tasmee Modal */}
+    {batchQuranTasmeeOpen && (
+      <BatchQuranTasmeeModal
+        workspace={workspace}
+        context={context}
+        students={halaqaStudents}
+        currentUserId={currentUserId}
+        currentUserName={currentUserName}
+        onSuccess={(msg) => {
+          setGroupFeedback(msg);
+          void refreshStudentStatuses();
+        }}
+        onClose={() => setBatchQuranTasmeeOpen(false)}
+      />
+    )}
+
+    {/* Batch Book Today Homework Correction Modal */}
+    {batchBookCorrectionBookId && otherCurricula.length > 0 && (
+      <BatchBookCorrectionModal
+        workspace={workspace}
+        context={context}
+        curricula={otherCurricula}
+        initialBookId={batchBookCorrectionBookId}
+        students={halaqaStudents}
+        currentUserId={currentUserId}
+        currentUserName={currentUserName}
+        onSuccess={(msg) => {
+          setGroupFeedback(msg);
+          void refreshStudentStatuses();
+        }}
+        onClose={() => setBatchBookCorrectionBookId(null)}
+      />
+    )}
+  </div>
   );
 };
 

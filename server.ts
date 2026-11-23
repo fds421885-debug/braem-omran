@@ -14,8 +14,11 @@ const __dirname = path.dirname(__filename);
 const PORT = Number(process.env.PORT) || 3000;
 const IS_PROD = process.env.NODE_ENV === 'production';
 
-function getGeminiClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
+function getGeminiClient(customApiKey?: string): GoogleGenAI {
+  const apiKey =
+    typeof customApiKey === 'string' && customApiKey.trim().length > 0
+      ? customApiKey.trim()
+      : process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error('GEMINI_API_KEY is not configured on the server.');
   }
@@ -30,8 +33,12 @@ function getGeminiClient(): GoogleGenAI {
 }
 
 function getFriendlyGeminiError(err: unknown): { status: number; message: string } {
+  const errObj = err as { status?: number; code?: number; message?: string };
+  const statusCode = Number(errObj?.status || errObj?.code || 0);
   const raw = err instanceof Error ? err.message : String(err);
   const lower = raw.toLowerCase();
+
+  console.error('[Gemini API Error]', { statusCode, message: raw.slice(0, 500) });
 
   if (lower.includes('gemini_api_key')) {
     return {
@@ -39,13 +46,35 @@ function getFriendlyGeminiError(err: unknown): { status: number; message: string
       message: 'مفتاح الذكاء الاصطناعي غير مضبوط على الخادم (Settings > Secrets).',
     };
   }
-  if (lower.includes('permission_denied') || lower.includes('api_key_invalid') || lower.includes('403')) {
+  if (lower.includes('timeout')) {
     return {
-      status: 403,
-      message: 'تعذّر التحقق من صلاحية مفتاح الذكاء الاصطناعي؛ يرجى مراجعة Settings > Secrets.',
+      status: 504,
+      message: 'استغرق الاتصال بمحرك الذكاء الاصطناعي وقتاً أطول من المعتاد؛ يرجى إعادة المحاولة.',
     };
   }
-  if (lower.includes('resource_exhausted') || lower.includes('429')) {
+  if (
+    statusCode === 400 ||
+    lower.includes('api_key_invalid') ||
+    lower.includes('api key not valid')
+  ) {
+    return {
+      status: 400,
+      message: 'مفتاح Gemini API غير صالح أو يفتقد الإعداد المطلوب.',
+    };
+  }
+  if (statusCode === 403 || lower.includes('permission_denied') || lower.includes('403')) {
+    return {
+      status: 403,
+      message: 'تم رفض الصلاحية لمفتاح Gemini API؛ يرجى مراجعة المفتاح أو تفعيل خدمة Generative Language API.',
+    };
+  }
+  if (statusCode === 404 || lower.includes('not_found')) {
+    return {
+      status: 404,
+      message: 'النموذج المطلوب غير متاح حالياً في حساب هذا المفتاح.',
+    };
+  }
+  if (statusCode === 429 || lower.includes('resource_exhausted') || lower.includes('429')) {
     return {
       status: 429,
       message: 'تم الوصول للحد المؤقت من الطلبات، انتظر لحظات ثم أعد المحاولة.',
@@ -266,54 +295,72 @@ async function startServer() {
 - تأكد من صحة الحركات (تشكيل كل حرف) وعدم إسقاطها.
 - تأكد أن 0 <= ymin < ymax <= 1000 و 0 <= xmin < xmax <= 1000 لكل كلمة.`;
 
-      const result = await withRetry(() =>
-        ai.models.generateContent({
-          model: 'gemini-4-hydrogen',
-          contents: {
-            parts: [
-              {
-                inlineData: {
-                  mimeType: detectedMimeType,
-                  data: cleanBase64,
-                },
-              },
-              { text: promptText },
-            ],
-          },
-          config: {
-            mediaResolution: MediaResolution.MEDIA_RESOLUTION_HIGH,
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                fullText: {
-                  type: Type.STRING,
-                  description: 'Complete diacritized Arabic text of the page.',
-                },
-                segments: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      text: { type: Type.STRING },
-                      kind: { type: Type.STRING },
-                      ymin: { type: Type.INTEGER },
-                      xmin: { type: Type.INTEGER },
-                      ymax: { type: Type.INTEGER },
-                      xmax: { type: Type.INTEGER },
-                      surahNumber: { type: Type.INTEGER },
-                      ayahNumber: { type: Type.INTEGER },
-                      surahName: { type: Type.STRING },
+      const runAnalyzeModel = async (
+        modelName: 'gemini-4-hydrogen' | 'gemini-3.1-flash-lite',
+        timeoutMs: number
+      ) =>
+        await withTimeout(
+          withRetry(() =>
+            ai.models.generateContent({
+              model: modelName,
+              contents: {
+                parts: [
+                  {
+                    inlineData: {
+                      mimeType: detectedMimeType,
+                      data: cleanBase64,
                     },
-                    required: ['text', 'kind', 'ymin', 'xmin', 'ymax', 'xmax'],
                   },
+                  { text: promptText },
+                ],
+              },
+              config: {
+                mediaResolution: MediaResolution.MEDIA_RESOLUTION_HIGH,
+                responseMimeType: 'application/json',
+                responseSchema: {
+                  type: Type.OBJECT,
+                  properties: {
+                    fullText: {
+                      type: Type.STRING,
+                      description: 'Complete diacritized Arabic text of the page.',
+                    },
+                    segments: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          text: { type: Type.STRING },
+                          kind: { type: Type.STRING },
+                          ymin: { type: Type.INTEGER },
+                          xmin: { type: Type.INTEGER },
+                          ymax: { type: Type.INTEGER },
+                          xmax: { type: Type.INTEGER },
+                          surahNumber: { type: Type.INTEGER },
+                          ayahNumber: { type: Type.INTEGER },
+                          surahName: { type: Type.STRING },
+                        },
+                        required: ['text', 'kind', 'ymin', 'xmin', 'ymax', 'xmax'],
+                      },
+                    },
+                  },
+                  required: ['fullText', 'segments'],
                 },
               },
-              required: ['fullText', 'segments'],
-            },
-          },
-        })
-      );
+            })
+          ),
+          timeoutMs
+        );
+
+      let result;
+      try {
+        result = await runAnalyzeModel('gemini-4-hydrogen', 16000);
+      } catch (primaryErr) {
+        const errCode = Number((primaryErr as { status?: number })?.status || 0);
+        if (errCode === 400 || errCode === 403) {
+          throw primaryErr;
+        }
+        result = await runAnalyzeModel('gemini-3.1-flash-lite', 20000);
+      }
 
       const rawJson = (result.text ?? '{}')
         .trim()
@@ -405,40 +452,60 @@ async function startServer() {
    - "ruleLabel": القاعدة مثل (فتحة، كسرة، ضمة، لام قمرية مظهرة، لام شمسية مدغمة، مد بالألف حركتان، سكون، شدة وفتحة، تنوين بالضم...)
    - "reading": النتيجة المجمعة حتى هذه الخطوة بالحركات الكاملة.`;
 
-      const result = await withTimeout(
-        withRetry(() =>
-          ai.models.generateContent({
-            model: 'gemini-4-hydrogen',
-            contents: prompt,
-            config: {
-              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  diacritizedWord: { type: Type.STRING },
-                  wasAutoDiacritized: { type: Type.BOOLEAN },
-                  tahajjiScript: { type: Type.STRING },
-                  steps: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        part: { type: Type.STRING },
-                        ruleLabel: { type: Type.STRING },
-                        reading: { type: Type.STRING },
+      const runNoorModel = async (
+        modelName: 'gemini-3.1-flash-lite' | 'gemini-4-hydrogen',
+        timeoutMs: number
+      ) =>
+        await withTimeout(
+          withRetry(() =>
+            ai.models.generateContent({
+              model: modelName,
+              contents: prompt,
+              config: {
+                thinkingConfig: {
+                  thinkingLevel:
+                    modelName === 'gemini-3.1-flash-lite'
+                      ? ThinkingLevel.MINIMAL
+                      : ThinkingLevel.LOW,
+                },
+                responseMimeType: 'application/json',
+                responseSchema: {
+                  type: Type.OBJECT,
+                  properties: {
+                    diacritizedWord: { type: Type.STRING },
+                    wasAutoDiacritized: { type: Type.BOOLEAN },
+                    tahajjiScript: { type: Type.STRING },
+                    steps: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          part: { type: Type.STRING },
+                          ruleLabel: { type: Type.STRING },
+                          reading: { type: Type.STRING },
+                        },
+                        required: ['part', 'ruleLabel', 'reading'],
                       },
-                      required: ['part', 'ruleLabel', 'reading'],
                     },
                   },
+                  required: ['diacritizedWord', 'tahajjiScript', 'steps'],
                 },
-                required: ['diacritizedWord', 'tahajjiScript', 'steps'],
               },
-            },
-          })
-        ),
-        9000
-      );
+            })
+          ),
+          timeoutMs
+        );
+
+      let result;
+      try {
+        result = await runNoorModel('gemini-3.1-flash-lite', 9000);
+      } catch (primaryErr) {
+        const errCode = Number((primaryErr as { status?: number })?.status || 0);
+        if (errCode === 400 || errCode === 403) {
+          throw primaryErr;
+        }
+        result = await runNoorModel('gemini-4-hydrogen', 11000);
+      }
 
       const rawJson = (result.text ?? '{}').trim();
       const parsed = JSON.parse(rawJson) as RawNoorResponse;
@@ -532,6 +599,128 @@ async function startServer() {
     } catch (err) {
       const friendly = getFriendlyGeminiError(err);
       res.status(friendly.status).json({ error: friendly.message });
+    }
+  });
+
+  // 4. Smart & Fast Programmer AI Assistant for full platform & database diagnostics
+  app.post('/api/admin/ai-chat', async (req: Request, res: Response) => {
+    try {
+      const { message, history, systemContext, customApiKey } = req.body as {
+        message?: string;
+        history?: Array<{ role: 'user' | 'model'; text: string }>;
+        systemContext?: string;
+        customApiKey?: string;
+      };
+
+      const cleanMessage = String(message || '').trim().slice(0, 4000);
+      if (!cleanMessage) {
+        res.status(400).json({ error: 'يرجى كتابة سؤالك أولاً.' });
+        return;
+      }
+
+      const trimmedCustomKey =
+        typeof customApiKey === 'string' ? customApiKey.trim() : '';
+      const ai = getGeminiClient(trimmedCustomKey || undefined);
+
+      const safeContext = String(systemContext || '').slice(0, 95000);
+      const systemInstruction = `أنت المساعد التقني الذكي المتخصص لمبرمج منصة «براعم عمران» (منصة تعليمية قرآنية متعددة قواعد البيانات).
+مهمتك مساعدة المبرمج في فحص كل شاردة وواردة بدقة وسرعة ووضوح باللغة العربية الفصحى المنظمة:
+- أين تُخزن كل البيانات والمجموعات (Primary DB أم External DB للمجمع أم Tab Shards 4GB المعزولة لكل تبويب: attendance / library / curricula / accounts_invites / mosques_halaqat).
+- تحليل استهلاك المساحة والوثائق لكل قاعدة ولكل مجموعة وكم تبقى على الحدود (Spark 1 GiB للقاعدة الأساسية/المنفردة و4 GiB لكل شريحة تبويب).
+- كشف نقاط الضعف والمشاكل التقنية والتشغيلية (قواعد ممتلئة أو تقترب من الحد، قواعد لا تستجيب، أخطاء Firestore Rules مفصلة، مجمعات دون معزولة، حلقات بلا طلاب أو بلا معلمين، حسابات لم تربط جوجل، كتب عالقة أو متوقفة، إلخ).
+- إذا لم تتوفر معلومة دقيقة في اللقطة الحية المرفقة فاذكر ذلك بوضوح ولا تخمّن بيانات غير موجودة.
+- قدّم إجابات دقيقة، مركزة، بنقاط مرقمة وعملية.
+
+اللقطة الحية الشاملة الحالية للمنصة وقواعدها:
+${safeContext || 'لم يتم إرفاق بيانات بعد.'}`;
+
+      const safeHistory = Array.isArray(history)
+        ? history
+            .slice(-12)
+            .filter(
+              (h) =>
+                h &&
+                (h.role === 'user' || h.role === 'model') &&
+                typeof h.text === 'string' &&
+                h.text.trim().length > 0
+            )
+            .map((h) => ({
+              role: h.role,
+              parts: [{ text: h.text.trim().slice(0, 4000) }],
+            }))
+        : [];
+
+      const contents = [
+        ...safeHistory,
+        {
+          role: 'user' as const,
+          parts: [{ text: cleanMessage }],
+        },
+      ];
+
+      const startedAt = Date.now();
+      const callModel = async (
+        modelName: 'gemini-3.1-flash-lite' | 'gemini-4-hydrogen',
+        timeoutMs: number
+      ) => {
+        const thinkingLevel =
+          modelName === 'gemini-3.1-flash-lite'
+            ? ThinkingLevel.LOW
+            : ThinkingLevel.LOW;
+        return await withTimeout(
+          ai.models.generateContent({
+            model: modelName,
+            contents,
+            config: {
+              thinkingConfig: { thinkingLevel },
+              systemInstruction,
+            },
+          }),
+          timeoutMs
+        );
+      };
+
+      let result;
+      try {
+        result = await callModel('gemini-3.1-flash-lite', 14000);
+      } catch (primaryErr) {
+        const rawErr = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
+        console.warn('[AI Chat Primary Fallback]', rawErr.slice(0, 220));
+        const errCode = Number((primaryErr as { status?: number })?.status || 0);
+        if (errCode === 400 || errCode === 403) {
+          throw primaryErr;
+        }
+        result = await callModel('gemini-4-hydrogen', 14000);
+      }
+
+      const latencyMs = Date.now() - startedAt;
+
+      const replyText = (result.text ?? '').trim();
+      if (!replyText) {
+        res.status(502).json({ error: 'لم يُرجع الذكاء الاصطناعي نصاً للرد؛ أعد المحاولة.' });
+        return;
+      }
+
+      res.json({
+        reply: replyText,
+        usageMetadata: result.usageMetadata
+          ? {
+              promptTokenCount: result.usageMetadata.promptTokenCount ?? 0,
+              candidatesTokenCount: result.usageMetadata.candidatesTokenCount ?? 0,
+              totalTokenCount: result.usageMetadata.totalTokenCount ?? 0,
+            }
+          : null,
+        latencyMs,
+        usingCustomKey: Boolean(trimmedCustomKey),
+      });
+    } catch (err) {
+      const friendly = getFriendlyGeminiError(err);
+      const customKeyNote =
+        typeof (req.body as { customApiKey?: string })?.customApiKey === 'string' &&
+        (req.body as { customApiKey?: string }).customApiKey?.trim()
+          ? ' (تم استخدام مفتاح API المخصص المدخل من زر القلم — تأكد من صحته وصلاحياته)'
+          : '';
+      res.status(friendly.status).json({ error: `${friendly.message}${customKeyNote}` });
     }
   });
 

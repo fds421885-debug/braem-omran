@@ -14,13 +14,14 @@ import primaryFirestoreRulesRaw from '../../firestore.rules?raw';
 import primaryFirebaseConfig from '../../firebase-applet-config.json';
 import { auth as primaryAuth, db as primaryDb } from '../firebase';
 import { ADMIN_QUADRUPLE_NAME } from '../types/platform';
-import { EXTERNAL_DB_RECOMMENDED_RULES, getDbDisplayLabel } from './multiDb';
+import { EXTERNAL_DB_RECOMMENDED_RULES, getDbDisplayLabel, getFirestoreForConfig } from './multiDb';
 import { getAllKnownDatabases, type ResolvedDbTarget } from './platformService';
 
 export interface DatabaseRulesCheckIssue {
   key: string;
   title: string;
   detail: string;
+  ruleSnippet?: string;
 }
 
 export interface DatabaseRulesAuditResult {
@@ -69,6 +70,7 @@ const PRIMARY_READ_CHECK_COLLECTIONS: PrimaryCollectionProbe[] = [
   { col: 'curricula', label: 'المقررات (curricula)', mode: 'list_unfiltered' },
   { col: 'studentQuranPlans', label: 'خطط حفظ ومراجعة الطلاب (studentQuranPlans)', mode: 'list_unfiltered' },
   { col: 'studentMushafMistakes', label: 'أخطاء تلاوة الطلاب بالمصحف (studentMushafMistakes)', mode: 'list_unfiltered' },
+  { col: 'studentBookPlans', label: 'متابعة وواجبات الكتب (studentBookPlans)', mode: 'list_unfiltered' },
   { col: 'broadcasts', label: 'الإشعارات والرسائل الفورية (broadcasts)', mode: 'list_unfiltered' },
   { col: 'dbRegistry', label: 'سجل ربط القواعد (dbRegistry)', mode: 'list_active_true' },
   { col: 'stats', label: 'الإحصائيات (stats)', mode: 'get_global_doc' },
@@ -90,6 +92,7 @@ const EXTERNAL_ALL_COLLECTIONS: { col: string; label: string }[] = [
   { col: 'curricula', label: 'المقررات (curricula)' },
   { col: 'studentQuranPlans', label: 'خطط حفظ ومراجعة الطلاب (studentQuranPlans)' },
   { col: 'studentMushafMistakes', label: 'أخطاء تلاوة الطلاب بالمصحف (studentMushafMistakes)' },
+  { col: 'studentBookPlans', label: 'متابعة وواجبات الكتب (studentBookPlans)' },
   { col: 'wordAudio', label: 'صوتيات القراءة والتهجي (wordAudio)' },
   { col: 'broadcasts', label: 'الإشعارات والرسائل الفورية (broadcasts)' },
 ];
@@ -177,7 +180,8 @@ async function probeExternalCollectionReadRest(
   projectId: string,
   dbSegment: string,
   apiKey: string,
-  colName: string
+  colName: string,
+  confForSdkFallback?: ResolvedDbTarget['config']
 ): Promise<'ok' | 'permission_denied' | 'network_error'> {
   try {
     const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
@@ -187,7 +191,24 @@ async function probeExternalCollectionReadRest(
     )}?pageSize=1&key=${encodeURIComponent(apiKey)}`;
     const res = await fetch(url, { cache: 'no-store' });
     if (res.ok) return 'ok';
-    if (res.status === 403) return 'permission_denied';
+    if (res.status === 403) {
+      // Secondary live check via Firestore SDK to rule out any intermediary HTTP proxy staleness
+      if (confForSdkFallback) {
+        try {
+          const extDb = getFirestoreForConfig(confForSdkFallback);
+          await Promise.race([
+            getDocsFromServer(query(collection(extDb, colName), limit(1))),
+            new Promise<never>((_, reject) =>
+              window.setTimeout(() => reject(new Error('timeout')), 4000)
+            ),
+          ]);
+          return 'ok';
+        } catch (sdkErr) {
+          if (isPermissionDeniedError(sdkErr)) return 'permission_denied';
+        }
+      }
+      return 'permission_denied';
+    }
     return 'network_error';
   } catch {
     return 'network_error';
@@ -249,6 +270,7 @@ async function auditPrimaryDatabaseRules(adminUid: string): Promise<DatabaseRule
   const issues: DatabaseRulesCheckIssue[] = [];
   let networkFailures = 0;
 
+  await primaryAuth.authStateReady().catch(() => {});
   const authUser = primaryAuth.currentUser;
   const effectiveAdminUid = authUser?.uid || '';
 
@@ -424,7 +446,7 @@ async function auditExternalDatabaseRules(
     };
   }
 
-  // Stateless REST probes (cache: 'no-store') completely avoid stale WebChannel SDK state
+  // Stateless REST probes (cache: 'no-store') + SDK fallback check avoid stale edge responses
   const readChecks = await Promise.all(
     EXTERNAL_ALL_COLLECTIONS.map(async (item) => ({
       item,
@@ -432,17 +454,20 @@ async function auditExternalDatabaseRules(
         projectId,
         firestoreDatabaseId,
         apiKey,
-        item.col
+        item.col,
+        conf
       ),
     }))
   );
 
   for (const { item, res } of readChecks) {
     if (res === 'permission_denied') {
+      const ruleSegment = item.col === 'healthcheck' ? '{docId}' : '{id}';
       issues.push({
         key: `ext_read_${item.col}`,
         title: `مجموعة ${item.label} مرفوضة أو مفقودة في القواعد`,
         detail: `القاعدة الخارجية لا تسمح بالوصول لمجموعة ${item.col}.`,
+        ruleSnippet: `    match /${item.col}/${ruleSegment} {\n      allow read, write: if true;\n    }`,
       });
     } else if (res === 'network_error') {
       networkFailures++;
@@ -450,7 +475,7 @@ async function auditExternalDatabaseRules(
   }
 
   const suffix = createProbeSuffix();
-  const [hcWriteRes, msgWriteRes, audioWriteRes] = await Promise.all([
+  const [hcWriteRes, msgWriteRes, audioWriteRes, bookPlanWriteRes] = await Promise.all([
     probeExternalWriteAndDeleteRest(
       projectId,
       firestoreDatabaseId,
@@ -472,6 +497,13 @@ async function auditExternalDatabaseRules(
       'wordAudio',
       `aud_audit_${suffix}`
     ),
+    probeExternalWriteAndDeleteRest(
+      projectId,
+      firestoreDatabaseId,
+      apiKey,
+      'studentBookPlans',
+      `bp_audit_${suffix}`
+    ),
   ]);
 
   if (hcWriteRes === 'permission_denied') {
@@ -479,6 +511,7 @@ async function auditExternalDatabaseRules(
       key: 'ext_write_healthcheck',
       title: 'صلاحية الكتابة في القاعدة الخارجية (healthcheck) مرفوضة',
       detail: 'قواعد الكتابة مغلقة في هذه القاعدة المنفصلة.',
+      ruleSnippet: `    match /healthcheck/{docId} {\n      allow read, write: if true;\n    }`,
     });
   }
 
@@ -487,6 +520,7 @@ async function auditExternalDatabaseRules(
       key: 'ext_write_broadcasts',
       title: 'صلاحية الكتابة لمجموعة الإشعارات (broadcasts) مفقودة',
       detail: 'القاعدة الخارجية بحاجة لتحديث كود القواعد ليشمل broadcasts و wordAudio.',
+      ruleSnippet: `    match /broadcasts/{id} {\n      allow read, write: if true;\n    }`,
     });
   }
 
@@ -495,6 +529,19 @@ async function auditExternalDatabaseRules(
       key: 'ext_write_wordAudio',
       title: 'صلاحية الكتابة لمجموعة الصوتيات (wordAudio) مفقودة',
       detail: 'القاعدة الخارجية بحاجة لتحديث كود القواعد ليشمل wordAudio.',
+      ruleSnippet: `    match /wordAudio/{id} {\n      allow read, write: if true;\n    }`,
+    });
+  }
+
+  if (
+    bookPlanWriteRes === 'permission_denied' &&
+    !issues.some((iss) => iss.key === 'ext_read_studentBookPlans')
+  ) {
+    issues.push({
+      key: 'ext_write_studentBookPlans',
+      title: 'صلاحية الكتابة لمجموعة متابعة الكتب (studentBookPlans) مرفوضة',
+      detail: 'القراءة مسموحة لكن الكتابة مغلقة لمجموعة studentBookPlans؛ تأكد من وجود allow read, write: if true.',
+      ruleSnippet: `    match /studentBookPlans/{id} {\n      allow read, write: if true;\n    }`,
     });
   }
 
@@ -561,11 +608,15 @@ export async function auditAllDatabasesRules(
 
   let report = await runSingleAuditPass(adminUid);
 
-  // If the user manually clicked recheck right after pressing Publish in Firebase Console,
-  // allow a brief propagation window and perform one automatic clean recheck.
+  // Firebase Security Rules propagation to edge API nodes typically takes 4-12s after Publish.
+  // Retry cleanly with short delays when manually rechecking until all databases report healthy.
   if (options?.waitForPropagation && !report.allHealthy) {
-    await new Promise((resolve) => window.setTimeout(resolve, 3500));
+    await new Promise((resolve) => window.setTimeout(resolve, 4000));
     report = await runSingleAuditPass(adminUid);
+    if (!report.allHealthy) {
+      await new Promise((resolve) => window.setTimeout(resolve, 5500));
+      report = await runSingleAuditPass(adminUid);
+    }
   }
 
   return report;

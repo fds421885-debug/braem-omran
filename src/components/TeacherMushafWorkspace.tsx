@@ -12,6 +12,7 @@ import {
   Sparkles,
   Trash2,
   Volume2,
+  XCircle,
 } from 'lucide-react';
 import { generateValidId, getTodayDateKey } from '../services/multiDb';
 import {
@@ -23,6 +24,7 @@ import {
   type MushafSurahMeta,
 } from '../services/mushafService';
 import {
+  applyQuranTasmeeOutcomesToPlan,
   loadStudentMushafMistakes,
   loadStudentQuranPlanForDate,
   saveStudentMushafMistakes,
@@ -366,10 +368,58 @@ export const TeacherMushafWorkspace: React.FC<TeacherMushafWorkspaceProps> = ({
     });
   };
 
+  const handleToggleTodayNewHeard = (heard: boolean) => {
+    if (!todayNew) return;
+    setTodayNew((prev) => (prev ? { ...prev, completed: heard } : null));
+    if (!heard) {
+      const { completed: _c, note: _n, ...rangeProps } = todayNew;
+      setTomorrowNew((prev) => ({
+        ...rangeProps,
+        reciterId: prev?.reciterId || todayNew.reciterId || getSavedTeacherReciterId(),
+      }));
+    }
+  };
+
+  const handleToggleTodayReviewHeard = (revId: string, heard: boolean) => {
+    const targetRev = todayReviews.find((r) => r.id === revId);
+    setTodayReviews((prev) =>
+      prev.map((item) => (item.id === revId ? { ...item, completed: heard } : item))
+    );
+    if (!heard && targetRev) {
+      setTomorrowReviews((prev) => {
+        const exists = prev.some(
+          (ex) =>
+            ex.reviewType === targetRev.reviewType &&
+            (ex.customLabel || '') === (targetRev.customLabel || '') &&
+            ex.startSurah === targetRev.startSurah &&
+            ex.startAyah === targetRev.startAyah &&
+            ex.endSurah === targetRev.endSurah &&
+            ex.endAyah === targetRev.endAyah
+        );
+        if (exists) return prev;
+        const { id: _oldId, completed: _c, ...rest } = targetRev;
+        return [
+          ...prev,
+          {
+            ...rest,
+            id: generateValidId('rev'),
+          },
+        ];
+      });
+    }
+  };
+
   const handleSavePlan = async () => {
     setSavingPlan(true);
     setFeedback(null);
     try {
+      const normalized = applyQuranTasmeeOutcomesToPlan({
+        todayNew,
+        todayReviews,
+        tomorrowNew,
+        tomorrowReviews,
+      });
+
       const saved = await saveStudentQuranPlan({
         workspace,
         mosqueId: context.mosqueId,
@@ -377,13 +427,18 @@ export const TeacherMushafWorkspace: React.FC<TeacherMushafWorkspaceProps> = ({
         studentId: student.id,
         studentName: student.quadrupleName,
         dateKey,
-        todayNew,
-        todayReviews,
-        tomorrowNew,
-        tomorrowReviews,
+        todayNew: normalized.finalTodayNew,
+        todayReviews: normalized.finalTodayReviews,
+        tomorrowNew: normalized.finalTomorrowNew,
+        tomorrowReviews: normalized.finalTomorrowReviews,
         recordedBy: currentUserId,
         recordedByName: currentUserName,
       });
+
+      setTodayNew(saved.todayNew || null);
+      setTodayReviews(saved.todayReviews || []);
+      setTomorrowNew(saved.tomorrowNew || null);
+      setTomorrowReviews(saved.tomorrowReviews || []);
 
       setHistoryRecords((prev) => {
         const filtered = prev.filter((item) => item.dateKey !== saved.dateKey);
@@ -632,9 +687,51 @@ export const TeacherMushafWorkspace: React.FC<TeacherMushafWorkspaceProps> = ({
               </p>
             ) : (
               <div className="bg-[#FDF6EE] border border-[#EADBC8] rounded-2xl p-4 space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-extrabold text-[#357A02]">
-                  <span>المقطع المحدد: {formatQuranRangeSummary(surahs, todayNew)}</span>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs font-extrabold text-[#357A02]">
+                    المقطع المحدد: {formatQuranRangeSummary(surahs, todayNew)}
+                  </span>
+
+                  {/* Tasmee Status Pills (Default = تم التسميع ✓ unless marked لم يسمّع) */}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleTodayNewHeard(true)}
+                      className={`min-h-[34px] px-3 py-1 rounded-xl border-2 font-display font-extrabold text-xs inline-flex items-center gap-1 cursor-pointer transition-colors ${
+                        todayNew.completed !== false
+                          ? 'bg-[#58CC02] border-[#46A302] text-white'
+                          : 'bg-white border-[#EADBC8] text-[#7D4E35] hover:border-[#58CC02]'
+                      }`}
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>تم التسميع ✓</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleToggleTodayNewHeard(false)}
+                      className={`min-h-[34px] px-3 py-1 rounded-xl border-2 font-display font-extrabold text-xs inline-flex items-center gap-1 cursor-pointer transition-colors ${
+                        todayNew.completed === false
+                          ? 'bg-[#D95338] border-[#B43D25] text-white'
+                          : 'bg-white border-[#EADBC8] text-[#7D4E35] hover:border-[#D95338]'
+                      }`}
+                    >
+                      <XCircle className="w-3.5 h-3.5" />
+                      <span>لم يسمّع</span>
+                    </button>
+                  </div>
                 </div>
+
+                {todayNew.completed === false ? (
+                  <p className="text-[11px] font-extrabold text-[#D95338] bg-[#D95338]/10 border border-[#D95338]/30 rounded-xl px-3 py-1.5">
+                    تم تحديد «لم يسمّع» — تم تعيين هذا المقطع تلقائياً في «حفظ الجديد بتاع بكرة» ليعيده الطالب غداً.
+                  </p>
+                ) : (
+                  <p className="text-[11px] font-bold text-[#7D4E35]">
+                    الحالة التلقائية: «تم التسميع ✓» إذا لم تغيّرها عند الحفظ.
+                  </p>
+                )}
+
                 <RangeSelectorRow
                   surahs={surahs}
                   value={todayNew}
@@ -746,9 +843,45 @@ export const TeacherMushafWorkspace: React.FC<TeacherMushafWorkspaceProps> = ({
                       </div>
                     </div>
 
-                    <p className="text-xs font-bold text-[#7D4E35]">
-                      {formatQuranRangeSummary(surahs, rev)}
-                    </p>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-xs font-bold text-[#7D4E35]">
+                        {formatQuranRangeSummary(surahs, rev)}
+                      </p>
+
+                      {/* Review Tasmee Status Pills */}
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleTodayReviewHeard(rev.id, true)}
+                          className={`min-h-[32px] px-2.5 py-1 rounded-xl border-2 font-display font-extrabold text-[11px] inline-flex items-center gap-1 cursor-pointer transition-colors ${
+                            rev.completed !== false
+                              ? 'bg-[#58CC02] border-[#46A302] text-white'
+                              : 'bg-white border-[#EADBC8] text-[#7D4E35] hover:border-[#58CC02]'
+                          }`}
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          <span>تم التسميع ✓</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleTodayReviewHeard(rev.id, false)}
+                          className={`min-h-[32px] px-2.5 py-1 rounded-xl border-2 font-display font-extrabold text-[11px] inline-flex items-center gap-1 cursor-pointer transition-colors ${
+                            rev.completed === false
+                              ? 'bg-[#D95338] border-[#B43D25] text-white'
+                              : 'bg-white border-[#EADBC8] text-[#7D4E35] hover:border-[#D95338]'
+                          }`}
+                        >
+                          <XCircle className="w-3.5 h-3.5" />
+                          <span>لم يسمّع (لغد)</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {rev.completed === false && (
+                      <p className="text-[11px] font-extrabold text-[#D95338] bg-[#D95338]/10 border border-[#D95338]/30 rounded-xl px-3 py-1">
+                        لم يسمّع هذه المراجعة — تمت إضافتها تلقائياً إلى «مراجعات بكرة».
+                      </p>
+                    )}
 
                     <RangeSelectorRow
                       surahs={surahs}

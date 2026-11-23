@@ -53,6 +53,7 @@ import { ExternalDbModal } from './ExternalDbModal';
 import { MascotImage } from './MascotImage';
 import { ModernLoader } from './ModernLoader';
 import { PWAInstallButton } from './PWAInstallButton';
+import { ProgrammerAiAssistant } from './ProgrammerAiAssistant';
 import { RulesHealthModal } from './RulesHealthModal';
 
 interface AdminDashboardProps {
@@ -281,7 +282,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
 
           {/* Actions */}
           <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 shrink-0">
-            {rulesAuditReport && !rulesAuditReport.allHealthy && (
+            {auditingRules ? (
+              <span className="min-h-[42px] px-3 py-2 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE] text-[#7D4E35] font-display font-bold text-xs inline-flex items-center gap-1.5 whitespace-nowrap shrink-0">
+                <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#F56900] shrink-0" />
+                <span>فحص Rules...</span>
+              </span>
+            ) : rulesAuditReport && !rulesAuditReport.allHealthy ? (
               <button
                 type="button"
                 onClick={() => setRulesModalOpen(true)}
@@ -290,7 +296,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
                 <ShieldAlert className="w-4 h-4 shrink-0" />
                 <span>تحديث Rules ({rulesAuditReport.unhealthyDatabases.length})</span>
               </button>
-            )}
+            ) : rulesAuditReport &&
+              rulesAuditReport.allResults.some((r) => r.status === 'unreachable') ? (
+              <button
+                type="button"
+                onClick={() => setRulesModalOpen(true)}
+                title="تعذّر الوصول لبعض القواعد أثناء الفحص — اضغط للتفاصيل وإعادة الفحص"
+                className="min-h-[42px] px-3 py-2 rounded-xl border-2 border-[#FFA900]/70 bg-[#FFA900]/12 hover:bg-[#FFA900]/20 text-[#9A5B00] font-display font-extrabold text-xs inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <ShieldAlert className="w-4 h-4 shrink-0" />
+                <span>Rules ({rulesAuditReport.healthyCount}/{rulesAuditReport.totalDatabases})</span>
+              </button>
+            ) : rulesAuditReport ? (
+              <button
+                type="button"
+                onClick={() => setRulesModalOpen(true)}
+                title="تم التحقق التلقائي من جميع قواعد البيانات — اضغط لإعادة الفحص"
+                className="min-h-[42px] px-3 py-2 rounded-xl border-2 border-[#58CC02]/50 bg-[#58CC02]/10 hover:bg-[#58CC02]/18 text-[#46A302] font-display font-extrabold text-xs inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <ShieldCheck className="w-4 h-4 shrink-0" />
+                <span>Rules سليمة ({rulesAuditReport.healthyCount}/{rulesAuditReport.totalDatabases})</span>
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={() => setMessageModalOpen(true)}
@@ -338,6 +365,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
               const relocated = refreshedComplexes.find((c) => c.id === complexId) || null;
               setSelectedComplex(relocated);
               await loadAll(true);
+              void runRulesAudit(false);
             }}
           />
         ) : !loading && page === 'home' && statsData ? (
@@ -821,7 +849,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
           onClose={() => setEditorOpen(false)}
           onSaved={() => {
             setEditorOpen(false);
-            loadAll(true);
+            void loadAll(true);
+            void runRulesAudit(false);
           }}
         />
       )}
@@ -885,6 +914,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
           </div>,
           document.body
         )}
+      {/* Floating Smart AI Assistant for Programmer Admin */}
+      <ProgrammerAiAssistant
+        complexes={complexes}
+        connectedDbs={connectedDbs}
+        rulesAuditReport={rulesAuditReport}
+      />
     </div>
   );
 };

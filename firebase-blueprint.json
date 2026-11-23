@@ -475,6 +475,47 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "StudentBookPlanRecord": {
+      "title": "StudentBookPlanRecord",
+      "description": "Daily per-student book progress position (where we reached page) plus today and tomorrow book homeworks.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "complexId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "mosqueId": { "type": "string", "maxLength": 128 },
+        "halaqaId": { "type": "string", "maxLength": 128 },
+        "studentId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "studentName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "bookId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "bookTitle": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "dateKey": { "type": "string", "minLength": 8, "maxLength": 16, "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "whereWeReachedPage": { "type": "integer" },
+        "todayHomeworks": { "type": "array" },
+        "tomorrowHomeworks": { "type": "array" },
+        "recordedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "recordedByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "complexId",
+        "mosqueId",
+        "halaqaId",
+        "studentId",
+        "studentName",
+        "bookId",
+        "bookTitle",
+        "dateKey",
+        "whereWeReachedPage",
+        "todayHomeworks",
+        "tomorrowHomeworks",
+        "recordedBy",
+        "recordedByName",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -549,6 +590,10 @@
     "/studentMushafMistakes/{recordId}": {
       "schema": { "$ref": "#/entities/StudentMushafMistakesRecord" },
       "description": "Per-student isolated Mushaf ayah mistake counters."
+    },
+    "/studentBookPlans/{planId}": {
+      "schema": { "$ref": "#/entities/StudentBookPlanRecord" },
+      "description": "Daily per-student book reading checkpoint (where we reached) and book homeworks."
     }
   }
 }

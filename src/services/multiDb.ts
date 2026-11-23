@@ -73,6 +73,9 @@ service cloud.firestore {
     match /studentMushafMistakes/{id} {
       allow read, write: if true;
     }
+    match /studentBookPlans/{id} {
+      allow read, write: if true;
+    }
   }
 }`;
 

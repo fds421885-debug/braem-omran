@@ -38,11 +38,14 @@ export interface MushafHighlightRange {
 
 interface KingFahdMushafReaderProps {
   studentName: string;
+  headerSubtitle?: string;
+  readOnlyMistakes?: boolean;
   initialPage?: number;
   highlightRanges: MushafHighlightRange[];
   focusTarget?: { surah: number; ayah: number } | null;
   mistakes: Record<string, number>;
   onMistakesChange: (nextMistakes: Record<string, number>) => void;
+  onCloseWithPage?: (pageNumber: number) => void;
   onClose: () => void;
 }
 
@@ -71,11 +74,14 @@ function groupLineTokensByAyah(tokens: MushafWordToken[]): AyahLineGroup[] {
 
 export const KingFahdMushafReader: React.FC<KingFahdMushafReaderProps> = ({
   studentName,
+  headerSubtitle,
+  readOnlyMistakes = false,
   initialPage = 1,
   highlightRanges,
   focusTarget,
   mistakes,
   onMistakesChange,
+  onCloseWithPage,
   onClose,
 }) => {
   const [pageNumber, setPageNumber] = useState<number>(() =>
@@ -108,6 +114,7 @@ export const KingFahdMushafReader: React.FC<KingFahdMushafReaderProps> = ({
   // Gesture refs
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const holdTimerRef = useRef<number | null>(null);
+  const holdFeedbackTimerRef = useRef<number | null>(null);
   const holdStartPosRef = useRef<{ x: number; y: number } | null>(null);
   const longPressTriggeredRef = useRef<boolean>(false);
   const lastTapRef = useRef<{ key: string; time: number } | null>(null);
@@ -209,6 +216,9 @@ export const KingFahdMushafReader: React.FC<KingFahdMushafReaderProps> = ({
     return () => {
       if (holdTimerRef.current !== null) {
         window.clearTimeout(holdTimerRef.current);
+      }
+      if (holdFeedbackTimerRef.current !== null) {
+        window.clearTimeout(holdFeedbackTimerRef.current);
       }
       if (audioRef.current) {
         try {
@@ -337,6 +347,10 @@ export const KingFahdMushafReader: React.FC<KingFahdMushafReaderProps> = ({
       window.clearTimeout(holdTimerRef.current);
       holdTimerRef.current = null;
     }
+    if (holdFeedbackTimerRef.current !== null) {
+      window.clearTimeout(holdFeedbackTimerRef.current);
+      holdFeedbackTimerRef.current = null;
+    }
     holdStartPosRef.current = null;
     setHoldingAyahKey(null);
   };
@@ -351,10 +365,19 @@ export const KingFahdMushafReader: React.FC<KingFahdMushafReaderProps> = ({
     longPressTriggeredRef.current = false;
     const key = `${surahNum}:${ayahNum}`;
     holdStartPosRef.current = { x: e.clientX, y: e.clientY };
-    setHoldingAyahKey(key);
+
+    // Delay visual hold banner/ring past the double-tap window (420ms) so tapping twice never flickers
+    holdFeedbackTimerRef.current = window.setTimeout(() => {
+      holdFeedbackTimerRef.current = null;
+      setHoldingAyahKey(key);
+    }, 420);
 
     holdTimerRef.current = window.setTimeout(() => {
       longPressTriggeredRef.current = true;
+      if (holdFeedbackTimerRef.current !== null) {
+        window.clearTimeout(holdFeedbackTimerRef.current);
+        holdFeedbackTimerRef.current = null;
+      }
       setHoldingAyahKey(null);
       holdTimerRef.current = null;
       void playAyahFromStart(surahNum, ayahNum);
@@ -376,6 +399,7 @@ export const KingFahdMushafReader: React.FC<KingFahdMushafReaderProps> = ({
       longPressTriggeredRef.current = false;
       return;
     }
+    if (readOnlyMistakes) return;
     const key = `${surahNum}:${ayahNum}`;
     const now = Date.now();
     const prev = lastTapRef.current;
@@ -504,6 +528,7 @@ export const KingFahdMushafReader: React.FC<KingFahdMushafReaderProps> = ({
               type="button"
               onClick={() => {
                 stopAudioCompletely();
+                onCloseWithPage?.(pageNumberRef.current);
                 onClose();
               }}
               aria-label="إغلاق المصحف"
@@ -513,7 +538,7 @@ export const KingFahdMushafReader: React.FC<KingFahdMushafReaderProps> = ({
             </button>
             <div className="min-w-0">
               <p className="text-[11px] font-extrabold text-[#F56900] truncate">
-                مصحف الملك فهد · مصحف الطالب: {studentName}
+                {headerSubtitle || `مصحف الملك فهد · مصحف الطالب: ${studentName}`}
               </p>
               <h2 className="font-display text-sm sm:text-base font-extrabold text-[#4A220D] truncate">
                 {pageSurahsSummary}
@@ -641,14 +666,6 @@ export const KingFahdMushafReader: React.FC<KingFahdMushafReaderProps> = ({
           )}
         </div>
 
-        {/* 2-second hold feedback indicator */}
-        {holdingAyahKey && (
-          <div className="max-w-5xl mx-auto mt-1.5 bg-[#F56900]/12 border border-[#F56900]/40 rounded-xl px-3 py-1 flex items-center justify-between text-xs font-bold text-[#C95200]">
-            <span>استمر بالضغط لمدة ثانيتين لبدء القراءة الصوتية المتواصلة...</span>
-            <span className="tabular-nums">٢ ث</span>
-          </div>
-        )}
-
         {audioError && (
           <div className="max-w-5xl mx-auto mt-1.5 bg-[#D95338]/12 border border-[#D95338]/40 rounded-xl px-3 py-1 text-xs font-bold text-[#D95338]">
             {audioError}
@@ -656,13 +673,26 @@ export const KingFahdMushafReader: React.FC<KingFahdMushafReaderProps> = ({
         )}
       </header>
 
-      {/* Main Mushaf Page Body (Touch Swipe Enabled) */}
+      {/* Main Mushaf Page Body (Touch Swipe Enabled + Floating Non-Shifting Hold Indicator) */}
       <div
         ref={scrollContainerRef}
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
-        className="flex-1 overflow-y-auto px-2 sm:px-6 py-4 flex flex-col items-center justify-start"
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
+        className="relative flex-1 overflow-y-auto px-2 sm:px-6 py-4 flex flex-col items-center justify-start mushaf-no-callout"
       >
+        {holdingAyahKey && (
+          <div
+            aria-live="polite"
+            className="pointer-events-none fixed top-24 left-1/2 -translate-x-1/2 z-[85] bg-[#4A220D] text-white border-2 border-[#F56900] rounded-2xl px-4 py-2 shadow-lg flex items-center gap-2 text-xs font-display font-bold whitespace-nowrap"
+          >
+            <Mic className="w-3.5 h-3.5 text-[#FFA900] animate-pulse shrink-0" />
+            <span>استمر بالضغط لمدة ثانيتين لبدء التلاوة المتواصلة...</span>
+          </div>
+        )}
         {loadingPage ? (
           <div className="my-auto py-16">
             <ModernLoader label={`جاري فتح صفحة ${toArabicIndicDigits(pageNumber)}...`} />
@@ -684,7 +714,11 @@ export const KingFahdMushafReader: React.FC<KingFahdMushafReaderProps> = ({
         ) : (
           <div
             key={`${pageData.p}_${flipAnimCounter}`}
-            className={`w-full max-w-[660px] bg-[#FFFDF7] border-2 border-[#C95200]/45 rounded-[28px] p-2 sm:p-4 shadow-sm ${
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+            }}
+            className={`w-full max-w-[660px] bg-[#FFFDF7] border-2 border-[#C95200]/45 rounded-[28px] p-2 sm:p-4 shadow-sm mushaf-no-callout ${
               flipDirection === 'next'
                 ? 'animate-mushaf-next'
                 : flipDirection === 'prev'
@@ -787,7 +821,7 @@ export const KingFahdMushafReader: React.FC<KingFahdMushafReaderProps> = ({
                         const hasEndToken = grp.tokens.some((t) => t.e === 1);
 
                         let spanClasses =
-                          'inline-flex flex-wrap items-baseline gap-x-1.5 px-1 rounded-lg transition-colors cursor-pointer touch-manipulation ';
+                          'inline-flex flex-wrap items-baseline gap-x-1.5 px-1 rounded-lg transition-colors cursor-pointer mushaf-no-callout ';
                         if (mistakeCount > 0) {
                           spanClasses +=
                             'bg-[#D95338]/18 text-[#8C1D09] underline decoration-[#D95338] decoration-2 underline-offset-4 ';
@@ -810,6 +844,11 @@ export const KingFahdMushafReader: React.FC<KingFahdMushafReaderProps> = ({
                           <span
                             key={`${key}_${gIdx}`}
                             data-ayah-key={key}
+                            draggable={false}
+                            onContextMenu={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                            }}
                             onPointerDown={(e) =>
                               handleAyahPointerDown(e, grp.surah, grp.ayah)
                             }

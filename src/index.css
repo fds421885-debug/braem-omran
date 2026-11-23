@@ -123,6 +123,14 @@
   animation: mushafFlipPrev 260ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+.mushaf-no-callout {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-fox-float,
   .animate-mushaf-next,

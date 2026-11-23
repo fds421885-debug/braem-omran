@@ -23,6 +23,7 @@ import { auth, db as primaryDb, handleFirestoreError, OperationType } from '../f
 import primaryFirebaseConfig from '../../firebase-applet-config.json';
 import {
   ADMIN_QUADRUPLE_NAME,
+  BOOK_HOMEWORK_TYPE_LABELS,
   COMPLEX_FEATURE_TAB_LABELS,
   QURAN_REVIEW_TYPE_LABELS,
   SPARK_FREE_TIER_BYTES,
@@ -32,6 +33,8 @@ import {
   type AttendanceEntry,
   type AttendanceRecord,
   type AttendanceStatus,
+  type BookHomeworkStatus,
+  type BookHomeworkType,
   type BookPageRecord,
   type BookRecord,
   type BookTextSegment,
@@ -52,6 +55,8 @@ import {
   type PhysicalDatabaseUsageSummary,
   type QuickLinkRecord,
   type QuranReviewType,
+  type StudentBookHomeworkItem,
+  type StudentBookPlanRecord,
   type StudentMushafMistakesRecord,
   type StudentQuranNewHifzItem,
   type StudentQuranPlanRecord,
@@ -62,6 +67,7 @@ import {
   type UserRole,
   type WeekDayKey,
 } from '../types/platform';
+import type { PlatformRulesAuditReport } from './rulesAuditService';
 import { shrinkWavBase64ForDb } from './bookStorage';
 import {
   buildDbConnectionId,
@@ -4371,7 +4377,7 @@ async function measureTabUsageOnDb(
   let docsCount = 0;
   const colMap: Record<ComplexFeatureTabKey, string[]> = {
     attendance: ['attendance'],
-    curricula: ['curricula', 'studentQuranPlans', 'studentMushafMistakes'],
+    curricula: ['curricula', 'studentQuranPlans', 'studentMushafMistakes', 'studentBookPlans'],
     library: ['books', 'bookPages', 'wordAudio'],
     mosques_halaqat: ['mosques', 'halaqat'],
     accounts_invites: ['accounts', 'inviteLinks', 'quickLinks'],
@@ -4433,7 +4439,12 @@ async function migrateSingleTabRecords(params: {
 
   if (tabKey === 'curricula') {
     for (const sDb of uniqueSources) {
-      for (const colName of ['curricula', 'studentQuranPlans', 'studentMushafMistakes']) {
+      for (const colName of [
+        'curricula',
+        'studentQuranPlans',
+        'studentMushafMistakes',
+        'studentBookPlans',
+      ]) {
         const snap = await getDocsFresh(
           query(collection(sDb, colName), where('complexId', '==', complexId))
         ).catch(() => null);
@@ -4450,7 +4461,12 @@ async function migrateSingleTabRecords(params: {
       }
     }
     if (destDb !== primaryDb) {
-      for (const colName of ['curricula', 'studentQuranPlans', 'studentMushafMistakes']) {
+      for (const colName of [
+        'curricula',
+        'studentQuranPlans',
+        'studentMushafMistakes',
+        'studentBookPlans',
+      ]) {
         const pSnap = await getDocs(
           query(collection(primaryDb, colName), where('complexId', '==', complexId))
         ).catch(() => null);
@@ -5109,6 +5125,7 @@ export async function cloneComplexToBackupDatabase(params: {
   const curriculaReadDbs = getReadDbsForComplexTab(workspace, 'curricula');
   const seenQuranPlanIds = new Set<string>();
   const seenMistakeIds = new Set<string>();
+  const seenBookPlanIds = new Set<string>();
   for (const curDb of curriculaReadDbs) {
     const qpSnap = await getDocsFresh(
       query(collection(curDb, 'studentQuranPlans'), where('complexId', '==', workspace.complex.id))
@@ -5136,6 +5153,22 @@ export async function cloneComplexToBackupDatabase(params: {
         await upsertTransferredDoc(
           backupDb,
           'studentMushafMistakes',
+          d.id,
+          d.data() as Record<string, unknown>
+        );
+        totalCopiedDocs++;
+      }
+    }
+    const bpSnap = await getDocsFresh(
+      query(collection(curDb, 'studentBookPlans'), where('complexId', '==', workspace.complex.id))
+    ).catch(() => null);
+    if (bpSnap) {
+      for (const d of bpSnap.docs) {
+        if (seenBookPlanIds.has(d.id)) continue;
+        seenBookPlanIds.add(d.id);
+        await upsertTransferredDoc(
+          backupDb,
+          'studentBookPlans',
           d.id,
           d.data() as Record<string, unknown>
         );
@@ -5172,8 +5205,9 @@ export async function exportComplexTabJsonPayload(
     const records = await listCurriculaInComplex(workspace);
     const qpMap = new Map<string, StudentQuranPlanRecord>();
     const mmMap = new Map<string, StudentMushafMistakesRecord>();
+    const bpMap = new Map<string, StudentBookPlanRecord>();
     for (const curDb of getReadDbsForComplexTab(workspace, 'curricula')) {
-      const [qpSnap, mmSnap] = await Promise.all([
+      const [qpSnap, mmSnap, bpSnap] = await Promise.all([
         getDocsFresh(
           query(collection(curDb, 'studentQuranPlans'), where('complexId', '==', workspace.complex.id))
         ).catch(() => null),
@@ -5183,6 +5217,9 @@ export async function exportComplexTabJsonPayload(
             where('complexId', '==', workspace.complex.id)
           )
         ).catch(() => null),
+        getDocsFresh(
+          query(collection(curDb, 'studentBookPlans'), where('complexId', '==', workspace.complex.id))
+        ).catch(() => null),
       ]);
       qpSnap?.forEach((d) => {
         if (!qpMap.has(d.id)) qpMap.set(d.id, d.data() as StudentQuranPlanRecord);
@@ -5190,11 +5227,15 @@ export async function exportComplexTabJsonPayload(
       mmSnap?.forEach((d) => {
         if (!mmMap.has(d.id)) mmMap.set(d.id, d.data() as StudentMushafMistakesRecord);
       });
+      bpSnap?.forEach((d) => {
+        if (!bpMap.has(d.id)) bpMap.set(d.id, d.data() as StudentBookPlanRecord);
+      });
     }
     data = {
       curricula: records,
       studentQuranPlans: Array.from(qpMap.values()),
       studentMushafMistakes: Array.from(mmMap.values()),
+      studentBookPlans: Array.from(bpMap.values()),
     };
   } else if (tabKey === 'library') {
     const books = await listBooksInComplex(workspace);
@@ -5419,6 +5460,40 @@ export async function importComplexTabJsonPayload(params: {
         true,
         async (writeDb) => {
           await upsertTransferredDoc(writeDb, 'studentMushafMistakes', recId, payload);
+        }
+      );
+      importedCount++;
+    }
+
+    const bookPlansList = Array.isArray(sourceData.studentBookPlans)
+      ? (sourceData.studentBookPlans as StudentBookPlanRecord[])
+      : [];
+    for (const bp of bookPlansList) {
+      if (!bp || !bp.studentId || !bp.bookId || !bp.dateKey) continue;
+      const planId = buildBookPlanDocId(bp.studentId, bp.bookId, bp.dateKey);
+      const payload = {
+        id: planId,
+        complexId,
+        mosqueId: bp.mosqueId || '',
+        halaqaId: bp.halaqaId || '',
+        studentId: bp.studentId,
+        studentName: String(bp.studentName || 'طالب').slice(0, 120),
+        bookId: bp.bookId,
+        bookTitle: String(bp.bookTitle || 'كتاب').slice(0, 160),
+        dateKey: bp.dateKey,
+        whereWeReachedPage: Math.max(1, Math.min(2000, Math.floor(Number(bp.whereWeReachedPage) || 1))),
+        todayHomeworks: sanitizeBookHomeworks(bp.todayHomeworks),
+        tomorrowHomeworks: sanitizeBookHomeworks(bp.tomorrowHomeworks),
+        recordedBy: bp.recordedBy || auth.currentUser?.uid || 'admin',
+        recordedByName: String(bp.recordedByName || 'استيراد JSON').slice(0, 120),
+      };
+      await executeTabWriteWithRollover(
+        workspace,
+        'curricula',
+        estimateRecordBytes(payload),
+        true,
+        async (writeDb) => {
+          await upsertTransferredDoc(writeDb, 'studentBookPlans', planId, payload);
         }
       );
       importedCount++;
@@ -5744,18 +5819,24 @@ export async function loadStudentQuranPlanForDate(params: {
   );
 
   if (prior) {
+    const cleanCarriedNew = prior.tomorrowNew
+      ? (() => {
+          const { completed: _ignored, ...rest } = prior.tomorrowNew;
+          return rest;
+        })()
+      : null;
     return {
       savedPlan: null,
       historyRecords,
       carriedFromDate: prior.dateKey,
-      effectiveTodayNew: prior.tomorrowNew
-        ? { ...prior.tomorrowNew, completed: false }
-        : null,
-      effectiveTodayReviews: (prior.tomorrowReviews || []).map((rev) => ({
-        ...rev,
-        id: generateValidId('rev'),
-        completed: false,
-      })),
+      effectiveTodayNew: cleanCarriedNew,
+      effectiveTodayReviews: (prior.tomorrowReviews || []).map((rev) => {
+        const { completed: _ignored, ...rest } = rev;
+        return {
+          ...rest,
+          id: generateValidId('rev'),
+        };
+      }),
       effectiveTomorrowNew: null,
       effectiveTomorrowReviews: [],
     };
@@ -5972,6 +6053,7 @@ const ALL_TRACKED_COLLECTIONS: {
   { col: 'curricula', label: 'المقررات', tabGroup: 'curricula' },
   { col: 'studentQuranPlans', label: 'خطط الحفظ والمراجعة', tabGroup: 'curricula' },
   { col: 'studentMushafMistakes', label: 'أخطاء تلاوة الطلاب', tabGroup: 'curricula' },
+  { col: 'studentBookPlans', label: 'متابعة وواجبات الكتب', tabGroup: 'curricula' },
   { col: 'broadcasts', label: 'الإشعارات والرسائل', tabGroup: 'core_broadcasts' },
   { col: 'stats', label: 'الإحصائيات', tabGroup: 'core_broadcasts' },
   { col: 'dbRegistry', label: 'سجل القواعد المرتبطة', tabGroup: 'core_broadcasts', primaryOnly: true },
@@ -6259,4 +6341,1307 @@ export async function inspectAllDatabasesUsage(params: {
   };
 }
 
+// ============================================================================
+// STUDENT BOOK PLANS (أين وصلنا + واجبات اليوم + واجبات غد للكتب والصور)
+// ============================================================================
 
+export function buildBookPlanDocId(
+  studentId: string,
+  bookId: string,
+  dateKey: string
+): string {
+  const cleanStudent = studentId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48);
+  const cleanBook = bookId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48);
+  const cleanDate = dateKey.replace(/[^0-9-]/g, '').slice(0, 16);
+  return `bp_${cleanStudent}_${cleanBook}_${cleanDate}`.slice(0, 128);
+}
+
+function sanitizeBookHomeworks(rawList: unknown): StudentBookHomeworkItem[] {
+  if (!Array.isArray(rawList)) return [];
+  const validTypes = new Set<BookHomeworkType>(
+    Object.keys(BOOK_HOMEWORK_TYPE_LABELS) as BookHomeworkType[]
+  );
+  const validStatuses = new Set<BookHomeworkStatus>([
+    'pending',
+    'completed',
+    'cancelled',
+    'deferred',
+  ]);
+  return rawList.slice(0, 80).map((raw) => {
+    const r = (raw || {}) as Partial<StudentBookHomeworkItem>;
+    const type: BookHomeworkType =
+      r.type && validTypes.has(r.type) ? r.type : 'reading';
+    const status: BookHomeworkStatus =
+      r.status && validStatuses.has(r.status) ? r.status : 'pending';
+    const pageNumber = Math.max(
+      1,
+      Math.min(2000, Math.floor(Number(r.pageNumber) || 1))
+    );
+    return {
+      id:
+        r.id && typeof r.id === 'string' && r.id.trim()
+          ? r.id.trim().slice(0, 64)
+          : generateValidId('hw'),
+      type,
+      ...(r.customTypeLabel
+        ? { customTypeLabel: String(r.customTypeLabel).trim().slice(0, 80) }
+        : {}),
+      pageNumber,
+      ...(r.note ? { note: String(r.note).trim().slice(0, 240) } : {}),
+      status,
+      ...(r.deferredFromDate
+        ? { deferredFromDate: String(r.deferredFromDate).trim().slice(0, 16) }
+        : {}),
+    };
+  });
+}
+
+export async function listStudentBookPlanHistory(
+  workspace: ComplexWorkspaceData,
+  studentId: string,
+  bookId: string
+): Promise<StudentBookPlanRecord[]> {
+  try {
+    const readDbs = getReadDbsForComplexTab(workspace, 'curricula');
+    const byId = new Map<string, StudentBookPlanRecord>();
+    await Promise.all(
+      readDbs.map(async (db) => {
+        const snap = await getDocsFresh(
+          query(collection(db, 'studentBookPlans'), where('studentId', '==', studentId))
+        ).catch(() => null);
+        snap?.forEach((d) => {
+          const rec = d.data() as StudentBookPlanRecord;
+          if (rec.complexId === workspace.complex.id && rec.bookId === bookId) {
+            byId.set(rec.id, rec);
+          }
+        });
+      })
+    );
+    return Array.from(byId.values()).sort((a, b) =>
+      b.dateKey.localeCompare(a.dateKey)
+    );
+  } catch {
+    return [];
+  }
+}
+
+export async function loadStudentBookPlanForDate(params: {
+  workspace: ComplexWorkspaceData;
+  studentId: string;
+  bookId: string;
+  dateKey: string;
+}): Promise<{
+  savedPlan: StudentBookPlanRecord | null;
+  historyRecords: StudentBookPlanRecord[];
+  carriedFromDate: string | null;
+  effectiveWhereReachedPage: number;
+  effectiveTodayHomeworks: StudentBookHomeworkItem[];
+  effectiveTomorrowHomeworks: StudentBookHomeworkItem[];
+}> {
+  const { workspace, studentId, bookId, dateKey } = params;
+  const historyRecords = await listStudentBookPlanHistory(workspace, studentId, bookId);
+  const exact = historyRecords.find((r) => r.dateKey === dateKey) || null;
+
+  if (exact) {
+    return {
+      savedPlan: exact,
+      historyRecords,
+      carriedFromDate: null,
+      effectiveWhereReachedPage: Math.max(
+        1,
+        Math.min(2000, Math.floor(Number(exact.whereWeReachedPage) || 1))
+      ),
+      effectiveTodayHomeworks: Array.isArray(exact.todayHomeworks)
+        ? exact.todayHomeworks
+        : [],
+      effectiveTomorrowHomeworks: Array.isArray(exact.tomorrowHomeworks)
+        ? exact.tomorrowHomeworks
+        : [],
+    };
+  }
+
+  // Carry over latest stopped page from most recent prior session (defaults to Page 1)
+  const mostRecentPrior = historyRecords.find((r) => r.dateKey < dateKey) || null;
+  const effectiveWhereReachedPage = mostRecentPrior
+    ? Math.max(
+        1,
+        Math.min(2000, Math.floor(Number(mostRecentPrior.whereWeReachedPage) || 1))
+      )
+    : 1;
+
+  // Carry over yesterday's "tomorrowHomeworks" automatically into today's "todayHomeworks"
+  const priorWithHomeworks = historyRecords.find(
+    (r) =>
+      r.dateKey < dateKey &&
+      Array.isArray(r.tomorrowHomeworks) &&
+      r.tomorrowHomeworks.length > 0
+  );
+
+  if (priorWithHomeworks) {
+    return {
+      savedPlan: null,
+      historyRecords,
+      carriedFromDate: priorWithHomeworks.dateKey,
+      effectiveWhereReachedPage,
+      effectiveTodayHomeworks: (priorWithHomeworks.tomorrowHomeworks || []).map(
+        (hw) => ({
+          ...hw,
+          id: generateValidId('hw'),
+          status: 'pending' as const,
+        })
+      ),
+      effectiveTomorrowHomeworks: [],
+    };
+  }
+
+  return {
+    savedPlan: null,
+    historyRecords,
+    carriedFromDate: null,
+    effectiveWhereReachedPage,
+    effectiveTodayHomeworks: [],
+    effectiveTomorrowHomeworks: [],
+  };
+}
+
+export async function saveStudentBookPlan(params: {
+  workspace: ComplexWorkspaceData;
+  mosqueId: string;
+  halaqaId: string;
+  studentId: string;
+  studentName: string;
+  bookId: string;
+  bookTitle: string;
+  dateKey: string;
+  whereWeReachedPage: number;
+  todayHomeworks: StudentBookHomeworkItem[];
+  tomorrowHomeworks: StudentBookHomeworkItem[];
+  recordedBy: string;
+  recordedByName: string;
+}): Promise<StudentBookPlanRecord> {
+  const {
+    workspace,
+    mosqueId,
+    halaqaId,
+    studentId,
+    studentName,
+    bookId,
+    bookTitle,
+    dateKey,
+    recordedBy,
+    recordedByName,
+  } = params;
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
+    throw new Error('صيغة التاريخ غير صالحة.');
+  }
+
+  const planId = buildBookPlanDocId(studentId, bookId, dateKey);
+  const cleanPage = Math.max(
+    1,
+    Math.min(2000, Math.floor(Number(params.whereWeReachedPage) || 1))
+  );
+  const cleanToday = sanitizeBookHomeworks(params.todayHomeworks);
+  const cleanTomorrow = sanitizeBookHomeworks(params.tomorrowHomeworks);
+  const cleanStudentName = (studentName || 'طالب').trim().slice(0, 120) || 'طالب';
+  const cleanBookTitle = (bookTitle || 'كتاب').trim().slice(0, 160) || 'كتاب';
+  const cleanRecorder = (recordedBy || auth.currentUser?.uid || 'teacher').slice(0, 128);
+  const cleanRecorderName = (recordedByName || 'المعلم').trim().slice(0, 120) || 'المعلم';
+
+  const located = await findExistingDocInTabPool(
+    workspace,
+    'curricula',
+    'studentBookPlans',
+    planId
+  );
+
+  if (located.exists) {
+    await updateDoc(doc(located.db, 'studentBookPlans', planId), {
+      mosqueId: (mosqueId || '').slice(0, 128),
+      halaqaId: (halaqaId || '').slice(0, 128),
+      studentName: cleanStudentName,
+      bookTitle: cleanBookTitle,
+      whereWeReachedPage: cleanPage,
+      todayHomeworks: cleanToday,
+      tomorrowHomeworks: cleanTomorrow,
+      recordedBy: cleanRecorder,
+      recordedByName: cleanRecorderName,
+      updatedAt: serverTimestamp(),
+    });
+  } else {
+    const payload = {
+      id: planId,
+      complexId: workspace.complex.id,
+      mosqueId: (mosqueId || '').slice(0, 128),
+      halaqaId: (halaqaId || '').slice(0, 128),
+      studentId,
+      studentName: cleanStudentName,
+      bookId,
+      bookTitle: cleanBookTitle,
+      dateKey,
+      whereWeReachedPage: cleanPage,
+      todayHomeworks: cleanToday,
+      tomorrowHomeworks: cleanTomorrow,
+      recordedBy: cleanRecorder,
+      recordedByName: cleanRecorderName,
+    };
+    const byteSize = estimateRecordBytes(payload);
+    await executeTabWriteWithRollover(workspace, 'curricula', byteSize, true, async (targetDb) => {
+      await setDoc(doc(targetDb, 'studentBookPlans', planId), {
+        ...payload,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    });
+  }
+
+  return {
+    id: planId,
+    complexId: workspace.complex.id,
+    mosqueId: (mosqueId || '').slice(0, 128),
+    halaqaId: (halaqaId || '').slice(0, 128),
+    studentId,
+    studentName: cleanStudentName,
+    bookId,
+    bookTitle: cleanBookTitle,
+    dateKey,
+    whereWeReachedPage: cleanPage,
+    todayHomeworks: cleanToday,
+    tomorrowHomeworks: cleanTomorrow,
+    recordedBy: cleanRecorder,
+    recordedByName: cleanRecorderName,
+  };
+}
+
+export interface HalaqaStudentCurriculaStatus {
+  quranTomorrowAssigned: boolean;
+  quranTomorrowNew: StudentQuranNewHifzItem | null;
+  quranTomorrowReviewsCount: number;
+  books: Record<
+    string,
+    {
+      whereWeReachedPage: number;
+      todayHomeworksCount: number;
+      tomorrowHomeworksCount: number;
+      tomorrowHomeworkAssigned: boolean;
+    }
+  >;
+}
+
+/**
+ * Loads today's Quran & Book assignment status for every student in a halaqa
+ * in a single pooled pass so badges render immediately above each student card.
+ */
+export async function loadHalaqaCurriculaStatusesForDate(params: {
+  workspace: ComplexWorkspaceData;
+  studentIds: string[];
+  dateKey: string;
+}): Promise<Record<string, HalaqaStudentCurriculaStatus>> {
+  const { workspace, studentIds, dateKey } = params;
+  const result: Record<string, HalaqaStudentCurriculaStatus> = {};
+  for (const sid of studentIds) {
+    result[sid] = {
+      quranTomorrowAssigned: false,
+      quranTomorrowNew: null,
+      quranTomorrowReviewsCount: 0,
+      books: {},
+    };
+  }
+  if (studentIds.length === 0) return result;
+
+  const studentSet = new Set(studentIds);
+  const readDbs = getReadDbsForComplexTab(workspace, 'curricula');
+
+  const quranById = new Map<string, StudentQuranPlanRecord>();
+  const bookById = new Map<string, StudentBookPlanRecord>();
+
+  await Promise.all(
+    readDbs.map(async (db) => {
+      const [qSnap, bSnap] = await Promise.all([
+        getDocsFresh(
+          query(collection(db, 'studentQuranPlans'), where('complexId', '==', workspace.complex.id))
+        ).catch(() => null),
+        getDocsFresh(
+          query(collection(db, 'studentBookPlans'), where('complexId', '==', workspace.complex.id))
+        ).catch(() => null),
+      ]);
+
+      qSnap?.forEach((d) => {
+        const rec = d.data() as StudentQuranPlanRecord;
+        if (studentSet.has(rec.studentId)) {
+          quranById.set(rec.id, rec);
+        }
+      });
+
+      bSnap?.forEach((d) => {
+        const rec = d.data() as StudentBookPlanRecord;
+        if (studentSet.has(rec.studentId)) {
+          bookById.set(rec.id, rec);
+        }
+      });
+    })
+  );
+
+  // Evaluate Quran tomorrow assignment status per student for `dateKey`
+  quranById.forEach((rec) => {
+    if (rec.dateKey !== dateKey) return;
+    const entry = result[rec.studentId];
+    if (!entry) return;
+    const hasTomorrowNew = Boolean(rec.tomorrowNew);
+    const revCount = Array.isArray(rec.tomorrowReviews) ? rec.tomorrowReviews.length : 0;
+    entry.quranTomorrowNew = rec.tomorrowNew || null;
+    entry.quranTomorrowReviewsCount = revCount;
+    entry.quranTomorrowAssigned = hasTomorrowNew || revCount > 0;
+  });
+
+  // Group book records per (studentId -> bookId) sorted newest first
+  const groupedBooks = new Map<string, Map<string, StudentBookPlanRecord[]>>();
+  bookById.forEach((rec) => {
+    if (!rec.studentId || !rec.bookId) return;
+    let stMap = groupedBooks.get(rec.studentId);
+    if (!stMap) {
+      stMap = new Map();
+      groupedBooks.set(rec.studentId, stMap);
+    }
+    const list = stMap.get(rec.bookId) || [];
+    list.push(rec);
+    stMap.set(rec.bookId, list);
+  });
+
+  groupedBooks.forEach((booksMap, sid) => {
+    const entry = result[sid];
+    if (!entry) return;
+    booksMap.forEach((records, bookId) => {
+      const sorted = [...records].sort((a, b) => b.dateKey.localeCompare(a.dateKey));
+      const exact = sorted.find((r) => r.dateKey === dateKey) || null;
+      const prior = sorted.find((r) => r.dateKey < dateKey) || null;
+      const wherePage = exact
+        ? Math.max(1, Math.min(2000, Math.floor(Number(exact.whereWeReachedPage) || 1)))
+        : prior
+        ? Math.max(1, Math.min(2000, Math.floor(Number(prior.whereWeReachedPage) || 1)))
+        : 1;
+      const tomorrowList = exact && Array.isArray(exact.tomorrowHomeworks)
+        ? exact.tomorrowHomeworks
+        : [];
+      const todayList = exact && Array.isArray(exact.todayHomeworks)
+        ? exact.todayHomeworks
+        : [];
+
+      entry.books[bookId] = {
+        whereWeReachedPage: wherePage,
+        todayHomeworksCount: todayList.length,
+        tomorrowHomeworksCount: tomorrowList.length,
+        tomorrowHomeworkAssigned: tomorrowList.length > 0,
+      };
+    });
+  });
+
+  return result;
+}
+
+export async function batchApplyBookWhereReachedForStudents(params: {
+  workspace: ComplexWorkspaceData;
+  mosqueId: string;
+  halaqaId: string;
+  students: AccountRecord[];
+  bookId: string;
+  bookTitle: string;
+  dateKey: string;
+  pageNumber: number;
+  recordedBy: string;
+  recordedByName: string;
+}): Promise<{ savedCount: number; failedCount: number }> {
+  const {
+    workspace,
+    mosqueId,
+    halaqaId,
+    students,
+    bookId,
+    bookTitle,
+    dateKey,
+    pageNumber,
+    recordedBy,
+    recordedByName,
+  } = params;
+
+  const cleanPage = Math.max(1, Math.min(2000, Math.floor(Number(pageNumber) || 1)));
+  let savedCount = 0;
+  let failedCount = 0;
+
+  for (let i = 0; i < students.length; i += 5) {
+    const chunk = students.slice(i, i + 5);
+    await Promise.all(
+      chunk.map(async (st) => {
+        try {
+          const existing = await loadStudentBookPlanForDate({
+            workspace,
+            studentId: st.id,
+            bookId,
+            dateKey,
+          });
+          await saveStudentBookPlan({
+            workspace,
+            mosqueId,
+            halaqaId,
+            studentId: st.id,
+            studentName: st.quadrupleName,
+            bookId,
+            bookTitle,
+            dateKey,
+            whereWeReachedPage: cleanPage,
+            todayHomeworks: existing.effectiveTodayHomeworks,
+            tomorrowHomeworks: existing.effectiveTomorrowHomeworks,
+            recordedBy,
+            recordedByName,
+          });
+          savedCount++;
+        } catch {
+          failedCount++;
+        }
+      })
+    );
+  }
+
+  return { savedCount, failedCount };
+}
+
+export async function batchAssignTomorrowBookHomeworkForStudents(params: {
+  workspace: ComplexWorkspaceData;
+  mosqueId: string;
+  halaqaId: string;
+  students: AccountRecord[];
+  bookId: string;
+  bookTitle: string;
+  dateKey: string;
+  homeworks: Omit<StudentBookHomeworkItem, 'id' | 'status'>[];
+  replaceExisting: boolean;
+  recordedBy: string;
+  recordedByName: string;
+}): Promise<{ savedCount: number; failedCount: number }> {
+  const {
+    workspace,
+    mosqueId,
+    halaqaId,
+    students,
+    bookId,
+    bookTitle,
+    dateKey,
+    homeworks,
+    replaceExisting,
+    recordedBy,
+    recordedByName,
+  } = params;
+
+  let savedCount = 0;
+  let failedCount = 0;
+
+  for (let i = 0; i < students.length; i += 5) {
+    const chunk = students.slice(i, i + 5);
+    await Promise.all(
+      chunk.map(async (st) => {
+        try {
+          const existing = await loadStudentBookPlanForDate({
+            workspace,
+            studentId: st.id,
+            bookId,
+            dateKey,
+          });
+          const clonedNew: StudentBookHomeworkItem[] = homeworks.map((hw) => ({
+            ...hw,
+            id: generateValidId('hw'),
+            status: 'pending' as const,
+          }));
+          const nextTomorrow = replaceExisting
+            ? clonedNew
+            : [...existing.effectiveTomorrowHomeworks, ...clonedNew];
+
+          await saveStudentBookPlan({
+            workspace,
+            mosqueId,
+            halaqaId,
+            studentId: st.id,
+            studentName: st.quadrupleName,
+            bookId,
+            bookTitle,
+            dateKey,
+            whereWeReachedPage: existing.effectiveWhereReachedPage,
+            todayHomeworks: existing.effectiveTodayHomeworks,
+            tomorrowHomeworks: nextTomorrow,
+            recordedBy,
+            recordedByName,
+          });
+          savedCount++;
+        } catch {
+          failedCount++;
+        }
+      })
+    );
+  }
+
+  return { savedCount, failedCount };
+}
+
+export async function batchAssignTomorrowQuranPlanForStudents(params: {
+  workspace: ComplexWorkspaceData;
+  mosqueId: string;
+  halaqaId: string;
+  students: AccountRecord[];
+  dateKey: string;
+  tomorrowNew: StudentQuranNewHifzItem | null;
+  tomorrowReviews: Omit<StudentQuranReviewItem, 'id' | 'completed'>[];
+  replaceExisting: boolean;
+  recordedBy: string;
+  recordedByName: string;
+}): Promise<{ savedCount: number; failedCount: number }> {
+  const {
+    workspace,
+    mosqueId,
+    halaqaId,
+    students,
+    dateKey,
+    tomorrowNew,
+    tomorrowReviews,
+    replaceExisting,
+    recordedBy,
+    recordedByName,
+  } = params;
+
+  let savedCount = 0;
+  let failedCount = 0;
+
+  for (let i = 0; i < students.length; i += 5) {
+    const chunk = students.slice(i, i + 5);
+    await Promise.all(
+      chunk.map(async (st) => {
+        try {
+          const existing = await loadStudentQuranPlanForDate({
+            workspace,
+            studentId: st.id,
+            dateKey,
+          });
+          const nextTomorrowNew = tomorrowNew
+            ? (() => {
+                const { completed: _ignored, ...rest } = tomorrowNew;
+                return rest;
+              })()
+            : replaceExisting
+            ? null
+            : existing.effectiveTomorrowNew;
+
+          const clonedReviews: StudentQuranReviewItem[] = tomorrowReviews.map((rev) => ({
+            ...rev,
+            id: generateValidId('rev'),
+          }));
+          const nextTomorrowReviews = replaceExisting
+            ? clonedReviews
+            : [...existing.effectiveTomorrowReviews, ...clonedReviews];
+
+          await saveStudentQuranPlan({
+            workspace,
+            mosqueId,
+            halaqaId,
+            studentId: st.id,
+            studentName: st.quadrupleName,
+            dateKey,
+            todayNew: existing.effectiveTodayNew,
+            todayReviews: existing.effectiveTodayReviews,
+            tomorrowNew: nextTomorrowNew,
+            tomorrowReviews: nextTomorrowReviews,
+            recordedBy,
+            recordedByName,
+          });
+          savedCount++;
+        } catch {
+          failedCount++;
+        }
+      })
+    );
+  }
+
+  return { savedCount, failedCount };
+}
+
+/**
+ * Applies tasmee rules:
+ * - Untouched (`completed !== false`) becomes `completed: true` (heard by default).
+ * - Unheard (`completed === false`) is auto-assigned to tomorrowNew / tomorrowReviews (deduplicated).
+ */
+export function applyQuranTasmeeOutcomesToPlan(params: {
+  todayNew: StudentQuranNewHifzItem | null;
+  todayReviews: StudentQuranReviewItem[];
+  tomorrowNew: StudentQuranNewHifzItem | null;
+  tomorrowReviews: StudentQuranReviewItem[];
+}): {
+  finalTodayNew: StudentQuranNewHifzItem | null;
+  finalTodayReviews: StudentQuranReviewItem[];
+  finalTomorrowNew: StudentQuranNewHifzItem | null;
+  finalTomorrowReviews: StudentQuranReviewItem[];
+} {
+  const finalTodayNew: StudentQuranNewHifzItem | null = params.todayNew
+    ? { ...params.todayNew, completed: params.todayNew.completed !== false }
+    : null;
+
+  const finalTodayReviews: StudentQuranReviewItem[] = params.todayReviews.map((rev) => ({
+    ...rev,
+    completed: rev.completed !== false,
+  }));
+
+  let finalTomorrowNew = params.tomorrowNew;
+  if (finalTodayNew && finalTodayNew.completed === false) {
+    const { completed: _c, note: _n, ...rangeProps } = finalTodayNew;
+    finalTomorrowNew = {
+      ...rangeProps,
+      ...(params.tomorrowNew?.reciterId ? { reciterId: params.tomorrowNew.reciterId } : {}),
+    };
+  }
+
+  const finalTomorrowReviews = [...params.tomorrowReviews];
+  for (const rev of finalTodayReviews) {
+    if (rev.completed !== false) continue;
+    const alreadyExists = finalTomorrowReviews.some(
+      (existing) =>
+        existing.reviewType === rev.reviewType &&
+        (existing.customLabel || '') === (rev.customLabel || '') &&
+        existing.startSurah === rev.startSurah &&
+        existing.startAyah === rev.startAyah &&
+        existing.endSurah === rev.endSurah &&
+        existing.endAyah === rev.endAyah
+    );
+    if (!alreadyExists) {
+      const { id: _oldId, completed: _c, ...rest } = rev;
+      finalTomorrowReviews.push({
+        ...rest,
+        id: generateValidId('rev'),
+      });
+    }
+  }
+
+  return {
+    finalTodayNew,
+    finalTodayReviews,
+    finalTomorrowNew,
+    finalTomorrowReviews,
+  };
+}
+
+/**
+ * Applies book homework correction rules:
+ * - Untouched `'pending'` becomes `'completed'` ("تم الحل").
+ * - `'deferred'` ("لم يحل") is auto-copied to tomorrowHomeworks (deduplicated).
+ */
+export function applyBookCorrectionOutcomesToPlan(params: {
+  dateKey: string;
+  todayHomeworks: StudentBookHomeworkItem[];
+  tomorrowHomeworks: StudentBookHomeworkItem[];
+}): {
+  finalTodayHomeworks: StudentBookHomeworkItem[];
+  finalTomorrowHomeworks: StudentBookHomeworkItem[];
+} {
+  const finalTodayHomeworks: StudentBookHomeworkItem[] = params.todayHomeworks.map((hw) =>
+    hw.status === 'pending' ? { ...hw, status: 'completed' as const } : hw
+  );
+
+  const finalTomorrowHomeworks = [...params.tomorrowHomeworks];
+  for (const hw of finalTodayHomeworks) {
+    if (hw.status !== 'deferred') continue;
+    const alreadyQueued = finalTomorrowHomeworks.some(
+      (ex) =>
+        ex.type === hw.type &&
+        ex.pageNumber === hw.pageNumber &&
+        (ex.customTypeLabel || '') === (hw.customTypeLabel || '') &&
+        (ex.note || '') === (hw.note || '')
+    );
+    if (!alreadyQueued) {
+      finalTomorrowHomeworks.push({
+        ...hw,
+        id: generateValidId('hw'),
+        status: 'pending' as const,
+        deferredFromDate: hw.deferredFromDate || params.dateKey,
+      });
+    }
+  }
+
+  return {
+    finalTodayHomeworks,
+    finalTomorrowHomeworks,
+  };
+}
+
+export interface HalaqaStudentTodayQuranPlanEntry {
+  studentId: string;
+  carriedFromDate: string | null;
+  todayNew: StudentQuranNewHifzItem | null;
+  todayReviews: StudentQuranReviewItem[];
+  tomorrowNew: StudentQuranNewHifzItem | null;
+  tomorrowReviews: StudentQuranReviewItem[];
+}
+
+export async function loadHalaqaTodayQuranPlans(params: {
+  workspace: ComplexWorkspaceData;
+  studentIds: string[];
+  dateKey: string;
+}): Promise<Record<string, HalaqaStudentTodayQuranPlanEntry>> {
+  const { workspace, studentIds, dateKey } = params;
+  const map: Record<string, HalaqaStudentTodayQuranPlanEntry> = {};
+  for (const sid of studentIds) {
+    map[sid] = {
+      studentId: sid,
+      carriedFromDate: null,
+      todayNew: null,
+      todayReviews: [],
+      tomorrowNew: null,
+      tomorrowReviews: [],
+    };
+  }
+  if (studentIds.length === 0) return map;
+
+  const studentSet = new Set(studentIds);
+  const readDbs = getReadDbsForComplexTab(workspace, 'curricula');
+  const byStudent = new Map<string, Map<string, StudentQuranPlanRecord>>();
+
+  await Promise.all(
+    readDbs.map(async (db) => {
+      const snap = await getDocsFresh(
+        query(collection(db, 'studentQuranPlans'), where('complexId', '==', workspace.complex.id))
+      ).catch(() => null);
+      snap?.forEach((d) => {
+        const rec = d.data() as StudentQuranPlanRecord;
+        if (!studentSet.has(rec.studentId)) return;
+        let recMap = byStudent.get(rec.studentId);
+        if (!recMap) {
+          recMap = new Map();
+          byStudent.set(rec.studentId, recMap);
+        }
+        recMap.set(rec.id, rec);
+      });
+    })
+  );
+
+  byStudent.forEach((recMap, sid) => {
+    const history = Array.from(recMap.values()).sort((a, b) => b.dateKey.localeCompare(a.dateKey));
+    const exact = history.find((r) => r.dateKey === dateKey) || null;
+    if (exact) {
+      map[sid] = {
+        studentId: sid,
+        carriedFromDate: null,
+        todayNew: exact.todayNew || null,
+        todayReviews: Array.isArray(exact.todayReviews) ? exact.todayReviews : [],
+        tomorrowNew: exact.tomorrowNew || null,
+        tomorrowReviews: Array.isArray(exact.tomorrowReviews) ? exact.tomorrowReviews : [],
+      };
+      return;
+    }
+
+    const prior = history.find(
+      (r) => r.dateKey < dateKey && (r.tomorrowNew !== null || (r.tomorrowReviews || []).length > 0)
+    );
+    if (prior) {
+      const cleanNew = prior.tomorrowNew
+        ? (() => {
+            const { completed: _c, ...rest } = prior.tomorrowNew;
+            return rest;
+          })()
+        : null;
+      map[sid] = {
+        studentId: sid,
+        carriedFromDate: prior.dateKey,
+        todayNew: cleanNew,
+        todayReviews: (prior.tomorrowReviews || []).map((rev) => {
+          const { completed: _c, ...rest } = rev;
+          return {
+            ...rest,
+            id: generateValidId('rev'),
+          };
+        }),
+        tomorrowNew: null,
+        tomorrowReviews: [],
+      };
+    }
+  });
+
+  return map;
+}
+
+export async function saveBatchQuranTasmeeOutcomes(params: {
+  workspace: ComplexWorkspaceData;
+  mosqueId: string;
+  halaqaId: string;
+  dateKey: string;
+  entries: {
+    student: AccountRecord;
+    todayNew: StudentQuranNewHifzItem | null;
+    todayReviews: StudentQuranReviewItem[];
+    tomorrowNew: StudentQuranNewHifzItem | null;
+    tomorrowReviews: StudentQuranReviewItem[];
+  }[];
+  recordedBy: string;
+  recordedByName: string;
+}): Promise<{ savedCount: number; failedCount: number }> {
+  const { workspace, mosqueId, halaqaId, dateKey, entries, recordedBy, recordedByName } = params;
+  const nonEmptyEntries = entries.filter(
+    (e) =>
+      e.todayNew !== null ||
+      e.todayReviews.length > 0 ||
+      e.tomorrowNew !== null ||
+      e.tomorrowReviews.length > 0
+  );
+
+  let savedCount = 0;
+  let failedCount = 0;
+
+  for (let i = 0; i < nonEmptyEntries.length; i += 5) {
+    const chunk = nonEmptyEntries.slice(i, i + 5);
+    await Promise.all(
+      chunk.map(async (item) => {
+        try {
+          const normalized = applyQuranTasmeeOutcomesToPlan({
+            todayNew: item.todayNew,
+            todayReviews: item.todayReviews,
+            tomorrowNew: item.tomorrowNew,
+            tomorrowReviews: item.tomorrowReviews,
+          });
+          await saveStudentQuranPlan({
+            workspace,
+            mosqueId,
+            halaqaId,
+            studentId: item.student.id,
+            studentName: item.student.quadrupleName,
+            dateKey,
+            todayNew: normalized.finalTodayNew,
+            todayReviews: normalized.finalTodayReviews,
+            tomorrowNew: normalized.finalTomorrowNew,
+            tomorrowReviews: normalized.finalTomorrowReviews,
+            recordedBy,
+            recordedByName,
+          });
+          savedCount++;
+        } catch {
+          failedCount++;
+        }
+      })
+    );
+  }
+
+  return { savedCount, failedCount };
+}
+
+export interface HalaqaStudentTodayBookPlanEntry {
+  studentId: string;
+  carriedFromDate: string | null;
+  whereWeReachedPage: number;
+  todayHomeworks: StudentBookHomeworkItem[];
+  tomorrowHomeworks: StudentBookHomeworkItem[];
+}
+
+export async function loadHalaqaTodayBookPlans(params: {
+  workspace: ComplexWorkspaceData;
+  studentIds: string[];
+  bookId: string;
+  dateKey: string;
+}): Promise<Record<string, HalaqaStudentTodayBookPlanEntry>> {
+  const { workspace, studentIds, bookId, dateKey } = params;
+  const map: Record<string, HalaqaStudentTodayBookPlanEntry> = {};
+  for (const sid of studentIds) {
+    map[sid] = {
+      studentId: sid,
+      carriedFromDate: null,
+      whereWeReachedPage: 1,
+      todayHomeworks: [],
+      tomorrowHomeworks: [],
+    };
+  }
+  if (studentIds.length === 0) return map;
+
+  const studentSet = new Set(studentIds);
+  const readDbs = getReadDbsForComplexTab(workspace, 'curricula');
+  const byStudent = new Map<string, Map<string, StudentBookPlanRecord>>();
+
+  await Promise.all(
+    readDbs.map(async (db) => {
+      const snap = await getDocsFresh(
+        query(collection(db, 'studentBookPlans'), where('complexId', '==', workspace.complex.id))
+      ).catch(() => null);
+      snap?.forEach((d) => {
+        const rec = d.data() as StudentBookPlanRecord;
+        if (rec.bookId !== bookId || !studentSet.has(rec.studentId)) return;
+        let recMap = byStudent.get(rec.studentId);
+        if (!recMap) {
+          recMap = new Map();
+          byStudent.set(rec.studentId, recMap);
+        }
+        recMap.set(rec.id, rec);
+      });
+    })
+  );
+
+  byStudent.forEach((recMap, sid) => {
+    const history = Array.from(recMap.values()).sort((a, b) => b.dateKey.localeCompare(a.dateKey));
+    const exact = history.find((r) => r.dateKey === dateKey) || null;
+    if (exact) {
+      map[sid] = {
+        studentId: sid,
+        carriedFromDate: null,
+        whereWeReachedPage: Math.max(
+          1,
+          Math.min(2000, Math.floor(Number(exact.whereWeReachedPage) || 1))
+        ),
+        todayHomeworks: Array.isArray(exact.todayHomeworks) ? exact.todayHomeworks : [],
+        tomorrowHomeworks: Array.isArray(exact.tomorrowHomeworks) ? exact.tomorrowHomeworks : [],
+      };
+      return;
+    }
+
+    const mostRecentPrior = history.find((r) => r.dateKey < dateKey) || null;
+    const wherePage = mostRecentPrior
+      ? Math.max(1, Math.min(2000, Math.floor(Number(mostRecentPrior.whereWeReachedPage) || 1)))
+      : 1;
+    const priorWithHw = history.find(
+      (r) =>
+        r.dateKey < dateKey &&
+        Array.isArray(r.tomorrowHomeworks) &&
+        r.tomorrowHomeworks.length > 0
+    );
+    map[sid] = {
+      studentId: sid,
+      carriedFromDate: priorWithHw?.dateKey || null,
+      whereWeReachedPage: wherePage,
+      todayHomeworks: priorWithHw
+        ? priorWithHw.tomorrowHomeworks.map((hw) => ({
+            ...hw,
+            id: generateValidId('hw'),
+            status: 'pending' as const,
+          }))
+        : [],
+      tomorrowHomeworks: [],
+    };
+  });
+
+  return map;
+}
+
+export async function saveBatchBookCorrectionOutcomes(params: {
+  workspace: ComplexWorkspaceData;
+  mosqueId: string;
+  halaqaId: string;
+  bookId: string;
+  bookTitle: string;
+  dateKey: string;
+  entries: {
+    student: AccountRecord;
+    whereWeReachedPage: number;
+    todayHomeworks: StudentBookHomeworkItem[];
+    tomorrowHomeworks: StudentBookHomeworkItem[];
+  }[];
+  recordedBy: string;
+  recordedByName: string;
+}): Promise<{ savedCount: number; failedCount: number }> {
+  const {
+    workspace,
+    mosqueId,
+    halaqaId,
+    bookId,
+    bookTitle,
+    dateKey,
+    entries,
+    recordedBy,
+    recordedByName,
+  } = params;
+
+  const nonEmptyEntries = entries.filter(
+    (e) => e.todayHomeworks.length > 0 || e.tomorrowHomeworks.length > 0
+  );
+
+  let savedCount = 0;
+  let failedCount = 0;
+
+  for (let i = 0; i < nonEmptyEntries.length; i += 5) {
+    const chunk = nonEmptyEntries.slice(i, i + 5);
+    await Promise.all(
+      chunk.map(async (item) => {
+        try {
+          const normalized = applyBookCorrectionOutcomesToPlan({
+            dateKey,
+            todayHomeworks: item.todayHomeworks,
+            tomorrowHomeworks: item.tomorrowHomeworks,
+          });
+          await saveStudentBookPlan({
+            workspace,
+            mosqueId,
+            halaqaId,
+            studentId: item.student.id,
+            studentName: item.student.quadrupleName,
+            bookId,
+            bookTitle,
+            dateKey,
+            whereWeReachedPage: item.whereWeReachedPage,
+            todayHomeworks: normalized.finalTodayHomeworks,
+            tomorrowHomeworks: normalized.finalTomorrowHomeworks,
+            recordedBy,
+            recordedByName,
+          });
+          savedCount++;
+        } catch {
+          failedCount++;
+        }
+      })
+    );
+  }
+
+  return { savedCount, failedCount };
+}
+
+// ============================================================================
+// FULL LIVE PLATFORM CONTEXT BUILDER FOR PROGRAMMER AI ASSISTANT
+// ============================================================================
+
+function formatBytesHuman(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(3)} GB`;
+}
+
+export async function gatherProgrammerAiPlatformSnapshot(params: {
+  complexes: DiscoveredComplex[];
+  connectedDbs: ConnectedDatabaseInfo[];
+  rulesAuditReport: PlatformRulesAuditReport | null;
+}): Promise<{
+  snapshotText: string;
+  summary: {
+    databasesCount: number;
+    complexesCount: number;
+    issuesCount: number;
+    weaknessesCount: number;
+    totalDocsCount: number;
+    totalUsedBytes: number;
+  };
+}> {
+  const { complexes, connectedDbs, rulesAuditReport } = params;
+  const [statsRes, usageReport, workspacesAndBooks] = await Promise.all([
+    getPlatformDashboardStats().catch(() => null),
+    inspectAllDatabasesUsage({ complexes, selectedComplexId: 'all' }).catch(() => null),
+    Promise.all(
+      complexes.map(async (c) => {
+        const ws = await loadComplexWorkspace(c).catch(() => null);
+        const books = ws ? await listBooksInComplex(ws).catch(() => []) : [];
+        const curricula = ws ? await listCurriculaInComplex(ws).catch(() => []) : [];
+        return { comp: c, ws, books, curricula };
+      })
+    ),
+  ]);
+
+  const weaknesses: string[] = [];
+
+  if (rulesAuditReport && !rulesAuditReport.allHealthy) {
+    for (const u of rulesAuditReport.unhealthyDatabases) {
+      weaknesses.push(
+        `أخطاء Rules في "${u.dbLabel}" (${u.projectId} / ${u.firestoreDatabaseId}): ${u.issues
+          .map((i) => i.title)
+          .join('، ')}`
+      );
+    }
+  }
+
+  if (usageReport) {
+    for (const dbItem of usageReport.databases) {
+      if (!dbItem.reachable) {
+        weaknesses.push(
+          `قاعدة غير قابلة للوصول: ${dbItem.dbLabel} (${dbItem.projectId}) — ${dbItem.errorMessage || 'تعذر الاتصال'}`
+        );
+      } else if (dbItem.usagePercent >= 75) {
+        weaknesses.push(
+          `امتلاء مرتفع في "${dbItem.dbLabel}": ${dbItem.usagePercent}% (${formatBytesHuman(
+            dbItem.usedBytes
+          )} من ${formatBytesHuman(dbItem.limitBytes)})`
+        );
+      }
+    }
+  }
+
+  const complexesDetails = workspacesAndBooks.map(({ comp, ws, books, curricula }) => {
+    const accounts = ws?.accounts || [];
+    const supervisors = accounts.filter((a) => a.role === 'supervisor');
+    const teachers = accounts.filter((a) => a.role === 'teacher');
+    const students = accounts.filter((a) => a.role === 'student');
+    const unlinkedGoogle = accounts.filter((a) => !a.uid);
+    const mosques = ws?.mosques || [];
+    const halaqat = ws?.halaqat || [];
+
+    const emptyMosques = mosques.filter(
+      (m) => !halaqat.some((h) => h.mosqueId === m.id)
+    );
+    const emptyHalaqat = halaqat.filter(
+      (h) => !students.some((s) => s.halaqaIds.includes(h.id))
+    );
+    const halaqatWithoutTeacher = halaqat.filter(
+      (h) => !teachers.some((t) => t.halaqaIds.includes(h.id))
+    );
+    const incompleteBooks = books.filter((b) => b.status !== 'ready');
+
+    if (supervisors.length === 0) {
+      weaknesses.push(`مجمع "${comp.name}" لا يوجد به مشرف.`);
+    }
+    if (emptyMosques.length > 0) {
+      weaknesses.push(
+        `مجمع "${comp.name}": ${emptyMosques.length} مسجد بدون أي حلقات (${emptyMosques
+          .map((m) => m.name)
+          .join('، ')}).`
+      );
+    }
+    if (emptyHalaqat.length > 0) {
+      weaknesses.push(
+        `مجمع "${comp.name}": ${emptyHalaqat.length} حلقة بدون طلاب (${emptyHalaqat
+          .map((h) => h.name)
+          .slice(0, 5)
+          .join('، ')}).`
+      );
+    }
+    if (halaqatWithoutTeacher.length > 0) {
+      weaknesses.push(
+        `مجمع "${comp.name}": ${halaqatWithoutTeacher.length} حلقة بدون معلم مسند.`
+      );
+    }
+    if (incompleteBooks.length > 0) {
+      weaknesses.push(
+        `مجمع "${comp.name}": ${incompleteBooks.length} كتاب في حالة غير مكتملة (${incompleteBooks
+          .map((b) => `${b.title}:${b.status}`)
+          .join('، ')}).`
+      );
+    }
+
+    const tabStorageMap: Record<string, string> = {};
+    for (const tabKey of ALL_FEATURE_TAB_KEYS) {
+      const shards = ws?.tabPools?.[tabKey] || [];
+      const route = ws?.tabConfigMap?.[tabKey];
+      if (shards.length > 0) {
+        tabStorageMap[tabKey] = shards
+          .map(
+            (s, i) =>
+              `شريحة#${i + 1}:${s.label}(${s.status}, ${formatBytesHuman(
+                s.usedBytes
+              )}/${formatBytesHuman(s.maxBytes)}, ${s.docsCount} وثيقة)`
+          )
+          .join(' | ');
+      } else if (route) {
+        tabStorageMap[tabKey] = `قاعدة معزولة: ${getDbDisplayLabel(route)}`;
+      } else {
+        tabStorageMap[tabKey] = `تخزن في قاعدة المجمع (${comp.ownerDbLabel})`;
+      }
+    }
+
+    return {
+      complexId: comp.id,
+      name: comp.name,
+      storageLocation: comp.isExternal ? comp.ownerDbLabel : 'القاعدة الأساسية للموقع',
+      mosquesCount: mosques.length,
+      halaqatCount: halaqat.length,
+      accountsSummary: {
+        total: accounts.length,
+        supervisors: supervisors.length,
+        teachers: teachers.length,
+        students: students.length,
+        pendingGoogleLinkCount: unlinkedGoogle.length,
+      },
+      booksCount: books.length,
+      curriculaCount: curricula.length,
+      tabStorageRouting: tabStorageMap,
+    };
+  });
+
+  const payload = {
+    capturedAtIso: new Date().toISOString(),
+    dataArchitectureMap: {
+      primaryDatabaseOnly: ['admins', 'dbRegistry', 'stats (التشغيل اليومي العام)', 'broadcasts (الافتراضية لكل المجمعات)'],
+      complexScopedCollections: {
+        mosques_halaqat: ['mosques', 'halaqat'],
+        accounts_invites: ['accounts', 'inviteLinks', 'quickLinks', 'nameIndex'],
+        attendance: ['attendance'],
+        library: ['books', 'bookPages', 'wordAudio'],
+        curricula: [
+          'curricula',
+          'studentQuranPlans',
+          'studentMushafMistakes',
+          'studentBookPlans',
+        ],
+      },
+    },
+    platformStats: statsRes
+      ? {
+          totalComplexes: statsRes.totalComplexes,
+          totalMosques: statsRes.totalMosques,
+          totalHalaqat: statsRes.totalHalaqat,
+          totalAccounts: statsRes.totalAccounts,
+          today: statsRes.today,
+          global: statsRes.global,
+        }
+      : null,
+    connectedDatabasesCount: connectedDbs.length,
+    databaseUsageSummary: usageReport
+      ? {
+          totalDatabasesCount: usageReport.totalDatabasesCount,
+          totalDocsCount: usageReport.totalDocsCount,
+          totalUsedHuman: formatBytesHuman(usageReport.totalUsedBytes),
+          totalLimitHuman: formatBytesHuman(usageReport.totalLimitBytes),
+          totalRemainingHuman: formatBytesHuman(usageReport.totalRemainingBytes),
+          byTabSummary: usageReport.byTabSummary.map((t) => ({
+            tab: t.label,
+            docsCount: t.docsCount,
+            usedHuman: formatBytesHuman(t.usedBytes),
+          })),
+          databases: usageReport.databases.map((d) => ({
+            dbLabel: d.dbLabel,
+            projectId: d.projectId,
+            firestoreDatabaseId: d.firestoreDatabaseId,
+            isPrimary: d.isPrimary,
+            reachable: d.reachable,
+            errorMessage: d.errorMessage || null,
+            roleTags: d.roleTags,
+            complexNames: d.complexNames,
+            totalDocs: d.totalDocs,
+            usedHuman: formatBytesHuman(d.usedBytes),
+            limitHuman: formatBytesHuman(d.limitBytes),
+            remainingHuman: formatBytesHuman(d.remainingBytes),
+            usagePercent: d.usagePercent,
+            topCollections: d.collections
+              .filter((c) => c.docsCount > 0)
+              .slice(0, 8)
+              .map((c) => ({
+                collection: c.collection,
+                label: c.label,
+                docs: c.docsCount,
+                usedHuman: formatBytesHuman(c.usedBytes),
+              })),
+          })),
+        }
+      : null,
+    rulesHealthAudit: rulesAuditReport
+      ? {
+          allHealthy: rulesAuditReport.allHealthy,
+          totalDatabases: rulesAuditReport.totalDatabases,
+          healthyCount: rulesAuditReport.healthyCount,
+          results: rulesAuditReport.allResults.map((r) => ({
+            dbLabel: r.dbLabel,
+            projectId: r.projectId,
+            firestoreDatabaseId: r.firestoreDatabaseId,
+            status: r.status,
+            issues: r.issues,
+          })),
+        }
+      : null,
+    complexesDetails,
+    detectedWeaknessesAndRisks: weaknesses,
+  };
+
+  return {
+    snapshotText: JSON.stringify(payload, null, 2),
+    summary: {
+      databasesCount: usageReport?.totalDatabasesCount ?? connectedDbs.length,
+      complexesCount: complexes.length,
+      issuesCount: rulesAuditReport?.unhealthyDatabases.reduce((s, d) => s + d.issues.length, 0) ?? 0,
+      weaknessesCount: weaknesses.length,
+      totalDocsCount: usageReport?.totalDocsCount ?? 0,
+      totalUsedBytes: usageReport?.totalUsedBytes ?? 0,
+    },
+  };
+}

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
@@ -14,6 +14,7 @@ import {
   ShieldCheck,
   X,
 } from 'lucide-react';
+import { EXTERNAL_DB_RECOMMENDED_RULES } from '../services/multiDb';
 import type {
   DatabaseRulesAuditResult,
   PlatformRulesAuditReport,
@@ -32,34 +33,80 @@ export const RulesHealthModal: React.FC<RulesHealthModalProps> = ({
   onRecheck,
   onClose,
 }) => {
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [copyStatus, setCopyStatus] = useState<
+    Record<string, 'copied' | 'manual'>
+  >({});
   const [expandedCodeKeys, setExpandedCodeKeys] = useState<Record<string, boolean>>({});
+  const modalBoxRef = useRef<HTMLDivElement | null>(null);
+  const previewTextareaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
 
   const toggleCodePreview = (dbKey: string) => {
     setExpandedCodeKeys((prev) => ({ ...prev, [dbKey]: !prev[dbKey] }));
   };
 
-  const handleCopyRules = async (item: DatabaseRulesAuditResult) => {
+  const getEffectiveRulesText = (item: DatabaseRulesAuditResult): string =>
+    item.isPrimary ? item.recommendedRules : EXTERNAL_DB_RECOMMENDED_RULES;
+
+  const tryReliableCopy = async (text: string): Promise<boolean> => {
     try {
-      await navigator.clipboard.writeText(item.recommendedRules);
-      setCopiedKey(item.dbKey);
-      window.setTimeout(() => setCopiedKey(null), 2600);
-    } catch {
-      try {
-        const ta = document.createElement('textarea');
-        ta.value = item.recommendedRules;
-        ta.style.position = 'fixed';
-        ta.style.top = '-9999px';
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        document.body.removeChild(ta);
-        setCopiedKey(item.dbKey);
-        window.setTimeout(() => setCopiedKey(null), 2600);
-      } catch {
-        setCopiedKey(null);
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(text);
+        return true;
       }
+    } catch {
+      // Fallback to in-modal focusable textarea below
     }
+
+    try {
+      const container = modalBoxRef.current || document.body;
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', 'true');
+      ta.style.position = 'fixed';
+      ta.style.top = '16px';
+      ta.style.left = '16px';
+      ta.style.width = '24px';
+      ta.style.height = '24px';
+      ta.style.opacity = '0.01';
+      ta.style.zIndex = '200';
+      container.appendChild(ta);
+      ta.focus({ preventScroll: true });
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+      const ok = document.execCommand('copy');
+      container.removeChild(ta);
+      return ok;
+    } catch {
+      return false;
+    }
+  };
+
+  const handleCopyText = async (key: string, text: string, dbKeyForExpand?: string) => {
+    const ok = await tryReliableCopy(text);
+    if (ok) {
+      setCopyStatus((prev) => ({ ...prev, [key]: 'copied' }));
+      window.setTimeout(() => {
+        setCopyStatus((prev) => {
+          const next = { ...prev };
+          if (next[key] === 'copied') delete next[key];
+          return next;
+        });
+      }, 2600);
+      return;
+    }
+
+    // Clipboard blocked by Android Chrome / iFrame policy: reveal & select the visible textarea
+    const targetKey = dbKeyForExpand || key;
+    setExpandedCodeKeys((prev) => ({ ...prev, [targetKey]: true }));
+    setCopyStatus((prev) => ({ ...prev, [key]: 'manual' }));
+    window.setTimeout(() => {
+      const ta = previewTextareaRefs.current[targetKey];
+      if (ta) {
+        ta.focus();
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);
+      }
+    }, 60);
   };
 
   const modalNode = (
@@ -73,7 +120,10 @@ export const RulesHealthModal: React.FC<RulesHealthModalProps> = ({
         if (e.target === e.currentTarget && !rechecking) onClose();
       }}
     >
-      <div className="w-full sm:max-w-3xl bg-white border-2 border-[#EADBC8] rounded-t-3xl sm:rounded-3xl shadow-2xl max-h-[92vh] flex flex-col overflow-hidden">
+      <div
+        ref={modalBoxRef}
+        className="w-full sm:max-w-3xl bg-white border-2 border-[#EADBC8] rounded-t-3xl sm:rounded-3xl shadow-2xl max-h-[92vh] flex flex-col overflow-hidden"
+      >
         {/* Header */}
         <div
           className={`px-5 sm:px-6 py-4 border-b-2 border-[#EADBC8] flex items-center justify-between gap-3 shrink-0 ${
@@ -131,18 +181,36 @@ export const RulesHealthModal: React.FC<RulesHealthModalProps> = ({
                 ممتاز! جميع قواعد Firebase Rules متوافقة ١٠٠٪ مع آخر تحديثات المنصة.
               </p>
               <p className="text-xs sm:text-sm text-[#7D4E35]">
-                تم التحقق من صلاحيات القراءة والكتابة وتعدد قواعد التبويبات والصوتيات والإشعارات في كل القواعد المرتبطة.
+                تم التحقق من صلاحيات القراءة والكتابة وتعدد قواعد التبويبات والصوتيات والإشعارات وخطط الكتب في كل القواعد المرتبطة.
               </p>
             </div>
           ) : (
             <>
-              <div className="bg-[#FDF6EE] border-2 border-[#EADBC8] rounded-2xl p-4 text-xs sm:text-sm text-[#4A220D] leading-relaxed">
-                لضمان عمل جميع مميزات المنصة دون أخطاء، انسخ <strong>كود Rules كاملاً</strong> لكل قاعدة ظاهرة أدناه والصقه في تبويب <strong>Rules</strong> بداخل Firestore في مشروعها ثم اضغط <strong>Publish</strong>، وبعد بضع ثوانٍ لاكتمال النشر في Firebase اضغط <strong>«إعادة فحص القواعد الآن»</strong>.
+              <div className="bg-[#FDF6EE] border-2 border-[#EADBC8] rounded-2xl p-4 text-xs sm:text-sm text-[#4A220D] leading-relaxed space-y-1.5">
+                <p>
+                  انسخ <strong>كود Rules كاملاً</strong>، ثم افتح <strong>Rules</strong> في Firebase، وحدد الكود القديم بالكامل واحذفه تماماً قبل اللصق، ثم اضغط <strong>Publish (نشر)</strong>.
+                </p>
+                <p className="text-xs font-bold text-[#7D4E35]">
+                  ملاحظة مهمة: في القواعد المنفصلة يمكنك أيضاً نسخ الجزء المفقود فقط وإضافته قبل آخر قوسين <span dir="ltr">{'} }'}</span> في نهاية القواعد ثم الضغط على <strong>Publish</strong>.
+                </p>
               </div>
 
               {report.unhealthyDatabases.map((dbItem) => {
-                const isCopied = copiedKey === dbItem.dbKey;
-                const isExpanded = !!expandedCodeKeys[dbItem.dbKey];
+                const effectiveRules = getEffectiveRulesText(dbItem);
+                const fullCopyState = copyStatus[dbItem.dbKey];
+                const isCopied = fullCopyState === 'copied';
+                const isManualCopy = fullCopyState === 'manual';
+                const isExpanded = !!expandedCodeKeys[dbItem.dbKey] || isManualCopy;
+                const missingSnippets = Array.from(
+                  new Set(
+                    dbItem.issues
+                      .map((iss) => iss.ruleSnippet)
+                      .filter((s): s is string => Boolean(s && s.trim()))
+                  )
+                ).join('\n');
+                const snippetKey = `${dbItem.dbKey}__snippet`;
+                const isSnippetCopied = copyStatus[snippetKey] === 'copied';
+
                 return (
                   <div
                     key={dbItem.dbKey}
@@ -177,7 +245,9 @@ export const RulesHealthModal: React.FC<RulesHealthModalProps> = ({
                         </a>
                         <button
                           type="button"
-                          onClick={() => void handleCopyRules(dbItem)}
+                          onClick={() =>
+                            void handleCopyText(dbItem.dbKey, effectiveRules, dbItem.dbKey)
+                          }
                           className={`min-h-[40px] px-3.5 py-1.5 rounded-xl font-display text-xs font-extrabold inline-flex items-center gap-1.5 cursor-pointer ${
                             isCopied ? 'duo-btn-green' : 'duo-btn-orange'
                           }`}
@@ -197,6 +267,12 @@ export const RulesHealthModal: React.FC<RulesHealthModalProps> = ({
                       </div>
                     </div>
 
+                    {isManualCopy && (
+                      <div className="bg-[#FFA900]/15 border border-[#FFA900] rounded-2xl p-3 text-xs font-bold text-[#4A220D]">
+                        تعذّر النسخ التلقائي من هذا المتصفح؛ تم فتح الكود الكامل وتحديده في المربع أدناه — اضغط مطولاً واختر <strong>نسخ</strong> ثم استبدل كل الكود في Firebase.
+                      </div>
+                    )}
+
                     {/* Specific Failing Items */}
                     <div className="bg-[#D95338]/8 border border-[#D95338]/30 rounded-2xl p-3.5 space-y-2">
                       <p className="font-display text-xs font-extrabold text-[#D95338] flex items-center gap-1.5">
@@ -210,41 +286,137 @@ export const RulesHealthModal: React.FC<RulesHealthModalProps> = ({
                           </li>
                         ))}
                       </ul>
+
+                      {missingSnippets && (
+                        <div className="pt-2 border-t border-[#D95338]/20 space-y-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-[11px] font-extrabold text-[#4A220D]">
+                              الجزء المطلوب إضافته قبل آخر قوسين {'} }'} (أو انسخ الكود كاملاً):
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void handleCopyText(snippetKey, missingSnippets, dbItem.dbKey)
+                              }
+                              className={`min-h-[34px] px-3 rounded-xl font-display text-[11px] font-extrabold inline-flex items-center gap-1 cursor-pointer ${
+                                isSnippetCopied
+                                  ? 'bg-[#58CC02] text-white'
+                                  : 'bg-white border border-[#D95338] text-[#D95338]'
+                              }`}
+                            >
+                              {isSnippetCopied ? (
+                                <>
+                                  <Check className="w-3.5 h-3.5" />
+                                  <span>تم نسخ الجزء المفقود</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3.5 h-3.5" />
+                                  <span>نسخ الجزء المفقود فقط</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                          <pre
+                            dir="ltr"
+                            className="bg-[#4A220D] text-[#FDF6EE] rounded-xl p-3 text-[11px] leading-relaxed overflow-x-auto text-left select-all"
+                          >
+                            {missingSnippets}
+                          </pre>
+                        </div>
+                      )}
                     </div>
 
                     {/* Expand / Collapse Complete Rules Preview */}
-                    <div>
-                      <button
-                        type="button"
-                        onClick={() => toggleCodePreview(dbItem.dbKey)}
-                        className="text-xs font-display font-bold text-[#7D4E35] hover:text-[#4A220D] inline-flex items-center gap-1.5 cursor-pointer"
-                      >
-                        {isExpanded ? (
-                          <>
-                            <ChevronUp className="w-4 h-4" />
-                            <span>إخفاء كود Rules الكامل</span>
-                          </>
-                        ) : (
-                          <>
-                            <ChevronDown className="w-4 h-4" />
-                            <span>معاينة كود Rules الكامل قبل اللصق</span>
-                          </>
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() => toggleCodePreview(dbItem.dbKey)}
+                          className="text-xs font-display font-bold text-[#7D4E35] hover:text-[#4A220D] inline-flex items-center gap-1.5 cursor-pointer"
+                        >
+                          {isExpanded ? (
+                            <>
+                              <ChevronUp className="w-4 h-4" />
+                              <span>إخفاء كود Rules الكامل</span>
+                            </>
+                          ) : (
+                            <>
+                              <ChevronDown className="w-4 h-4" />
+                              <span>معاينة أو تحديد كود Rules الكامل يدوياً</span>
+                            </>
+                          )}
+                        </button>
+
+                        {isExpanded && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const ta = previewTextareaRefs.current[dbItem.dbKey];
+                              if (ta) {
+                                ta.focus();
+                                ta.select();
+                                ta.setSelectionRange(0, ta.value.length);
+                              }
+                            }}
+                            className="text-[11px] font-extrabold text-[#F56900] hover:underline cursor-pointer"
+                          >
+                            تحديد الكود بالكامل للنسخ اليدوي
+                          </button>
                         )}
-                      </button>
+                      </div>
 
                       {isExpanded && (
-                        <pre
+                        <textarea
+                          ref={(el) => {
+                            previewTextareaRefs.current[dbItem.dbKey] = el;
+                          }}
+                          readOnly
                           dir="ltr"
-                          className="mt-2 bg-[#4A220D] text-[#FDF6EE] rounded-2xl p-4 text-[11px] leading-relaxed overflow-x-auto max-h-64 text-left select-all"
-                        >
-                          {dbItem.recommendedRules}
-                        </pre>
+                          rows={12}
+                          value={effectiveRules}
+                          onFocus={(e) => {
+                            e.currentTarget.select();
+                          }}
+                          className="w-full bg-[#4A220D] text-[#FDF6EE] rounded-2xl p-4 font-mono text-[11px] leading-relaxed focus:outline-none focus:ring-2 focus:ring-[#F56900] resize-y"
+                        />
                       )}
                     </div>
                   </div>
                 );
               })}
             </>
+          )}
+
+          {/* Unreachable Databases Warning */}
+          {report.allResults.some((r) => r.status === 'unreachable') && (
+            <div className="bg-[#FFA900]/12 border border-[#FFA900]/60 rounded-2xl p-3.5 space-y-2">
+              <p className="font-display text-xs font-extrabold text-[#9A5B00] flex items-center gap-1.5">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>
+                  قواعد تعذّر التحقق منها ({report.allResults.filter((r) => r.status === 'unreachable').length}):
+                </span>
+              </p>
+              <div className="space-y-1.5">
+                {report.allResults
+                  .filter((r) => r.status === 'unreachable')
+                  .map((r) => (
+                    <div
+                      key={r.dbKey}
+                      className="text-xs font-bold text-[#4A220D] bg-white border border-[#FFA900]/40 rounded-xl px-3 py-2 flex flex-wrap items-center justify-between gap-2"
+                    >
+                      <span>
+                        {r.dbLabel} (<span dir="ltr">{r.projectId} / {r.firestoreDatabaseId}</span>)
+                      </span>
+                      <span className="text-[11px] text-[#9A5B00]">
+                        {r.isPrimary
+                          ? 'تحقق من تسجيل الدخول بحساب جوجل لإكمال فحص القاعدة الأساسية'
+                          : 'تعذّر الاتصال بالقاعدة عبر الشبكة'}
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            </div>
           )}
 
           {/* Healthy Databases Summary */}
@@ -280,7 +452,9 @@ export const RulesHealthModal: React.FC<RulesHealthModalProps> = ({
           >
             <RefreshCw className={`w-4 h-4 shrink-0 ${rechecking ? 'animate-spin' : ''}`} />
             <span>
-              {rechecking ? 'جاري إعادة فحص جميع القواعد...' : 'إعادة فحص القواعد الآن'}
+              {rechecking
+                ? 'جاري فحص القواعد (مع انتظار انتشار التحديث من Firebase)...'
+                : 'إعادة فحص القواعد الآن'}
             </span>
           </button>
 

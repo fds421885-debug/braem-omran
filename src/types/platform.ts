@@ -528,4 +528,49 @@ export interface DatabaseUsageDashboardReport {
   }[];
 }
 
+export type BookHomeworkType =
+  | 'reading'
+  | 'writing'
+  | 'exercise'
+  | 'page_solve'
+  | 'other';
+
+export const BOOK_HOMEWORK_TYPE_LABELS: Record<BookHomeworkType, string> = {
+  reading: 'قراءة',
+  writing: 'كتابة',
+  exercise: 'حل تمرين',
+  page_solve: 'حل صفحة',
+  other: 'أخرى',
+};
+
+export type BookHomeworkStatus = 'pending' | 'completed' | 'cancelled' | 'deferred';
+
+export interface StudentBookHomeworkItem {
+  id: string;
+  type: BookHomeworkType;
+  customTypeLabel?: string;
+  pageNumber: number;
+  note?: string;
+  status: BookHomeworkStatus;
+  deferredFromDate?: string;
+}
+
+export interface StudentBookPlanRecord {
+  id: string;
+  complexId: string;
+  mosqueId: string;
+  halaqaId: string;
+  studentId: string;
+  studentName: string;
+  bookId: string;
+  bookTitle: string;
+  dateKey: string; // YYYY-MM-DD
+  whereWeReachedPage: number;
+  todayHomeworks: StudentBookHomeworkItem[];
+  tomorrowHomeworks: StudentBookHomeworkItem[];
+  recordedBy: string;
+  recordedByName: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
 
