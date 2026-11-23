@@ -601,18 +601,18 @@ export const KingFahdMushafReader: React.FC<KingFahdMushafReaderProps> = ({
 
         {/* Interactive Legend + Hold Progress + Audio Player Controls */}
         <div className="max-w-5xl mx-auto mt-2 flex flex-wrap items-center justify-between gap-2 text-xs">
-          <div className="flex flex-wrap items-center gap-2 text-[#7D4E35] font-semibold">
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#FDF6EE] border border-[#EADBC8]">
+          <div className="flex flex-nowrap sm:flex-wrap items-center gap-1.5 sm:gap-2 text-[#7D4E35] font-semibold overflow-x-auto no-scrollbar max-w-full pb-0.5">
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#FDF6EE] border border-[#EADBC8] shrink-0 whitespace-nowrap text-[11px] sm:text-xs">
               <Mic className="w-3.5 h-3.5 text-[#F56900]" />
-              <span>ضغط مطوّل ٢ ثانية على الآية للقراءة المتواصلة</span>
+              <span>ضغط مطوّل ٢ث للتلاوة المتواصلة</span>
             </span>
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#D95338]/10 text-[#9A2510]">
-              <span>ضغطتان على الآية لتسجيل خطأ ({toArabicIndicDigits(totalPageMistakes)} بالصفحة)</span>
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#D95338]/10 text-[#9A2510] shrink-0 whitespace-nowrap text-[11px] sm:text-xs">
+              <span>ضغطتان للخطأ ({toArabicIndicDigits(totalPageMistakes)})</span>
             </span>
             {highlightRanges.map((hr, i) => (
               <span
                 key={i}
-                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg font-bold ${
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg font-bold shrink-0 whitespace-nowrap text-[11px] sm:text-xs ${
                   hr.kind === 'new_hifz'
                     ? 'bg-[#58CC02]/15 text-[#357A02]'
                     : 'bg-[#FFA900]/20 text-[#995C00]'
@@ -727,7 +727,7 @@ export const KingFahdMushafReader: React.FC<KingFahdMushafReaderProps> = ({
             }`}
           >
             {/* Inner King Fahd Complex Ornamental Frame */}
-            <div className="border-2 border-[#EADBC8] rounded-[22px] bg-[#FFFDF7] px-3 sm:px-7 py-4 sm:py-6 flex flex-col justify-between min-h-[540px]">
+            <div className="border-2 border-[#EADBC8] rounded-[22px] bg-[#FFFDF7] px-2.5 sm:px-7 py-3.5 sm:py-6 flex flex-col justify-between min-h-[430px] sm:min-h-[540px]">
               {/* Top Running Header (Surah on right, Juz/Hizb on left) */}
               <div className="flex items-center justify-between gap-2 pb-2.5 mb-3 border-b border-[#EADBC8] text-xs font-display font-bold text-[#7D4E35]">
                 <span className="truncate">{pageSurahsSummary}</span>
@@ -919,29 +919,36 @@ export const KingFahdMushafReader: React.FC<KingFahdMushafReaderProps> = ({
       </div>
 
       {/* Bottom RTL Page Navigation Bar */}
-      <footer className="bg-white border-t-2 border-[#EADBC8] px-4 py-2.5 shrink-0">
-        <div className="max-w-5xl mx-auto flex items-center justify-between gap-3">
+      <footer className="bg-white border-t-2 border-[#EADBC8] px-3 sm:px-4 pt-2 pb-safe shrink-0">
+        <div className="max-w-5xl mx-auto flex items-center justify-between gap-2 sm:gap-3">
           <button
             type="button"
             disabled={pageNumber <= 1}
             onClick={() => navigateToPage(pageNumber - 1, 'prev')}
-            className="duo-btn-cream min-h-[44px] px-4 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-40"
+            className="duo-btn-cream min-h-[44px] px-3 sm:px-4 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-40 shrink-0"
           >
             <ChevronRight className="w-4 h-4" />
-            <span>الصفحة السابقة</span>
+            <span className="hidden sm:inline">الصفحة السابقة</span>
+            <span className="sm:hidden">السابقة</span>
           </button>
 
-          <p className="text-[11px] sm:text-xs font-bold text-[#7D4E35] text-center">
-            اسحب يميناً للصفحة التالية · اسحب يساراً للسابقة ({toArabicIndicDigits(pageNumber)} / ٦٠٤)
+          <p className="text-[11px] sm:text-xs font-bold text-[#7D4E35] text-center tabular-nums">
+            <span className="hidden sm:inline">
+              اسحب يميناً للصفحة التالية · اسحب يساراً للسابقة ({toArabicIndicDigits(pageNumber)} / ٦٠٤)
+            </span>
+            <span className="sm:hidden">
+              صفحة {toArabicIndicDigits(pageNumber)} / ٦٠٤
+            </span>
           </p>
 
           <button
             type="button"
             disabled={pageNumber >= 604}
             onClick={() => navigateToPage(pageNumber + 1, 'next')}
-            className="duo-btn-orange min-h-[44px] px-4 py-2 rounded-2xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-40"
+            className="duo-btn-orange min-h-[44px] px-3 sm:px-4 py-2 rounded-2xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-40 shrink-0"
           >
-            <span>الصفحة التالية</span>
+            <span className="hidden sm:inline">الصفحة التالية</span>
+            <span className="sm:hidden">التالية</span>
             <ChevronLeft className="w-4 h-4" />
           </button>
         </div>

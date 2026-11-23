@@ -1875,7 +1875,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-between sm:justify-end">
             {currentPage && (
               <button
                 type="button"
@@ -1891,7 +1891,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
             )}
 
             {readerPages.length > 0 && (
-              <div className="flex items-center gap-2 bg-[#FDF6EE] border border-[#EADBC8] rounded-2xl p-1.5 shrink-0">
+              <div className="flex items-center gap-1.5 sm:gap-2 bg-[#FDF6EE] border border-[#EADBC8] rounded-2xl p-1 sm:p-1.5 shrink-0">
                 <button
                   type="button"
                   disabled={currentPageIndex <= 0}
@@ -1903,13 +1903,13 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
                     if (first) handleSelectSegment(first);
                   }}
                   aria-label="الصفحة السابقة"
-                  className="min-h-[38px] px-3 rounded-xl bg-white border border-[#EADBC8] text-[#4A220D] font-bold text-xs inline-flex items-center gap-1 cursor-pointer disabled:opacity-40"
+                  className="min-h-[38px] px-2.5 sm:px-3 rounded-xl bg-white border border-[#EADBC8] text-[#4A220D] font-bold text-xs inline-flex items-center gap-1 cursor-pointer disabled:opacity-40"
                 >
                   <ChevronRight className="w-4 h-4" />
-                  <span>السابقة</span>
+                  <span className="hidden sm:inline">السابقة</span>
                 </button>
-                <span className="px-3 text-xs sm:text-sm font-display font-extrabold text-[#4A220D] tabular-nums whitespace-nowrap">
-                  صفحة {currentPageIndex + 1} من {readerPages.length}
+                <span className="px-2 sm:px-3 text-xs sm:text-sm font-display font-extrabold text-[#4A220D] tabular-nums whitespace-nowrap">
+                  {currentPageIndex + 1} / {readerPages.length}
                 </span>
                 <button
                   type="button"
@@ -1922,9 +1922,9 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
                     if (first) handleSelectSegment(first);
                   }}
                   aria-label="الصفحة التالية"
-                  className="min-h-[38px] px-3 rounded-xl bg-white border border-[#EADBC8] text-[#4A220D] font-bold text-xs inline-flex items-center gap-1 cursor-pointer disabled:opacity-40"
+                  className="min-h-[38px] px-2.5 sm:px-3 rounded-xl bg-white border border-[#EADBC8] text-[#4A220D] font-bold text-xs inline-flex items-center gap-1 cursor-pointer disabled:opacity-40"
                 >
-                  <span>التالية</span>
+                  <span className="hidden sm:inline">التالية</span>
                   <ChevronLeft className="w-4 h-4" />
                 </button>
               </div>
@@ -1951,12 +1951,12 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
               </div>
 
               {/* Mode Selector: بالتهجي / سريعة */}
-              <div className="flex items-center gap-1.5 bg-[#FDF6EE] border border-[#EADBC8] rounded-2xl p-1">
+              <div className="grid grid-cols-2 sm:flex items-center gap-1.5 bg-[#FDF6EE] border border-[#EADBC8] rounded-2xl p-1 w-full sm:w-auto">
                 <button
                   type="button"
                   disabled={continuousStatus === 'playing'}
                   onClick={() => setContinuousMode('noor_albayan')}
-                  className={`min-h-[36px] px-3 rounded-xl font-display font-bold text-xs cursor-pointer transition-colors disabled:opacity-60 ${
+                  className={`min-h-[38px] px-2.5 sm:px-3 rounded-xl font-display font-bold text-xs cursor-pointer transition-colors disabled:opacity-60 text-center ${
                     continuousMode === 'noor_albayan'
                       ? 'bg-[#F56900] text-white'
                       : 'text-[#4A220D] hover:bg-white'
@@ -1968,7 +1968,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
                   type="button"
                   disabled={continuousStatus === 'playing'}
                   onClick={() => setContinuousMode('normal')}
-                  className={`min-h-[36px] px-3 rounded-xl font-display font-bold text-xs cursor-pointer transition-colors disabled:opacity-60 ${
+                  className={`min-h-[38px] px-2.5 sm:px-3 rounded-xl font-display font-bold text-xs cursor-pointer transition-colors disabled:opacity-60 text-center ${
                     continuousMode === 'normal'
                       ? 'bg-[#46A302] text-white'
                       : 'text-[#4A220D] hover:bg-white'
@@ -2553,7 +2553,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
           type="button"
           disabled={isRunningJob || extractProgress.total > 0}
           onClick={() => setShowAddForm((prev) => !prev)}
-          className="duo-btn-orange min-h-[48px] px-5 py-2.5 rounded-2xl font-display font-extrabold text-sm inline-flex items-center gap-2 cursor-pointer whitespace-nowrap disabled:opacity-60"
+          className="duo-btn-orange w-full sm:w-auto min-h-[48px] px-5 py-2.5 rounded-2xl font-display font-extrabold text-sm inline-flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap disabled:opacity-60"
         >
           <Plus className="w-4 h-4 shrink-0" />
           <span>أضف كتاب</span>

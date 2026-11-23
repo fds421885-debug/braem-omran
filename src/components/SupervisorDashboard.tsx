@@ -265,12 +265,12 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
     setShowTeacherPicker(false);
   };
 
-  const navItems: { id: SupervisorTab; label: string; icon: typeof Home }[] = [
-    { id: 'home', label: 'الرئيسية', icon: Home },
-    { id: 'attendance', label: 'الحضور والغياب', icon: ClipboardCheck },
-    { id: 'accounts_mosques', label: 'الحسابات والمساجد', icon: Building2 },
-    { id: 'library', label: 'الملفات والكتب', icon: BookOpen },
-    { id: 'curricula', label: 'المقررات', icon: BookMarked },
+  const navItems: { id: SupervisorTab; label: string; mobileLabel: string; icon: typeof Home }[] = [
+    { id: 'home', label: 'الرئيسية', mobileLabel: 'الرئيسية', icon: Home },
+    { id: 'attendance', label: 'الحضور والغياب', mobileLabel: 'الحضور', icon: ClipboardCheck },
+    { id: 'accounts_mosques', label: 'الحسابات والمساجد', mobileLabel: 'الحسابات', icon: Building2 },
+    { id: 'library', label: 'الملفات والكتب', mobileLabel: 'الكتب', icon: BookOpen },
+    { id: 'curricula', label: 'المقررات', mobileLabel: 'المقررات', icon: BookMarked },
   ];
 
   const rankMedals = [
@@ -307,19 +307,19 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
     <div className="min-h-screen bg-[#FDF6EE] text-[#4A220D] flex flex-col justify-between pb-24 lg:pb-0">
       {/* Top Clean Navigation Header — Zero DB Details */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b-2 border-[#EADBC8]">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 min-h-16 py-2 flex flex-wrap items-center justify-between gap-2.5">
-          <div className="flex items-center gap-3 min-w-0">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 min-h-14 sm:min-h-16 py-2 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
             <img
               src={`${BASE_URL}icon.svg`}
               alt="براعم عمران"
-              className="w-9 h-9 rounded-xl border border-[#EADBC8] shrink-0"
+              className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl border border-[#EADBC8] shrink-0"
             />
             <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="font-display text-base sm:text-lg font-extrabold text-[#4A220D] whitespace-nowrap">
+              <div className="flex items-center gap-1.5">
+                <span className="font-display text-sm sm:text-lg font-extrabold text-[#4A220D] whitespace-nowrap truncate">
                   براعم عمران
                 </span>
-                <span className="hidden sm:inline text-xs font-bold text-[#F56900] whitespace-nowrap">
+                <span className="hidden xl:inline text-xs font-bold text-[#F56900] whitespace-nowrap">
                   · {isComplexWide ? 'إشراف المجمع بالكامل' : 'إشراف المسجد'}
                 </span>
               </div>
@@ -355,25 +355,27 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
             })}
           </nav>
 
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {!loading && workspace && (
               <>
                 <button
                   type="button"
                   onClick={() => setMessageModalOpen(true)}
-                  className="duo-btn-orange min-h-[42px] px-3 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+                  aria-label="إرسال رسالة"
+                  className="duo-btn-orange min-h-[40px] min-w-[40px] px-2.5 sm:px-3 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
                 >
                   <Megaphone className="w-4 h-4 shrink-0" />
-                  <span>رسالة</span>
+                  <span className="hidden sm:inline">رسالة</span>
                 </button>
                 <button
                   type="button"
                   onClick={openTeacherPicker}
-                  className="duo-btn-green min-h-[42px] px-3 py-2 rounded-xl font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                  aria-label="الانتقال لدور المعلم"
+                  className="duo-btn-green min-h-[40px] px-2.5 sm:px-3 py-2 rounded-xl font-display font-bold text-xs inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                 >
                   <ArrowLeftRight className="w-4 h-4 shrink-0" />
                   <span className="hidden sm:inline">الانتقال لدور المعلم</span>
-                  <span className="sm:hidden">دور المعلم</span>
+                  <span className="sm:hidden">المعلم</span>
                 </button>
               </>
             )}
@@ -384,7 +386,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
               onClick={() => void loadAll(true)}
               disabled={refreshing || loading}
               aria-label="تحديث البيانات"
-              className="min-h-[42px] px-3 py-2 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] inline-flex items-center gap-1.5 font-display font-bold text-xs cursor-pointer disabled:opacity-50"
+              className="min-h-[40px] min-w-[40px] px-2.5 sm:px-3 py-2 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] inline-flex items-center justify-center gap-1.5 font-display font-bold text-xs cursor-pointer disabled:opacity-50"
             >
               <RefreshCw
                 className={`w-4 h-4 text-[#F56900] ${refreshing ? 'animate-spin' : ''}`}
@@ -394,7 +396,8 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
             <button
               type="button"
               onClick={handleLogout}
-              className="min-h-[42px] px-3 py-2 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              aria-label="تسجيل الخروج"
+              className="min-h-[40px] min-w-[40px] px-2.5 sm:px-3 py-2 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
             >
               <LogOut className="w-4 h-4 shrink-0" />
               <span className="hidden sm:inline">خروج</span>
@@ -445,37 +448,37 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                     </p>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2">
                     <button
                       type="button"
                       onClick={() => setTab('attendance')}
-                      className="duo-btn-green min-h-[44px] px-4 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                      className="duo-btn-green min-h-[44px] px-3 sm:px-4 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                     >
-                      <ClipboardCheck className="w-4 h-4" />
+                      <ClipboardCheck className="w-4 h-4 shrink-0" />
                       <span>الحضور والغياب</span>
                     </button>
                     <button
                       type="button"
                       onClick={() => setTab('accounts_mosques')}
-                      className="duo-btn-cream min-h-[44px] px-4 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                      className="duo-btn-cream min-h-[44px] px-3 sm:px-4 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                     >
-                      <Users className="w-4 h-4 text-[#F56900]" />
+                      <Users className="w-4 h-4 text-[#F56900] shrink-0" />
                       <span>الحسابات والمساجد</span>
                     </button>
                     <button
                       type="button"
                       onClick={() => setTab('library')}
-                      className="duo-btn-cream min-h-[44px] px-4 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                      className="duo-btn-cream min-h-[44px] px-3 sm:px-4 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                     >
-                      <BookOpen className="w-4 h-4 text-[#F56900]" />
+                      <BookOpen className="w-4 h-4 text-[#F56900] shrink-0" />
                       <span>الملفات والكتب</span>
                     </button>
                     <button
                       type="button"
                       onClick={() => setTab('curricula')}
-                      className="duo-btn-orange min-h-[44px] px-4 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                      className="duo-btn-orange min-h-[44px] px-3 sm:px-4 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                     >
-                      <BookMarked className="w-4 h-4" />
+                      <BookMarked className="w-4 h-4 shrink-0" />
                       <span>المقررات</span>
                     </button>
                   </div>
@@ -922,7 +925,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
       {/* Mobile & Tablet Bottom Navigation */}
       <nav
         aria-label="التنقل السفلي للمشرف"
-        className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-white/95 backdrop-blur-md border-t-2 border-[#EADBC8] px-1.5 py-2 flex items-center justify-around gap-1"
+        className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-white/95 backdrop-blur-md border-t-2 border-[#EADBC8] px-1.5 pt-1.5 pb-safe flex items-center justify-around gap-1"
       >
         {navItems.map((item) => {
           const Icon = item.icon;
@@ -932,12 +935,12 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
               key={item.id}
               type="button"
               onClick={() => setTab(item.id)}
-              className={`flex-1 min-w-0 min-h-[46px] py-1.5 px-1 rounded-2xl flex flex-col items-center justify-center gap-0.5 font-display text-[10px] sm:text-xs font-bold cursor-pointer transition-colors ${
+              className={`flex-1 min-w-0 min-h-[48px] py-1 px-1 rounded-2xl flex flex-col items-center justify-center gap-0.5 font-display text-[11px] font-bold cursor-pointer transition-colors ${
                 active ? 'bg-[#F56900] text-white' : 'text-[#7D4E35]'
               }`}
             >
               <Icon className="w-4 h-4 shrink-0" />
-              <span className="truncate w-full text-center">{item.label}</span>
+              <span className="truncate w-full text-center">{item.mobileLabel}</span>
             </button>
           );
         })}

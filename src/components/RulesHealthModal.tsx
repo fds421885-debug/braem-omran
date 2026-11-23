@@ -122,7 +122,7 @@ export const RulesHealthModal: React.FC<RulesHealthModalProps> = ({
     >
       <div
         ref={modalBoxRef}
-        className="w-full sm:max-w-3xl bg-white border-2 border-[#EADBC8] rounded-t-3xl sm:rounded-3xl shadow-2xl max-h-[92vh] flex flex-col overflow-hidden"
+        className="w-full sm:max-w-3xl bg-white border-2 border-[#EADBC8] rounded-t-3xl sm:rounded-3xl shadow-2xl max-h-[92dvh] flex flex-col overflow-hidden"
       >
         {/* Header */}
         <div
@@ -226,19 +226,19 @@ export const RulesHealthModal: React.FC<RulesHealthModalProps> = ({
                           <h3 className="font-display text-base font-extrabold text-[#4A220D] truncate">
                             {dbItem.dbLabel}
                           </h3>
-                          <p className="text-xs font-bold text-[#7D4E35]">
+                          <p className="text-xs font-bold text-[#7D4E35] break-all">
                             المشروع: <span dir="ltr">{dbItem.projectId}</span> · القاعدة:{' '}
                             <span dir="ltr">{dbItem.firestoreDatabaseId}</span>
                           </p>
                         </div>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <div className="grid grid-cols-1 sm:flex sm:flex-wrap items-center gap-2 w-full sm:w-auto shrink-0">
                         <a
                           href={dbItem.consoleRulesUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="duo-btn-cream min-h-[40px] px-3 py-1.5 rounded-xl font-display text-xs font-bold inline-flex items-center gap-1.5"
+                          className="duo-btn-cream min-h-[40px] px-3 py-1.5 rounded-xl font-display text-xs font-bold inline-flex items-center justify-center gap-1.5"
                         >
                           <ExternalLink className="w-3.5 h-3.5 text-[#F56900] shrink-0" />
                           <span>فتح Rules في Firebase</span>
@@ -248,7 +248,7 @@ export const RulesHealthModal: React.FC<RulesHealthModalProps> = ({
                           onClick={() =>
                             void handleCopyText(dbItem.dbKey, effectiveRules, dbItem.dbKey)
                           }
-                          className={`min-h-[40px] px-3.5 py-1.5 rounded-xl font-display text-xs font-extrabold inline-flex items-center gap-1.5 cursor-pointer ${
+                          className={`min-h-[40px] px-3.5 py-1.5 rounded-xl font-display text-xs font-extrabold inline-flex items-center justify-center gap-1.5 cursor-pointer ${
                             isCopied ? 'duo-btn-green' : 'duo-btn-orange'
                           }`}
                         >
@@ -405,7 +405,7 @@ export const RulesHealthModal: React.FC<RulesHealthModalProps> = ({
                       key={r.dbKey}
                       className="text-xs font-bold text-[#4A220D] bg-white border border-[#FFA900]/40 rounded-xl px-3 py-2 flex flex-wrap items-center justify-between gap-2"
                     >
-                      <span>
+                      <span className="break-all">
                         {r.dbLabel} (<span dir="ltr">{r.projectId} / {r.firestoreDatabaseId}</span>)
                       </span>
                       <span className="text-[11px] text-[#9A5B00]">
@@ -443,12 +443,20 @@ export const RulesHealthModal: React.FC<RulesHealthModalProps> = ({
         </div>
 
         {/* Footer Actions */}
-        <div className="px-5 sm:px-6 py-4 border-t-2 border-[#F7EBDD] bg-[#FDF6EE]/60 flex flex-wrap items-center gap-3 shrink-0">
+        <div className="px-5 sm:px-6 py-4 pb-safe border-t-2 border-[#F7EBDD] bg-[#FDF6EE]/60 flex flex-col-reverse sm:flex-row items-stretch sm:items-center gap-2.5 sm:gap-3 shrink-0">
+          <button
+            type="button"
+            onClick={onClose}
+            className="duo-btn-cream min-h-[48px] px-5 py-2.5 rounded-2xl font-display font-bold text-sm cursor-pointer"
+          >
+            {report.allHealthy ? 'تم' : 'تذكيري لاحقاً'}
+          </button>
+
           <button
             type="button"
             disabled={rechecking}
             onClick={() => void onRecheck()}
-            className="duo-btn-green flex-1 min-h-[48px] px-5 py-2.5 rounded-2xl font-display font-extrabold text-sm inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
+            className="duo-btn-green sm:flex-1 min-h-[48px] px-5 py-2.5 rounded-2xl font-display font-extrabold text-sm inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
           >
             <RefreshCw className={`w-4 h-4 shrink-0 ${rechecking ? 'animate-spin' : ''}`} />
             <span>
@@ -456,14 +464,6 @@ export const RulesHealthModal: React.FC<RulesHealthModalProps> = ({
                 ? 'جاري فحص القواعد (مع انتظار انتشار التحديث من Firebase)...'
                 : 'إعادة فحص القواعد الآن'}
             </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={onClose}
-            className="duo-btn-cream min-h-[48px] px-5 py-2.5 rounded-2xl font-display font-bold text-sm cursor-pointer"
-          >
-            {report.allHealthy ? 'تم' : 'تذكيري لاحقاً'}
           </button>
         </div>
       </div>

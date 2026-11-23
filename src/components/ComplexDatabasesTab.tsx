@@ -514,7 +514,7 @@ export const ComplexDatabasesTab: React.FC<ComplexDatabasesTabProps> = ({
           <button
             type="button"
             onClick={() => openAssignTabModal('library', 'add_shard')}
-            className="duo-btn-orange min-h-[44px] px-5 py-2 rounded-2xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center gap-2 cursor-pointer"
+            className="duo-btn-orange w-full sm:w-auto min-h-[44px] px-5 py-2 rounded-2xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center justify-center gap-2 cursor-pointer"
           >
             <Plus className="w-4 h-4" />
             <span>أضف قاعدة بيانات لتبويب</span>
@@ -617,11 +617,13 @@ export const ComplexDatabasesTab: React.FC<ComplexDatabasesTabProps> = ({
                     <p className="text-xs text-[#7D4E35] truncate">{dbLabel}</p>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 w-full lg:w-auto shrink-0">
                     <button
                       type="button"
                       onClick={() => openAssignTabModal(tabKey, 'add_shard')}
-                      className="duo-btn-orange min-h-[38px] px-3 py-1.5 rounded-xl font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer"
+                      className={`duo-btn-orange min-h-[38px] px-3 py-1.5 rounded-xl font-display font-bold text-xs inline-flex items-center justify-center gap-1.5 cursor-pointer ${
+                        pool.length === 0 ? 'col-span-2 sm:col-span-1' : ''
+                      }`}
                     >
                       <Plus className="w-3.5 h-3.5" />
                       <span>
@@ -633,7 +635,7 @@ export const ComplexDatabasesTab: React.FC<ComplexDatabasesTabProps> = ({
                       <button
                         type="button"
                         onClick={() => void handleRecalculateUsage(tabKey)}
-                        className="min-h-[38px] px-3 py-1.5 rounded-xl border-2 border-[#EADBC8] bg-white hover:border-[#F56900] font-display font-bold text-xs text-[#4A220D] inline-flex items-center gap-1.5 cursor-pointer"
+                        className="min-h-[38px] px-3 py-1.5 rounded-xl border-2 border-[#EADBC8] bg-white hover:border-[#F56900] font-display font-bold text-xs text-[#4A220D] inline-flex items-center justify-center gap-1.5 cursor-pointer"
                       >
                         <RefreshCw className="w-3.5 h-3.5 text-[#F56900]" />
                         <span>حساب المساحة</span>
@@ -643,7 +645,7 @@ export const ComplexDatabasesTab: React.FC<ComplexDatabasesTabProps> = ({
                     <button
                       type="button"
                       onClick={() => void handleDownloadSingleTabJson(tabKey)}
-                      className="min-h-[38px] px-3 py-1.5 rounded-xl border-2 border-[#EADBC8] bg-white hover:border-[#F56900] font-display font-bold text-xs text-[#4A220D] inline-flex items-center gap-1.5 cursor-pointer"
+                      className="min-h-[38px] px-3 py-1.5 rounded-xl border-2 border-[#EADBC8] bg-white hover:border-[#F56900] font-display font-bold text-xs text-[#4A220D] inline-flex items-center justify-center gap-1.5 cursor-pointer"
                     >
                       <Download className="w-3.5 h-3.5 text-[#F56900]" />
                       <span>تنزيل JSON</span>
@@ -652,7 +654,7 @@ export const ComplexDatabasesTab: React.FC<ComplexDatabasesTabProps> = ({
                     <button
                       type="button"
                       onClick={() => handleTriggerUploadTabJson(tabKey)}
-                      className="min-h-[38px] px-3 py-1.5 rounded-xl border-2 border-[#EADBC8] bg-white hover:border-[#58CC02] font-display font-bold text-xs text-[#4A220D] inline-flex items-center gap-1.5 cursor-pointer"
+                      className="min-h-[38px] px-3 py-1.5 rounded-xl border-2 border-[#EADBC8] bg-white hover:border-[#58CC02] font-display font-bold text-xs text-[#4A220D] inline-flex items-center justify-center gap-1.5 cursor-pointer"
                     >
                       <Upload className="w-3.5 h-3.5 text-[#46A302]" />
                       <span>رفع JSON</span>
@@ -788,7 +790,7 @@ export const ComplexDatabasesTab: React.FC<ComplexDatabasesTabProps> = ({
             <form
               onSubmit={handleExecuteTabDbAssign}
               dir="rtl"
-              className="w-full sm:max-w-2xl bg-white border-2 border-[#EADBC8] rounded-t-3xl sm:rounded-3xl shadow-xl max-h-[92vh] flex flex-col"
+              className="w-full sm:max-w-2xl bg-white border-2 border-[#EADBC8] rounded-t-3xl sm:rounded-3xl shadow-xl max-h-[92dvh] pb-safe flex flex-col"
             >
               <div className="px-5 sm:px-6 py-4 border-b-2 border-[#F7EBDD] flex items-center justify-between gap-3 shrink-0">
                 <div className="flex items-center gap-2">
@@ -998,7 +1000,7 @@ export const ComplexDatabasesTab: React.FC<ComplexDatabasesTabProps> = ({
             <form
               onSubmit={handleExecuteShardMigration}
               dir="rtl"
-              className="w-full sm:max-w-2xl bg-white border-2 border-[#EADBC8] rounded-t-3xl sm:rounded-3xl shadow-xl max-h-[92vh] flex flex-col"
+              className="w-full sm:max-w-2xl bg-white border-2 border-[#EADBC8] rounded-t-3xl sm:rounded-3xl shadow-xl max-h-[92dvh] pb-safe flex flex-col"
             >
               <div className="px-5 sm:px-6 py-4 border-b-2 border-[#F7EBDD] flex items-center justify-between gap-3 shrink-0">
                 <div className="flex items-center gap-2">
@@ -1122,7 +1124,7 @@ export const ComplexDatabasesTab: React.FC<ComplexDatabasesTabProps> = ({
             <form
               onSubmit={handleExecuteBackupClone}
               dir="rtl"
-              className="w-full sm:max-w-2xl bg-white border-2 border-[#EADBC8] rounded-t-3xl sm:rounded-3xl shadow-xl max-h-[92vh] flex flex-col"
+              className="w-full sm:max-w-2xl bg-white border-2 border-[#EADBC8] rounded-t-3xl sm:rounded-3xl shadow-xl max-h-[92dvh] pb-safe flex flex-col"
             >
               <div className="px-5 sm:px-6 py-4 border-b-2 border-[#F7EBDD] flex items-center justify-between gap-3 shrink-0">
                 <div className="flex items-center gap-2">

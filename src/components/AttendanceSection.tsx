@@ -292,7 +292,7 @@ export const AttendanceSection: React.FC<AttendanceSectionProps> = ({
           <button
             type="button"
             onClick={() => setDateKey(getTodayDateKey())}
-            className="duo-btn-cream min-h-[40px] px-3.5 py-1.5 rounded-xl font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer"
+            className="duo-btn-cream w-full sm:w-auto min-h-[40px] px-3.5 py-1.5 rounded-xl font-display font-bold text-xs inline-flex items-center justify-center gap-1.5 cursor-pointer"
           >
             <Calendar className="w-4 h-4 text-[#F56900]" />
             <span>تاريخ اليوم</span>
@@ -361,27 +361,27 @@ export const AttendanceSection: React.FC<AttendanceSectionProps> = ({
 
         {/* Summary Counters + Quick Mark All */}
         {selectedHalaqaId && entries.length > 0 && (
-          <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t-2 border-[#F7EBDD]">
-            <div className="flex flex-wrap items-center gap-2 text-xs font-bold">
-              <span className="px-3 py-1.5 rounded-xl bg-[#58CC02]/15 text-[#46A302] tabular-nums">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t-2 border-[#F7EBDD]">
+            <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 text-xs font-bold">
+              <span className="px-3 py-1.5 rounded-xl bg-[#58CC02]/15 text-[#46A302] tabular-nums text-center">
                 حاضر: {summaryCounts.present}
               </span>
-              <span className="px-3 py-1.5 rounded-xl bg-[#D95338]/12 text-[#D95338] tabular-nums">
+              <span className="px-3 py-1.5 rounded-xl bg-[#D95338]/12 text-[#D95338] tabular-nums text-center">
                 غائب: {summaryCounts.absent}
               </span>
-              <span className="px-3 py-1.5 rounded-xl bg-[#2563EB]/12 text-[#1D4ED8] tabular-nums">
+              <span className="px-3 py-1.5 rounded-xl bg-[#2563EB]/12 text-[#1D4ED8] tabular-nums text-center">
                 بعذر: {summaryCounts.excused}
               </span>
-              <span className="px-3 py-1.5 rounded-xl bg-[#F56900]/12 text-[#C95200] tabular-nums">
+              <span className="px-3 py-1.5 rounded-xl bg-[#F56900]/12 text-[#C95200] tabular-nums text-center">
                 متأخر: {summaryCounts.late}
               </span>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="grid grid-cols-1 sm:flex sm:flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={() => handleMarkAll('present')}
-                className="min-h-[38px] px-3 py-1.5 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE] hover:border-[#58CC02] text-xs font-bold text-[#4A220D] cursor-pointer"
+                className="min-h-[40px] px-3 py-1.5 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE] hover:border-[#58CC02] text-xs font-bold text-[#4A220D] cursor-pointer"
               >
                 تحضير الجميع (حاضر)
               </button>
@@ -389,7 +389,7 @@ export const AttendanceSection: React.FC<AttendanceSectionProps> = ({
                 type="button"
                 onClick={handleSave}
                 disabled={saving}
-                className="duo-btn-green min-h-[42px] px-5 py-2 rounded-xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center gap-2 cursor-pointer disabled:opacity-60"
+                className="duo-btn-green min-h-[42px] px-5 py-2 rounded-xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
               >
                 <Save className="w-4 h-4" />
                 <span>
@@ -454,7 +454,7 @@ export const AttendanceSection: React.FC<AttendanceSectionProps> = ({
             {entries.map((entry, idx) => (
               <div
                 key={entry.studentId}
-                className="bg-[#FDF6EE] border-2 border-[#EADBC8] rounded-2xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3"
+                className="bg-[#FDF6EE] border-2 border-[#EADBC8] rounded-2xl p-3.5 sm:p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3"
               >
                 <div className="flex items-center gap-3 min-w-0">
                   <span className="w-8 h-8 rounded-xl bg-white border border-[#EADBC8] font-display font-extrabold text-xs text-[#7D4E35] inline-flex items-center justify-center shrink-0 tabular-nums">
@@ -471,7 +471,7 @@ export const AttendanceSection: React.FC<AttendanceSectionProps> = ({
                 </div>
 
                 <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
-                  <div className="grid grid-cols-4 gap-1.5">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
                     {STATUS_BUTTONS.map((btn) => {
                       const Icon = btn.icon;
                       const isActive = entry.status === btn.key;
@@ -480,7 +480,7 @@ export const AttendanceSection: React.FC<AttendanceSectionProps> = ({
                           key={btn.key}
                           type="button"
                           onClick={() => handleStatusChange(entry.studentId, btn.key)}
-                          className={`min-h-[40px] px-2.5 py-1.5 rounded-xl border-2 font-display text-xs font-bold inline-flex items-center justify-center gap-1 cursor-pointer transition-colors whitespace-nowrap ${
+                          className={`min-h-[42px] px-2.5 py-1.5 rounded-xl border-2 font-display text-xs font-bold inline-flex items-center justify-center gap-1 cursor-pointer transition-colors whitespace-nowrap ${
                             isActive ? btn.activeClass : btn.idleClass
                           }`}
                         >
@@ -497,7 +497,7 @@ export const AttendanceSection: React.FC<AttendanceSectionProps> = ({
                     onChange={(e) => handleNoteChange(entry.studentId, e.target.value)}
                     placeholder="ملاحظة أو عذر (اختياري)..."
                     maxLength={200}
-                    className="sm:w-52 min-h-[40px] px-3 py-1.5 rounded-xl border-2 border-[#EADBC8] bg-white text-xs text-[#4A220D] focus:outline-none focus:border-[#F56900]"
+                    className="sm:w-52 min-h-[42px] px-3 py-1.5 rounded-xl border-2 border-[#EADBC8] bg-white text-xs text-[#4A220D] focus:outline-none focus:border-[#F56900]"
                   />
                 </div>
               </div>
@@ -508,7 +508,7 @@ export const AttendanceSection: React.FC<AttendanceSectionProps> = ({
                 type="button"
                 onClick={handleSave}
                 disabled={saving}
-                className="duo-btn-orange min-h-[46px] px-7 py-2.5 rounded-2xl font-display font-extrabold text-sm inline-flex items-center gap-2 cursor-pointer disabled:opacity-60"
+                className="duo-btn-orange w-full sm:w-auto min-h-[46px] px-7 py-2.5 rounded-2xl font-display font-extrabold text-sm inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
               >
                 <Save className="w-4 h-4" />
                 <span>

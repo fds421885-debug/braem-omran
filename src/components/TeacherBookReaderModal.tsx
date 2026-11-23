@@ -203,7 +203,7 @@ export const TeacherBookReaderModal: React.FC<TeacherBookReaderModalProps> = ({
         </div>
 
         {/* Page Jump + Zoom + Extracted Text Toggle */}
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -212,9 +212,9 @@ export const TeacherBookReaderModal: React.FC<TeacherBookReaderModalProps> = ({
                 navigateToPage(parsed);
               }
             }}
-            className="flex items-center gap-1.5 bg-[#FDF6EE] border border-[#EADBC8] rounded-xl px-2.5 py-1"
+            className="flex items-center gap-1 bg-[#FDF6EE] border border-[#EADBC8] rounded-xl px-2 py-1"
           >
-            <span className="text-xs font-bold text-[#7D4E35]">صفحة</span>
+            <span className="text-[11px] sm:text-xs font-bold text-[#7D4E35]">ص</span>
             <input
               type="number"
               min={1}
@@ -230,14 +230,14 @@ export const TeacherBookReaderModal: React.FC<TeacherBookReaderModalProps> = ({
                 }
               }}
               aria-label="رقم الصفحة"
-              className="w-14 text-center font-display font-extrabold text-sm bg-white border border-[#EADBC8] rounded-lg py-0.5 tabular-nums"
+              className="w-12 sm:w-14 text-center font-display font-extrabold text-xs sm:text-sm bg-white border border-[#EADBC8] rounded-lg py-0.5 tabular-nums"
             />
-            <span className="text-xs font-bold text-[#7D4E35] tabular-nums">
+            <span className="text-[11px] sm:text-xs font-bold text-[#7D4E35] tabular-nums">
               / {toArabicIndicDigits(maxPage)}
             </span>
           </form>
 
-          <div className="flex items-center gap-1 bg-[#FDF6EE] border border-[#EADBC8] rounded-xl p-1">
+          <div className="flex items-center gap-0.5 sm:gap-1 bg-[#FDF6EE] border border-[#EADBC8] rounded-xl p-1">
             <button
               type="button"
               onClick={() => setZoomPercent((z) => Math.max(60, z - 15))}
@@ -246,7 +246,7 @@ export const TeacherBookReaderModal: React.FC<TeacherBookReaderModalProps> = ({
             >
               <ZoomOut className="w-4 h-4" />
             </button>
-            <span className="text-xs font-bold px-1 tabular-nums">{zoomPercent}%</span>
+            <span className="text-[11px] sm:text-xs font-bold px-1 tabular-nums">{zoomPercent}%</span>
             <button
               type="button"
               onClick={() => setZoomPercent((z) => Math.min(180, z + 15))}
@@ -261,14 +261,15 @@ export const TeacherBookReaderModal: React.FC<TeacherBookReaderModalProps> = ({
             <button
               type="button"
               onClick={() => setShowTextPanel((v) => !v)}
-              className={`min-h-[36px] px-3 rounded-xl border text-xs font-display font-bold inline-flex items-center gap-1.5 cursor-pointer ${
+              className={`min-h-[36px] px-2.5 sm:px-3 rounded-xl border text-xs font-display font-bold inline-flex items-center gap-1.5 cursor-pointer ${
                 showTextPanel
                   ? 'bg-[#F56900] border-[#C95200] text-white'
                   : 'bg-[#FDF6EE] border-[#EADBC8] text-[#4A220D]'
               }`}
             >
-              <FileText className="w-3.5 h-3.5" />
-              <span>النص المستخرج</span>
+              <FileText className="w-3.5 h-3.5 shrink-0" />
+              <span className="hidden sm:inline">النص المستخرج</span>
+              <span className="sm:hidden">النص</span>
             </button>
           )}
         </div>
@@ -414,12 +415,12 @@ export const TeacherBookReaderModal: React.FC<TeacherBookReaderModalProps> = ({
       </div>
 
       {/* Bottom Navigation Footer */}
-      <footer className="bg-white border-t-2 border-[#EADBC8] px-4 py-2.5 flex items-center justify-between gap-3 shrink-0">
+      <footer className="bg-white border-t-2 border-[#EADBC8] px-3 sm:px-4 pt-2 pb-safe flex items-center justify-between gap-2 sm:gap-3 shrink-0">
         <button
           type="button"
           disabled={currentPage <= 1}
           onClick={() => navigateToPage(currentPage - 1, 'prev')}
-          className="duo-btn-cream min-h-[42px] px-4 rounded-xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-40"
+          className="duo-btn-cream min-h-[42px] px-3 sm:px-4 rounded-xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1 cursor-pointer disabled:opacity-40 shrink-0"
         >
           <ChevronRight className="w-4 h-4" />
           <span>السابقة</span>
@@ -429,14 +430,19 @@ export const TeacherBookReaderModal: React.FC<TeacherBookReaderModalProps> = ({
           <button
             type="button"
             onClick={handleCloseWithAction}
-            className="duo-btn-green min-h-[42px] px-4 sm:px-5 rounded-xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer"
+            className="duo-btn-green min-h-[42px] px-3 sm:px-5 rounded-xl font-display font-extrabold text-[11px] sm:text-sm inline-flex items-center justify-center gap-1.5 cursor-pointer min-w-0"
           >
-            <CheckCircle2 className="w-4 h-4" />
-            <span>حفظ التوقف عند صفحة {toArabicIndicDigits(currentPage)} وإغلاق</span>
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+            <span className="hidden sm:inline">
+              حفظ التوقف عند صفحة {toArabicIndicDigits(currentPage)} وإغلاق
+            </span>
+            <span className="sm:hidden truncate">
+              حفظ (ص {toArabicIndicDigits(currentPage)}) وإغلاق
+            </span>
           </button>
         ) : (
-          <span className="text-xs font-extrabold text-[#7D4E35] tabular-nums">
-            صفحة {toArabicIndicDigits(currentPage)} من {toArabicIndicDigits(maxPage)}
+          <span className="text-xs font-extrabold text-[#7D4E35] tabular-nums text-center">
+            صفحة {toArabicIndicDigits(currentPage)} / {toArabicIndicDigits(maxPage)}
           </span>
         )}
 
@@ -444,7 +450,7 @@ export const TeacherBookReaderModal: React.FC<TeacherBookReaderModalProps> = ({
           type="button"
           disabled={currentPage >= maxPage}
           onClick={() => navigateToPage(currentPage + 1, 'next')}
-          className="duo-btn-orange min-h-[42px] px-4 rounded-xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-40"
+          className="duo-btn-orange min-h-[42px] px-3 sm:px-4 rounded-xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1 cursor-pointer disabled:opacity-40 shrink-0"
         >
           <span>التالية</span>
           <ChevronLeft className="w-4 h-4" />

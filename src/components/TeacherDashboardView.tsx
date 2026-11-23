@@ -269,24 +269,24 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
     [halaqaCurricula]
   );
 
-  const navItems: { id: TeacherViewTab; label: string; icon: typeof Users }[] = [
-    { id: 'overview', label: 'الرئيسية للمعلم', icon: BookOpen },
-    { id: 'attendance', label: 'تحضير الحلقة', icon: ClipboardCheck },
-    { id: 'curricula', label: 'المقررات', icon: BookMarked },
-    { id: 'students', label: `الطلاب (${halaqaStudents.length})`, icon: GraduationCap },
+  const navItems: { id: TeacherViewTab; label: string; mobileLabel: string; icon: typeof Users }[] = [
+    { id: 'overview', label: 'الرئيسية للمعلم', mobileLabel: 'الرئيسية', icon: BookOpen },
+    { id: 'attendance', label: 'تحضير الحلقة', mobileLabel: 'التحضير', icon: ClipboardCheck },
+    { id: 'curricula', label: 'المقررات', mobileLabel: 'المقررات', icon: BookMarked },
+    { id: 'students', label: `الطلاب (${halaqaStudents.length})`, mobileLabel: 'الطلاب', icon: GraduationCap },
   ];
 
   return (
-    <div className="min-h-screen bg-[#FDF6EE] text-[#4A220D] flex flex-col pb-8" dir="rtl">
+    <div className="min-h-screen bg-[#FDF6EE] text-[#4A220D] flex flex-col pb-24 lg:pb-8" dir="rtl">
       {/* Top Bar */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b-2 border-[#EADBC8]">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 min-h-16 py-2.5 flex flex-wrap items-center justify-between gap-2.5">
-          <div className="min-w-0">
-            <p className="text-xs font-extrabold text-[#F56900]">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 min-h-14 sm:min-h-16 py-2 flex items-center justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] sm:text-xs font-extrabold text-[#F56900] truncate">
               وضع المعلم · {context.mosqueName}
             </p>
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="font-display text-base sm:text-xl font-extrabold text-[#4A220D] truncate">
+            <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+              <h1 className="font-display text-sm sm:text-xl font-extrabold text-[#4A220D] truncate">
                 {context.halaqaName}
               </h1>
               {availableContexts && availableContexts.length > 1 && onSwitchContext && (
@@ -299,7 +299,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                     if (next) onSwitchContext(next);
                   }}
                   aria-label="تبديل الحلقة"
-                  className="min-h-[34px] px-2.5 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE] text-xs font-bold text-[#4A220D] cursor-pointer"
+                  className="min-h-[34px] max-w-[140px] sm:max-w-[220px] px-2 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE] text-[11px] sm:text-xs font-bold text-[#4A220D] cursor-pointer truncate"
                 >
                   {availableContexts.map((ctx) => (
                     <option key={ctx.halaqaId} value={ctx.halaqaId}>
@@ -311,7 +311,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
             </div>
           </div>
 
-          <nav className="flex items-center gap-1.5 bg-[#FDF6EE] p-1 rounded-2xl border border-[#EADBC8] overflow-x-auto max-w-full">
+          <nav className="hidden lg:flex items-center gap-1.5 bg-[#FDF6EE] p-1 rounded-2xl border border-[#EADBC8] overflow-x-auto max-w-full">
             {navItems.map((item) => {
               const Icon = item.icon;
               const active = tab === item.id;
@@ -339,7 +339,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
             })}
           </nav>
 
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <NotificationPermissionButton variant="compact" />
             <PWAInstallButton variant="compact" />
             <button
@@ -347,19 +347,21 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
               onClick={onReturnToSupervisor}
               className={`${
                 isStandaloneTeacher
-                  ? 'min-h-[42px] px-3.5 py-2 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] font-display font-bold text-xs sm:text-sm'
-                  : 'duo-btn-green min-h-[42px] px-4 py-2 rounded-2xl font-display font-extrabold text-xs sm:text-sm'
-              } inline-flex items-center gap-2 cursor-pointer whitespace-nowrap`}
+                  ? 'min-h-[40px] px-2.5 sm:px-3.5 py-2 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] font-display font-bold text-xs sm:text-sm'
+                  : 'duo-btn-green min-h-[40px] px-3 sm:px-4 py-2 rounded-xl sm:rounded-2xl font-display font-extrabold text-xs sm:text-sm'
+              } inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap`}
+              aria-label={isStandaloneTeacher ? 'تسجيل الخروج' : 'العودة لدور المشرف'}
             >
               {isStandaloneTeacher ? (
                 <>
-                  <LogOut className="w-4 h-4" />
-                  <span>تسجيل الخروج</span>
+                  <LogOut className="w-4 h-4 shrink-0" />
+                  <span className="hidden sm:inline">تسجيل الخروج</span>
                 </>
               ) : (
                 <>
-                  <ArrowRight className="w-4 h-4" />
-                  <span>العودة لدور المشرف</span>
+                  <ArrowRight className="w-4 h-4 shrink-0" />
+                  <span className="hidden sm:inline">العودة لدور المشرف</span>
+                  <span className="sm:hidden">المشرف</span>
                 </>
               )}
             </button>
@@ -367,7 +369,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
         </div>
       </header>
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 py-4 sm:py-8 space-y-5 sm:space-y-6">
         {tab === 'overview' && (
           <div className="space-y-6">
             <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -382,42 +384,42 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                 </p>
               </div>
 
-              <div className="flex flex-wrap gap-2.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-none lg:flex gap-2.5">
                 <button
                   type="button"
                   onClick={() => setTab('attendance')}
-                  className="duo-btn-orange min-h-[44px] px-4 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer"
+                  className="duo-btn-orange min-h-[44px] px-4 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-1.5 cursor-pointer"
                 >
-                  <ClipboardCheck className="w-4 h-4" />
+                  <ClipboardCheck className="w-4 h-4 shrink-0" />
                   <span>تحضير طلاب الحلقة</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => setTab('curricula')}
-                  className="duo-btn-cream min-h-[44px] px-4 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer"
+                  className="duo-btn-cream min-h-[44px] px-4 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-1.5 cursor-pointer"
                 >
-                  <BookMarked className="w-4 h-4 text-[#F56900]" />
+                  <BookMarked className="w-4 h-4 text-[#F56900] shrink-0" />
                   <span>مقررات الطلاب والمصحف</span>
                 </button>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4">
+              <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-4 sm:p-5">
                 <p className="text-xs font-bold text-[#7D4E35]">عدد طلاب الحلقة</p>
-                <p className="font-display text-3xl font-extrabold text-[#F56900] mt-2 tabular-nums">
+                <p className="font-display text-2xl sm:text-3xl font-extrabold text-[#F56900] mt-1.5 sm:mt-2 tabular-nums">
                   {halaqaStudents.length}
                 </p>
               </div>
-              <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5">
+              <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-4 sm:p-5">
                 <p className="text-xs font-bold text-[#7D4E35]">المقررات المسندة للحلقة</p>
-                <p className="font-display text-3xl font-extrabold text-[#46A302] mt-2 tabular-nums">
+                <p className="font-display text-2xl sm:text-3xl font-extrabold text-[#46A302] mt-1.5 sm:mt-2 tabular-nums">
                   {Math.max(1, halaqaCurricula.length)}
                 </p>
               </div>
-              <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5">
+              <div className="col-span-2 sm:col-span-1 bg-white border-2 border-[#EADBC8] rounded-3xl p-4 sm:p-5">
                 <p className="text-xs font-bold text-[#7D4E35]">المسجد التابع له</p>
-                <p className="font-display text-lg font-extrabold text-[#4A220D] mt-2 truncate">
+                <p className="font-display text-base sm:text-lg font-extrabold text-[#4A220D] mt-1.5 sm:mt-2 truncate">
                   {context.mosqueName}
                 </p>
               </div>
@@ -467,18 +469,18 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
           ) : (
             <div className="space-y-5">
               {/* General Daily Curricula Section for the Teacher (Top Section Above Students List) */}
-              <section className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 sm:p-6 space-y-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
+              <section className="bg-white border-2 border-[#EADBC8] rounded-3xl p-4 sm:p-6 space-y-4">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
                   <div>
-                    <h2 className="font-display text-lg sm:text-xl font-extrabold text-[#4A220D]">
+                    <h2 className="font-display text-base sm:text-xl font-extrabold text-[#4A220D]">
                       مقررات اليوم العامة للمعلم
                     </h2>
-                    <p className="text-xs sm:text-sm text-[#7D4E35]">
+                    <p className="text-xs sm:text-sm text-[#7D4E35] mt-0.5">
                       اقرأ واشرح من المصحف أو الكتب، أو نفّذ التسميع الجماعي وتصحيح الواجبات الجماعي وتعيين الغد لكل الطلاب بسرعة.
                     </p>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="grid grid-cols-1 sm:flex sm:flex-wrap items-center gap-2">
                     {loadingStatuses && (
                       <span className="text-xs font-bold text-[#F56900]">
                         جاري تحديث حالة الطلاب...
@@ -488,7 +490,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                       type="button"
                       disabled={halaqaStudents.length === 0}
                       onClick={() => setBatchQuranTasmeeOpen(true)}
-                      className="duo-btn-green min-h-[40px] px-3.5 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                      className="duo-btn-green min-h-[42px] px-3.5 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
                     >
                       <CheckCircle2 className="w-4 h-4 shrink-0" />
                       <span>التسميع الجماعي لليوم</span>
@@ -500,7 +502,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                         onClick={() =>
                           setBatchBookCorrectionBookId(otherCurricula[0]?.bookId || null)
                         }
-                        className="duo-btn-orange min-h-[40px] px-3.5 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                        className="duo-btn-orange min-h-[42px] px-3.5 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
                       >
                         <ClipboardCheck className="w-4 h-4 shrink-0" />
                         <span>التصحيح الجماعي للواجبات</span>
@@ -518,7 +520,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                     <button
                       type="button"
                       onClick={() => setGroupFeedback(null)}
-                      className="text-xs font-bold underline cursor-pointer"
+                      className="text-xs font-bold underline cursor-pointer shrink-0"
                     >
                       إخفاء
                     </button>
@@ -544,11 +546,11 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                       </div>
                     </div>
 
-                    <div className="flex flex-wrap gap-2">
+                    <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
                       <button
                         type="button"
                         onClick={() => setGeneralMushafOpen(true)}
-                        className="duo-btn-orange flex-1 min-h-[42px] px-3 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
+                        className="duo-btn-orange col-span-2 sm:flex-1 min-h-[42px] px-3 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
                       >
                         <BookOpen className="w-4 h-4 shrink-0" />
                         <span>فتح المصحف للشرح</span>
@@ -558,7 +560,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                         type="button"
                         disabled={halaqaStudents.length === 0}
                         onClick={() => setBatchQuranTasmeeOpen(true)}
-                        className="duo-btn-cream flex-1 min-h-[42px] px-3 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
+                        className="duo-btn-cream sm:flex-1 min-h-[42px] px-2.5 sm:px-3 py-2 rounded-xl font-display font-extrabold text-[11px] sm:text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
                       >
                         <CheckCircle2 className="w-4 h-4 text-[#46A302] shrink-0" />
                         <span>التسميع الجماعي</span>
@@ -568,10 +570,10 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                         type="button"
                         disabled={halaqaStudents.length === 0}
                         onClick={() => setGroupQuranModalOpen(true)}
-                        className="duo-btn-green flex-1 min-h-[42px] px-3 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
+                        className="duo-btn-green sm:flex-1 min-h-[42px] px-2.5 sm:px-3 py-2 rounded-xl font-display font-extrabold text-[11px] sm:text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
                       >
                         <Users className="w-4 h-4 shrink-0" />
-                        <span>تعيين حفظ الغد جماعياً</span>
+                        <span>حفظ الغد جماعياً</span>
                       </button>
                     </div>
                   </div>
@@ -604,7 +606,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                           </div>
                         </div>
 
-                        <div className="flex flex-wrap gap-2">
+                        <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
                           <button
                             type="button"
                             onClick={() =>
@@ -614,7 +616,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                                 initialPage: stoppedPage,
                               })
                             }
-                            className="duo-btn-orange flex-1 min-h-[42px] px-3 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
+                            className="duo-btn-orange col-span-2 sm:flex-1 min-h-[42px] px-3 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
                           >
                             <BookOpen className="w-4 h-4 shrink-0" />
                             <span>فتح الكتاب للشرح</span>
@@ -624,7 +626,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                             type="button"
                             disabled={halaqaStudents.length === 0}
                             onClick={() => setBatchBookCorrectionBookId(cur.bookId)}
-                            className="duo-btn-cream flex-1 min-h-[42px] px-3 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
+                            className="duo-btn-cream sm:flex-1 min-h-[42px] px-2.5 sm:px-3 py-2 rounded-xl font-display font-extrabold text-[11px] sm:text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
                           >
                             <ClipboardCheck className="w-4 h-4 text-[#F56900] shrink-0" />
                             <span>التصحيح الجماعي</span>
@@ -639,10 +641,10 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                                 matchedBook,
                               })
                             }
-                            className="duo-btn-green flex-1 min-h-[42px] px-3 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
+                            className="duo-btn-green sm:flex-1 min-h-[42px] px-2.5 sm:px-3 py-2 rounded-xl font-display font-extrabold text-[11px] sm:text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-50"
                           >
                             <Users className="w-4 h-4 shrink-0" />
-                            <span>تعيين واجب غد جماعياً</span>
+                            <span>واجب غد جماعياً</span>
                           </button>
                         </div>
                       </div>
@@ -702,11 +704,11 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                                 prev === st.id ? null : st.id
                               )
                             }
-                            className="w-full min-h-[60px] px-4 py-3 flex items-center justify-between gap-3 text-right cursor-pointer"
+                            className="w-full min-h-[60px] px-3 sm:px-4 py-3 flex items-center justify-between gap-2 sm:gap-3 text-right cursor-pointer"
                           >
-                            <div className="flex items-center gap-3 min-w-0">
+                            <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
                               <span
-                                className={`w-9 h-9 rounded-xl font-display font-extrabold text-sm inline-flex items-center justify-center shrink-0 tabular-nums ${
+                                className={`w-8 h-8 sm:w-9 sm:h-9 rounded-xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center justify-center shrink-0 tabular-nums ${
                                   isSelected
                                     ? 'bg-[#F56900] text-white'
                                     : 'bg-[#FDF6EE] border border-[#EADBC8] text-[#4A220D]'
@@ -716,9 +718,9 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                               </span>
                               <div className="min-w-0 space-y-1">
                                 {/* Status Badges directly above Student Name */}
-                                <div className="flex flex-wrap items-center gap-1.5">
+                                <div className="flex flex-wrap items-center gap-1 sm:gap-1.5">
                                   <span
-                                    className={`px-2 py-0.5 rounded-lg border text-[11px] font-extrabold ${
+                                    className={`px-2 py-0.5 rounded-lg border text-[10px] sm:text-[11px] font-extrabold ${
                                       quranAssigned
                                         ? 'bg-[#58CC02]/15 border-[#58CC02]/60 text-[#46A302]'
                                         : 'bg-[#FDF6EE] border-[#EADBC8] text-[#7D4E35]'
@@ -734,7 +736,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                                     return (
                                       <>
                                         <span
-                                          className={`px-2 py-0.5 rounded-lg border text-[11px] font-extrabold ${
+                                          className={`px-2 py-0.5 rounded-lg border text-[10px] sm:text-[11px] font-extrabold ${
                                             hwAssigned
                                               ? 'bg-[#58CC02]/15 border-[#58CC02]/60 text-[#46A302]'
                                               : 'bg-[#FDF6EE] border-[#EADBC8] text-[#7D4E35]'
@@ -745,7 +747,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                                             : 'لم يتم تعيين الواجب'}
                                         </span>
                                         {bStat && bStat.whereWeReachedPage > 1 && (
-                                          <span className="px-2 py-0.5 rounded-lg border border-[#EADBC8] bg-white text-[11px] font-bold text-[#F56900] tabular-nums">
+                                          <span className="px-2 py-0.5 rounded-lg border border-[#EADBC8] bg-white text-[10px] sm:text-[11px] font-bold text-[#F56900] tabular-nums">
                                             وصل: ص {toArabicIndicDigits(bStat.whereWeReachedPage)}
                                           </span>
                                         )}
@@ -762,7 +764,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                                       return (
                                         <span
                                           key={`st_badge_${st.id}_${cur.bookId}`}
-                                          className={`px-2 py-0.5 rounded-lg border text-[11px] font-extrabold ${
+                                          className={`px-2 py-0.5 rounded-lg border text-[10px] sm:text-[11px] font-extrabold ${
                                             hwAssigned
                                               ? 'bg-[#58CC02]/15 border-[#58CC02]/60 text-[#46A302]'
                                               : 'bg-[#FDF6EE] border-[#EADBC8] text-[#7D4E35]'
@@ -779,7 +781,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                                 <p className="font-display font-extrabold text-sm sm:text-base text-[#4A220D] truncate">
                                   {st.quadrupleName}
                                 </p>
-                                <p className="text-xs text-[#7D4E35]">
+                                <p className="text-[11px] sm:text-xs text-[#7D4E35]">
                                   {isSelected
                                     ? 'مقررات اليوم مفتوحة أسفل الطالب'
                                     : 'اضغط لعرض مقررات اليوم'}
@@ -788,13 +790,13 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                             </div>
 
                             <span
-                              className={`px-3 py-1.5 rounded-xl font-display font-bold text-xs inline-flex items-center gap-1 shrink-0 ${
+                              className={`px-2.5 sm:px-3 py-1.5 rounded-xl font-display font-bold text-xs inline-flex items-center gap-1 shrink-0 ${
                                 isSelected
                                   ? 'bg-[#F56900] text-white'
                                   : 'bg-[#FDF6EE] text-[#7D4E35]'
                               }`}
                             >
-                              <span>{isSelected ? 'إخفاء' : 'عرض المقررات'}</span>
+                              <span className="hidden sm:inline">{isSelected ? 'إخفاء' : 'عرض المقررات'}</span>
                               <ChevronLeft
                                 className={`w-4 h-4 transition-transform ${
                                   isSelected ? '-rotate-90' : ''
@@ -975,6 +977,38 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
         </div>
       )}
     </main>
+
+      {/* Mobile & Tablet Fixed Bottom Navigation Bar */}
+      <nav
+        className="lg:hidden fixed bottom-0 inset-x-0 z-30 bg-white/95 backdrop-blur-md border-t-2 border-[#EADBC8] px-2 pt-1.5 pb-safe"
+        aria-label="تنقل المعلم"
+      >
+        <div className="max-w-lg mx-auto grid grid-cols-4 gap-1">
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            const active = tab === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => {
+                  setTab(item.id);
+                  if (item.id !== 'curricula') {
+                    setActiveQuranStudent(null);
+                    setActiveBookSession(null);
+                  }
+                }}
+                className={`min-h-[48px] px-1 py-1 rounded-xl flex flex-col items-center justify-center gap-0.5 font-display text-[11px] font-extrabold transition-colors cursor-pointer ${
+                  active ? 'text-[#F56900] bg-[#FDF6EE]' : 'text-[#7D4E35]'
+                }`}
+              >
+                <Icon className="w-5 h-5 shrink-0" />
+                <span className="truncate max-w-full">{item.mobileLabel}</span>
+              </button>
+            );
+          })}
+        </div>
+      </nav>
 
     {/* General Teacher Mushaf Modal */}
     {generalMushafOpen && (

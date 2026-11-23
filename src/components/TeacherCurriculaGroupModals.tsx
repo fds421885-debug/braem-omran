@@ -273,7 +273,7 @@ export const BookReachedPropagationModal: React.FC<BookReachedPropagationModalPr
       aria-label="حفظ الوصول للطلاب"
       className="fixed inset-0 z-[90] bg-black/50 backdrop-blur-xs flex items-center justify-center p-4"
     >
-      <div className="bg-white border-2 border-[#EADBC8] rounded-3xl max-w-lg w-full p-5 sm:p-6 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+      <div className="bg-white border-2 border-[#EADBC8] rounded-3xl max-w-lg w-full p-4 sm:p-6 space-y-4 shadow-2xl max-h-[90dvh] pb-safe overflow-y-auto">
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-center gap-2.5">
             <div className="w-11 h-11 rounded-2xl bg-[#58CC02]/15 text-[#46A302] flex items-center justify-center shrink-0">
@@ -488,7 +488,7 @@ export const GroupBookHomeworkModal: React.FC<GroupBookHomeworkModalProps> = ({
       aria-label={`تعيين واجب غد جماعياً - ${curriculum.bookTitle}`}
       className="fixed inset-0 z-[80] bg-black/50 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5"
     >
-      <div className="bg-white border-2 border-[#EADBC8] rounded-3xl max-w-2xl w-full p-5 sm:p-6 space-y-4 shadow-2xl max-h-[92vh] overflow-y-auto">
+      <div className="bg-white border-2 border-[#EADBC8] rounded-3xl max-w-2xl w-full p-5 sm:p-6 space-y-4 shadow-2xl max-h-[92dvh] pb-safe overflow-y-auto">
         <div className="flex items-start justify-between gap-3 pb-3 border-b border-[#F7EBDD]">
           <div className="flex items-center gap-2.5 min-w-0">
             <div className="w-11 h-11 rounded-2xl bg-[#F56900]/12 text-[#F56900] flex items-center justify-center shrink-0">
@@ -874,7 +874,7 @@ export const GroupQuranPlanModal: React.FC<GroupQuranPlanModalProps> = ({
       aria-label="تعيين حفظ الغد في القرآن جماعياً"
       className="fixed inset-0 z-[80] bg-black/50 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5"
     >
-      <div className="bg-white border-2 border-[#EADBC8] rounded-3xl max-w-3xl w-full p-5 sm:p-6 space-y-4 shadow-2xl max-h-[92vh] overflow-y-auto">
+      <div className="bg-white border-2 border-[#EADBC8] rounded-3xl max-w-3xl w-full p-5 sm:p-6 space-y-4 shadow-2xl max-h-[92dvh] pb-safe overflow-y-auto">
         <div className="flex items-start justify-between gap-3 pb-3 border-b border-[#F7EBDD]">
           <div className="flex items-center gap-2.5 min-w-0">
             <div className="w-11 h-11 rounded-2xl bg-[#58CC02]/15 text-[#46A302] flex items-center justify-center shrink-0">
@@ -1519,7 +1519,7 @@ export const BatchQuranTasmeeModal: React.FC<BatchQuranTasmeeModalProps> = ({
       dir="rtl"
       className="fixed inset-0 z-[80] bg-black/55 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 overflow-y-auto"
     >
-      <div className="bg-white border-2 border-[#EADBC8] rounded-3xl max-w-4xl w-full p-5 sm:p-6 space-y-4 shadow-2xl my-auto max-h-[92vh] flex flex-col">
+      <div className="bg-white border-2 border-[#EADBC8] rounded-3xl max-w-4xl w-full p-5 sm:p-6 space-y-4 shadow-2xl my-auto max-h-[92dvh] pb-safe flex flex-col">
         {/* Modal Header */}
         <div className="flex flex-wrap items-start justify-between gap-3 shrink-0">
           <div>
@@ -1998,7 +1998,7 @@ export const BatchBookCorrectionModal: React.FC<BatchBookCorrectionModalProps> =
       dir="rtl"
       className="fixed inset-0 z-[80] bg-black/55 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 overflow-y-auto"
     >
-      <div className="bg-white border-2 border-[#EADBC8] rounded-3xl max-w-4xl w-full p-5 sm:p-6 space-y-4 shadow-2xl my-auto max-h-[92vh] flex flex-col">
+      <div className="bg-white border-2 border-[#EADBC8] rounded-3xl max-w-4xl w-full p-5 sm:p-6 space-y-4 shadow-2xl my-auto max-h-[92dvh] pb-safe flex flex-col">
         {/* Modal Header */}
         <div className="flex flex-wrap items-start justify-between gap-3 shrink-0">
           <div>

@@ -403,7 +403,7 @@ export const ComplexEditorModal: React.FC<ComplexEditorModalProps> = ({
       aria-modal="true"
       aria-labelledby="complex-editor-title"
     >
-      <div className="w-full sm:max-w-3xl bg-white border-2 border-[#EADBC8] rounded-t-3xl sm:rounded-3xl shadow-xl max-h-[92vh] flex flex-col">
+      <div className="w-full sm:max-w-3xl bg-white border-2 border-[#EADBC8] rounded-t-3xl sm:rounded-3xl shadow-xl max-h-[92dvh] pb-safe flex flex-col">
         <div className="px-5 sm:px-6 py-4 border-b-2 border-[#F7EBDD] flex items-center justify-between gap-4 shrink-0">
           <h2 id="complex-editor-title" className="font-display text-lg sm:text-xl font-extrabold text-[#4A220D]">
             {editingComplex ? 'تعديل المجمع القرآني' : 'إنشاء مجمع قرآني جديد'}

@@ -23,11 +23,28 @@
   html {
     font-family: var(--font-sans);
     -webkit-tap-highlight-color: transparent;
+    overflow-x: clip;
+  }
+
+  body {
+    overflow-x: clip;
   }
 
   h1, h2, h3, h4, .font-display {
     font-family: var(--font-display);
   }
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.pb-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom, 0px));
 }
 
 /* Tactile Duolingo-style 3D button utility */

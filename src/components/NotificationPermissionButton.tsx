@@ -238,6 +238,13 @@ export const NotificationPermissionButton: React.FC<NotificationPermissionButton
         type="button"
         onClick={handleClick}
         disabled={requesting}
+        aria-label={
+          permission === 'granted'
+            ? outdated
+              ? 'تحديث نظام الإشعارات'
+              : 'إشعارات الهاتف مفعّلة'
+            : 'تفعيل الإشعارات الفورية على الهاتف'
+        }
         title={
           permission === 'granted'
             ? outdated
@@ -245,7 +252,7 @@ export const NotificationPermissionButton: React.FC<NotificationPermissionButton
               : 'إشعارات الهاتف مفعّلة'
             : 'تفعيل الإشعارات الفورية على الهاتف'
         }
-        className={`min-h-[42px] px-3 py-2 rounded-xl font-display font-bold text-xs inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+        className={`min-h-[40px] min-w-[40px] sm:min-h-[42px] px-2.5 md:px-3 py-2 rounded-xl font-display font-bold text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
           permission === 'granted' && !outdated
             ? 'bg-[#58CC02]/12 border-2 border-[#58CC02]/50 text-[#46A302] hover:bg-[#58CC02]/20'
             : 'duo-btn-cream'
@@ -254,17 +261,17 @@ export const NotificationPermissionButton: React.FC<NotificationPermissionButton
         {permission === 'granted' && !outdated ? (
           <>
             <BellRing className="w-4 h-4 text-[#46A302] shrink-0" />
-            <span className="hidden sm:inline">الإشعارات مفعّلة</span>
+            <span className="hidden md:inline">الإشعارات مفعّلة</span>
           </>
         ) : permission === 'granted' && outdated ? (
           <>
             <RefreshCw className={`w-4 h-4 text-[#F56900] shrink-0 ${requesting ? 'animate-spin' : ''}`} />
-            <span>{requesting ? 'تحديث...' : 'تحديث الإشعارات'}</span>
+            <span className="hidden md:inline">{requesting ? 'تحديث...' : 'تحديث الإشعارات'}</span>
           </>
         ) : (
           <>
             <Bell className="w-4 h-4 text-[#F56900] shrink-0" />
-            <span>{requesting ? 'تفعيل...' : 'تفعيل الإشعارات'}</span>
+            <span className="hidden md:inline">{requesting ? 'تفعيل...' : 'تفعيل الإشعارات'}</span>
           </>
         )}
       </button>

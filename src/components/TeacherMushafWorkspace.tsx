@@ -126,12 +126,12 @@ const RangeSelectorRow: React.FC<RangeEditorProps> = ({ surahs, value, onChange 
       {/* Start Position */}
       <div className="bg-white border border-[#EADBC8] rounded-2xl p-3 space-y-2">
         <p className="text-xs font-extrabold text-[#7D4E35]">موضع البداية (من)</p>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
           <select
             value={value.startSurah}
             onChange={(e) => handleStartSurahChange(Number(e.target.value))}
             aria-label="سورة البداية"
-            className="col-span-2 min-h-[42px] px-2.5 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE]/70 text-xs sm:text-sm font-bold text-[#4A220D] cursor-pointer"
+            className="sm:col-span-2 min-h-[42px] px-2.5 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE]/70 text-xs sm:text-sm font-bold text-[#4A220D] cursor-pointer"
           >
             {surahs.map((s) => (
               <option key={s.n} value={s.n}>
@@ -148,7 +148,7 @@ const RangeSelectorRow: React.FC<RangeEditorProps> = ({ surahs, value, onChange 
               })
             }
             aria-label="آية البداية"
-            className="col-span-1 min-h-[42px] px-2 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE]/70 text-xs sm:text-sm font-bold text-[#4A220D] tabular-nums cursor-pointer"
+            className="sm:col-span-1 min-h-[42px] px-2 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE]/70 text-xs sm:text-sm font-bold text-[#4A220D] tabular-nums cursor-pointer"
           >
             {startAyahOptions.map((aNum) => (
               <option key={aNum} value={aNum}>
@@ -162,12 +162,12 @@ const RangeSelectorRow: React.FC<RangeEditorProps> = ({ surahs, value, onChange 
       {/* End Position */}
       <div className="bg-white border border-[#EADBC8] rounded-2xl p-3 space-y-2">
         <p className="text-xs font-extrabold text-[#7D4E35]">موضع النهاية (إلى)</p>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
           <select
             value={value.endSurah}
             onChange={(e) => handleEndSurahChange(Number(e.target.value))}
             aria-label="سورة النهاية"
-            className="col-span-2 min-h-[42px] px-2.5 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE]/70 text-xs sm:text-sm font-bold text-[#4A220D] cursor-pointer"
+            className="sm:col-span-2 min-h-[42px] px-2.5 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE]/70 text-xs sm:text-sm font-bold text-[#4A220D] cursor-pointer"
           >
             {surahs.map((s) => (
               <option key={s.n} value={s.n}>
@@ -184,7 +184,7 @@ const RangeSelectorRow: React.FC<RangeEditorProps> = ({ surahs, value, onChange 
               })
             }
             aria-label="آية النهاية"
-            className="col-span-1 min-h-[42px] px-2 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE]/70 text-xs sm:text-sm font-bold text-[#4A220D] tabular-nums cursor-pointer"
+            className="sm:col-span-1 min-h-[42px] px-2 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE]/70 text-xs sm:text-sm font-bold text-[#4A220D] tabular-nums cursor-pointer"
           >
             {endAyahOptions.map((aNum) => (
               <option key={aNum} value={aNum}>
@@ -496,13 +496,13 @@ export const TeacherMushafWorkspace: React.FC<TeacherMushafWorkspaceProps> = ({
   return (
     <div className="space-y-5">
       {/* Top Student Header + Date Navigation */}
-      <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
+      <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-4 sm:p-5 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
             <button
               type="button"
               onClick={onBack}
-              className="duo-btn-cream min-h-[42px] px-3.5 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer shrink-0"
+              className="duo-btn-cream min-h-[42px] px-3 sm:px-3.5 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer shrink-0"
             >
               <ArrowRight className="w-4 h-4" />
               <span>رجوع</span>
@@ -513,24 +513,24 @@ export const TeacherMushafWorkspace: React.FC<TeacherMushafWorkspaceProps> = ({
                 {toArabicIndicDigits(studentNumber)}
               </span>
               <div className="min-w-0">
-                <p className="text-xs font-extrabold text-[#F56900]">
+                <p className="text-[11px] sm:text-xs font-extrabold text-[#F56900] truncate">
                   مقرر المصحف الشريف · {context.halaqaName}
                 </p>
-                <h2 className="font-display text-lg sm:text-xl font-extrabold text-[#4A220D] truncate">
+                <h2 className="font-display text-base sm:text-xl font-extrabold text-[#4A220D] truncate">
                   {student.quadrupleName}
                 </h2>
               </div>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2">
             <span className="px-3 py-1.5 rounded-xl bg-[#D95338]/10 text-[#9A2510] text-xs font-extrabold tabular-nums">
-              أخطاء المصحف المسجلة: {toArabicIndicDigits(totalMistakesCount)}
+              أخطاء المصحف: {toArabicIndicDigits(totalMistakesCount)}
             </span>
             <button
               type="button"
               onClick={() => void handleOpenMushafRange(null, 'today')}
-              className="duo-btn-orange min-h-[44px] px-4 py-2 rounded-2xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center gap-2 cursor-pointer"
+              className="duo-btn-orange flex-1 sm:flex-initial min-h-[44px] px-4 py-2 rounded-2xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center justify-center gap-2 cursor-pointer"
             >
               <BookOpen className="w-4 h-4" />
               <span>فتح المصحف للطالب</span>
@@ -540,14 +540,14 @@ export const TeacherMushafWorkspace: React.FC<TeacherMushafWorkspaceProps> = ({
 
         {/* Date Picker + Past Recorded Dates History */}
         <div className="pt-3 border-t border-[#EADBC8] flex flex-col gap-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3">
             <div className="flex flex-wrap items-center gap-2">
-              <Calendar className="w-4 h-4 text-[#F56900]" />
+              <Calendar className="w-4 h-4 text-[#F56900] shrink-0" />
               <label
                 htmlFor="quran-plan-date"
                 className="text-xs sm:text-sm font-display font-extrabold text-[#4A220D]"
               >
-                تاريخ التسميع والخطة:
+                التاريخ:
               </label>
               <input
                 id="quran-plan-date"
@@ -556,7 +556,7 @@ export const TeacherMushafWorkspace: React.FC<TeacherMushafWorkspaceProps> = ({
                 onChange={(e) => {
                   if (e.target.value) setDateKey(e.target.value);
                 }}
-                className="min-h-[40px] px-3 py-1 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE] font-display font-bold text-xs sm:text-sm tabular-nums"
+                className="min-h-[40px] px-2.5 sm:px-3 py-1 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE] font-display font-bold text-xs sm:text-sm tabular-nums"
               />
               {dateKey !== getTodayDateKey() && (
                 <button
@@ -564,7 +564,7 @@ export const TeacherMushafWorkspace: React.FC<TeacherMushafWorkspaceProps> = ({
                   onClick={() => setDateKey(getTodayDateKey())}
                   className="min-h-[40px] px-3 rounded-xl border-2 border-[#EADBC8] bg-white hover:border-[#F56900] text-xs font-bold text-[#F56900] cursor-pointer"
                 >
-                  العودة لتاريخ اليوم
+                  اليوم
                 </button>
               )}
             </div>
@@ -573,7 +573,7 @@ export const TeacherMushafWorkspace: React.FC<TeacherMushafWorkspaceProps> = ({
               type="button"
               disabled={savingPlan || loading}
               onClick={() => void handleSavePlan()}
-              className="duo-btn-green min-h-[44px] px-5 py-2 rounded-2xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center gap-2 cursor-pointer disabled:opacity-50"
+              className="duo-btn-green w-full sm:w-auto min-h-[44px] px-5 py-2 rounded-2xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
             >
               <Save className="w-4 h-4" />
               <span>{savingPlan ? 'جاري الحفظ...' : 'حفظ خطة اليوم والغد'}</span>
@@ -582,8 +582,8 @@ export const TeacherMushafWorkspace: React.FC<TeacherMushafWorkspaceProps> = ({
 
           {/* Clickable Historical Sessions Bar */}
           {historyRecords.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="inline-flex items-center gap-1 text-xs font-bold text-[#7D4E35] ml-1">
+            <div className="flex flex-nowrap sm:flex-wrap items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+              <span className="inline-flex items-center gap-1 text-xs font-bold text-[#7D4E35] ml-1 shrink-0">
                 <History className="w-3.5 h-3.5 text-[#F56900]" />
                 <span>سجلات سابقة:</span>
               </span>
@@ -594,7 +594,7 @@ export const TeacherMushafWorkspace: React.FC<TeacherMushafWorkspaceProps> = ({
                     key={rec.id}
                     type="button"
                     onClick={() => setDateKey(rec.dateKey)}
-                    className={`min-h-[34px] px-2.5 py-1 rounded-xl border text-xs font-bold tabular-nums cursor-pointer transition-colors ${
+                    className={`min-h-[34px] px-2.5 py-1 rounded-xl border text-xs font-bold tabular-nums cursor-pointer transition-colors shrink-0 ${
                       active
                         ? 'bg-[#F56900] border-[#C95200] text-white'
                         : 'bg-[#FDF6EE] border-[#EADBC8] text-[#4A220D] hover:border-[#F56900]'
@@ -1123,7 +1123,7 @@ export const TeacherMushafWorkspace: React.FC<TeacherMushafWorkspaceProps> = ({
               type="button"
               disabled={savingPlan || loading}
               onClick={() => void handleSavePlan()}
-              className="duo-btn-green min-h-[48px] px-6 py-2.5 rounded-2xl font-display font-extrabold text-sm inline-flex items-center gap-2 cursor-pointer disabled:opacity-50"
+              className="duo-btn-green w-full sm:w-auto min-h-[48px] px-6 py-2.5 rounded-2xl font-display font-extrabold text-sm inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
             >
               <Save className="w-4 h-4" />
               <span>{savingPlan ? 'جاري حفظ الخطة...' : 'حفظ الخطة الكاملة للتاريخ المحدد'}</span>

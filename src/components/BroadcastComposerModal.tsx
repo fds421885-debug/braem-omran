@@ -558,7 +558,7 @@ export const BroadcastComposerModal: React.FC<BroadcastComposerModalProps> = ({
         if (e.target === e.currentTarget && !sending) onClose();
       }}
     >
-      <div className="w-full sm:max-w-2xl bg-white border-2 border-[#EADBC8] rounded-t-3xl sm:rounded-3xl shadow-2xl max-h-[92vh] flex flex-col overflow-hidden">
+      <div className="w-full sm:max-w-2xl bg-white border-2 border-[#EADBC8] rounded-t-3xl sm:rounded-3xl shadow-2xl max-h-[92dvh] pb-safe flex flex-col overflow-hidden">
         {/* Header */}
         <div className="bg-gradient-to-l from-[#FFF4E6] via-[#FDF6EE] to-white px-5 sm:px-6 py-4 border-b-2 border-[#EADBC8] flex items-center justify-between gap-3 shrink-0">
           <div className="flex items-center gap-3 min-w-0">

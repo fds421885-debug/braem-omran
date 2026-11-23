@@ -254,7 +254,7 @@ export const CurriculaSection: React.FC<CurriculaSectionProps> = ({
               setShowForm(true);
             }
           }}
-          className="duo-btn-orange min-h-[44px] px-5 py-2 rounded-2xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center gap-2 cursor-pointer"
+          className="duo-btn-orange w-full sm:w-auto min-h-[44px] px-5 py-2 rounded-2xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center justify-center gap-2 cursor-pointer"
         >
           {showForm ? <X className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
           <span>{showForm ? 'إغلاق النموذج' : 'إضافة مقرر جديد'}</span>
@@ -451,7 +451,7 @@ export const CurriculaSection: React.FC<CurriculaSectionProps> = ({
             <button
               type="submit"
               disabled={saving}
-              className="duo-btn-orange min-h-[46px] px-7 py-2 rounded-2xl font-display font-extrabold text-sm cursor-pointer disabled:opacity-60"
+              className="duo-btn-orange flex-1 sm:flex-initial min-h-[46px] px-7 py-2 rounded-2xl font-display font-extrabold text-sm cursor-pointer disabled:opacity-60"
             >
               {saving ? 'جاري الحفظ...' : editingId ? 'حفظ التعديلات' : 'أضف المقرر'}
             </button>

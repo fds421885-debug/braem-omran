@@ -188,14 +188,18 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'c
         type="button"
         onClick={handleClick}
         disabled={installing}
+        aria-label={installing ? 'جاري التحضير للتثبيت' : 'تنزيل التطبيق'}
+        title="تنزيل التطبيق"
         className={
           variant === 'full'
             ? 'duo-btn-cream w-full min-h-[48px] px-5 py-3 rounded-2xl font-display font-bold text-sm sm:text-base inline-flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap'
-            : 'duo-btn-cream min-h-[44px] px-3 sm:px-4 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap shrink-0'
+            : 'duo-btn-cream min-h-[40px] min-w-[40px] sm:min-h-[42px] px-2.5 md:px-3.5 py-2 rounded-xl sm:rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0'
         }
       >
         <Download className="w-4 h-4 text-[#F56900] shrink-0" />
-        <span>{installing ? 'جاري التحضير للتثبيت...' : 'تنزيل التطبيق'}</span>
+        <span className={variant === 'full' ? '' : 'hidden md:inline'}>
+          {installing ? 'جاري التحضير للتثبيت...' : 'تنزيل التطبيق'}
+        </span>
       </button>
 
       {typeof document !== 'undefined' && modalNode

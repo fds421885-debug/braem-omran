@@ -215,21 +215,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
     <div className="min-h-screen bg-[#FDF6EE] text-[#4A220D] flex flex-col pb-24 md:pb-0">
       {/* Top Bar */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b-2 border-[#EADBC8]">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 min-h-16 py-2 flex flex-wrap items-center justify-between gap-2.5 md:gap-6">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 min-h-14 sm:min-h-16 py-2 flex items-center justify-between gap-2 md:gap-6">
           <button
             type="button"
             onClick={() => {
               setSelectedComplex(null);
               setPage('home');
             }}
-            className="flex items-center gap-2.5 whitespace-nowrap shrink-0 cursor-pointer"
+            className="flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer min-w-0"
           >
             <img
               src={`${BASE_URL}icon.svg`}
               alt="براعم عمران"
-              className="w-9 h-9 rounded-xl border border-[#EADBC8]"
+              className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl border border-[#EADBC8] shrink-0"
             />
-            <span className="font-display text-lg sm:text-xl font-extrabold text-[#4A220D]">
+            <span className="font-display text-base sm:text-xl font-extrabold text-[#4A220D] truncate">
               براعم عمران
             </span>
           </button>
@@ -281,20 +281,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
           </nav>
 
           {/* Actions */}
-          <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
             {auditingRules ? (
-              <span className="min-h-[42px] px-3 py-2 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE] text-[#7D4E35] font-display font-bold text-xs inline-flex items-center gap-1.5 whitespace-nowrap shrink-0">
+              <span className="min-h-[40px] sm:min-h-[42px] px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE] text-[#7D4E35] font-display font-bold text-xs inline-flex items-center gap-1.5 whitespace-nowrap shrink-0">
                 <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#F56900] shrink-0" />
-                <span>فحص Rules...</span>
+                <span className="hidden sm:inline">فحص Rules...</span>
+                <span className="sm:hidden">Rules...</span>
               </span>
             ) : rulesAuditReport && !rulesAuditReport.allHealthy ? (
               <button
                 type="button"
                 onClick={() => setRulesModalOpen(true)}
-                className="min-h-[42px] px-3 py-2 rounded-xl border-2 border-[#D95338] bg-[#D95338]/10 hover:bg-[#D95338]/18 text-[#D95338] font-display font-extrabold text-xs inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+                className="min-h-[40px] sm:min-h-[42px] px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl border-2 border-[#D95338] bg-[#D95338]/10 hover:bg-[#D95338]/18 text-[#D95338] font-display font-extrabold text-xs inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <ShieldAlert className="w-4 h-4 shrink-0" />
-                <span>تحديث Rules ({rulesAuditReport.unhealthyDatabases.length})</span>
+                <span className="hidden sm:inline">تحديث Rules ({rulesAuditReport.unhealthyDatabases.length})</span>
+                <span className="sm:hidden">Rules ({rulesAuditReport.unhealthyDatabases.length})</span>
               </button>
             ) : rulesAuditReport &&
               rulesAuditReport.allResults.some((r) => r.status === 'unreachable') ? (
@@ -302,7 +304,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
                 type="button"
                 onClick={() => setRulesModalOpen(true)}
                 title="تعذّر الوصول لبعض القواعد أثناء الفحص — اضغط للتفاصيل وإعادة الفحص"
-                className="min-h-[42px] px-3 py-2 rounded-xl border-2 border-[#FFA900]/70 bg-[#FFA900]/12 hover:bg-[#FFA900]/20 text-[#9A5B00] font-display font-extrabold text-xs inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+                className="min-h-[40px] sm:min-h-[42px] px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl border-2 border-[#FFA900]/70 bg-[#FFA900]/12 hover:bg-[#FFA900]/20 text-[#9A5B00] font-display font-extrabold text-xs inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <ShieldAlert className="w-4 h-4 shrink-0" />
                 <span>Rules ({rulesAuditReport.healthyCount}/{rulesAuditReport.totalDatabases})</span>
@@ -312,25 +314,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
                 type="button"
                 onClick={() => setRulesModalOpen(true)}
                 title="تم التحقق التلقائي من جميع قواعد البيانات — اضغط لإعادة الفحص"
-                className="min-h-[42px] px-3 py-2 rounded-xl border-2 border-[#58CC02]/50 bg-[#58CC02]/10 hover:bg-[#58CC02]/18 text-[#46A302] font-display font-extrabold text-xs inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+                className="min-h-[40px] sm:min-h-[42px] px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl border-2 border-[#58CC02]/50 bg-[#58CC02]/10 hover:bg-[#58CC02]/18 text-[#46A302] font-display font-extrabold text-xs inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <ShieldCheck className="w-4 h-4 shrink-0" />
-                <span>Rules سليمة ({rulesAuditReport.healthyCount}/{rulesAuditReport.totalDatabases})</span>
+                <span className="hidden sm:inline">Rules سليمة ({rulesAuditReport.healthyCount}/{rulesAuditReport.totalDatabases})</span>
+                <span className="sm:hidden">Rules ({rulesAuditReport.healthyCount}/{rulesAuditReport.totalDatabases})</span>
               </button>
             ) : null}
             <button
               type="button"
               onClick={() => setMessageModalOpen(true)}
-              className="duo-btn-orange min-h-[42px] px-3.5 py-2 rounded-xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+              aria-label="إرسال رسالة"
+              className="duo-btn-orange min-h-[40px] sm:min-h-[42px] px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <Megaphone className="w-4 h-4 shrink-0" />
-              <span>رسالة</span>
+              <span className="hidden sm:inline">رسالة</span>
             </button>
             <PWAInstallButton variant="compact" />
             <button
               type="button"
               onClick={handleLogout}
-              className="min-h-[42px] px-3 sm:px-4 py-2 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+              aria-label="تسجيل الخروج"
+              className="min-h-[40px] sm:min-h-[42px] px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <LogOut className="w-4 h-4 shrink-0" />
               <span className="hidden sm:inline">تسجيل الخروج</span>
@@ -403,11 +408,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
                   <p className="text-sm sm:text-base text-[#7D4E35] leading-relaxed">
                     لوحة الإحصائيات اليومية وإدارة المجمعات القرآنية والمساجد والحلقات والحسابات عبر جميع القواعد المرتبطة.
                   </p>
-                  <div className="flex flex-wrap items-center justify-center lg:justify-start gap-3">
+                  <div className="grid grid-cols-1 sm:flex sm:flex-wrap items-center justify-center lg:justify-start gap-2.5 sm:gap-3">
                     <button
                       type="button"
                       onClick={() => setPage('complexes')}
-                      className="duo-btn-orange min-h-[46px] px-5 py-2.5 rounded-2xl font-display font-extrabold text-sm inline-flex items-center gap-2 cursor-pointer"
+                      className="duo-btn-orange min-h-[46px] px-5 py-2.5 rounded-2xl font-display font-extrabold text-sm inline-flex items-center justify-center gap-2 cursor-pointer"
                     >
                       <Building2 className="w-4 h-4" />
                       <span>إدارة المجمعات ({statsData.totalComplexes})</span>
@@ -415,7 +420,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
                     <button
                       type="button"
                       onClick={() => setMessageModalOpen(true)}
-                      className="duo-btn-green min-h-[46px] px-5 py-2.5 rounded-2xl font-display font-extrabold text-sm inline-flex items-center gap-2 cursor-pointer"
+                      className="duo-btn-green min-h-[46px] px-5 py-2.5 rounded-2xl font-display font-extrabold text-sm inline-flex items-center justify-center gap-2 cursor-pointer"
                     >
                       <Megaphone className="w-4 h-4" />
                       <span>إرسال رسالة</span>
@@ -423,7 +428,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
                     <button
                       type="button"
                       onClick={() => loadAll(true)}
-                      className="duo-btn-cream min-h-[46px] px-4 py-2.5 rounded-2xl font-display font-bold text-sm inline-flex items-center gap-2 cursor-pointer"
+                      className="duo-btn-cream min-h-[46px] px-4 py-2.5 rounded-2xl font-display font-bold text-sm inline-flex items-center justify-center gap-2 cursor-pointer"
                     >
                       <RefreshCw className="w-4 h-4 text-[#F56900]" />
                       <span>تحديث الإحصائيات</span>
@@ -435,94 +440,94 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
 
             {/* 6 Core Requested Stats Cards */}
             <section aria-label="إحصائيات اليوم والإجمالي">
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 flex items-center justify-between gap-4">
-                  <div>
-                    <p className="text-xs sm:text-sm font-bold text-[#7D4E35]">دخول الطلاب اليوم</p>
-                    <p className="font-display text-3xl font-extrabold text-[#4A220D] tabular-nums mt-1">
+              <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
+                <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-3.5 sm:p-5 flex items-center justify-between gap-2.5 sm:gap-4">
+                  <div className="min-w-0">
+                    <p className="text-[11px] sm:text-sm font-bold text-[#7D4E35] truncate">دخول الطلاب اليوم</p>
+                    <p className="font-display text-2xl sm:text-3xl font-extrabold text-[#4A220D] tabular-nums mt-1">
                       {statsData.today.studentLogins}
                     </p>
-                    <p className="text-xs text-[#7D4E35] mt-1 tabular-nums">
+                    <p className="text-[11px] sm:text-xs text-[#7D4E35] mt-1 tabular-nums">
                       الإجمالي: {statsData.global.studentLogins}
                     </p>
                   </div>
-                  <div className="w-14 h-14 rounded-2xl bg-[#F56900]/12 text-[#F56900] flex items-center justify-center shrink-0">
-                    <GraduationCap className="w-7 h-7" />
+                  <div className="w-10 h-10 sm:w-14 sm:h-14 rounded-2xl bg-[#F56900]/12 text-[#F56900] flex items-center justify-center shrink-0">
+                    <GraduationCap className="w-5 h-5 sm:w-7 sm:h-7" />
                   </div>
                 </div>
 
-                <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 flex items-center justify-between gap-4">
-                  <div>
-                    <p className="text-xs sm:text-sm font-bold text-[#7D4E35]">دخول المعلمين اليوم</p>
-                    <p className="font-display text-3xl font-extrabold text-[#4A220D] tabular-nums mt-1">
+                <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-3.5 sm:p-5 flex items-center justify-between gap-2.5 sm:gap-4">
+                  <div className="min-w-0">
+                    <p className="text-[11px] sm:text-sm font-bold text-[#7D4E35] truncate">دخول المعلمين اليوم</p>
+                    <p className="font-display text-2xl sm:text-3xl font-extrabold text-[#4A220D] tabular-nums mt-1">
                       {statsData.today.teacherLogins}
                     </p>
-                    <p className="text-xs text-[#7D4E35] mt-1 tabular-nums">
+                    <p className="text-[11px] sm:text-xs text-[#7D4E35] mt-1 tabular-nums">
                       الإجمالي: {statsData.global.teacherLogins}
                     </p>
                   </div>
-                  <div className="w-14 h-14 rounded-2xl bg-[#58CC02]/15 text-[#46A302] flex items-center justify-center shrink-0">
-                    <Users className="w-7 h-7" />
+                  <div className="w-10 h-10 sm:w-14 sm:h-14 rounded-2xl bg-[#58CC02]/15 text-[#46A302] flex items-center justify-center shrink-0">
+                    <Users className="w-5 h-5 sm:w-7 sm:h-7" />
                   </div>
                 </div>
 
-                <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 flex items-center justify-between gap-4">
-                  <div>
-                    <p className="text-xs sm:text-sm font-bold text-[#7D4E35]">دخول المشرفين اليوم</p>
-                    <p className="font-display text-3xl font-extrabold text-[#4A220D] tabular-nums mt-1">
+                <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-3.5 sm:p-5 flex items-center justify-between gap-2.5 sm:gap-4">
+                  <div className="min-w-0">
+                    <p className="text-[11px] sm:text-sm font-bold text-[#7D4E35] truncate">دخول المشرفين اليوم</p>
+                    <p className="font-display text-2xl sm:text-3xl font-extrabold text-[#4A220D] tabular-nums mt-1">
                       {statsData.today.supervisorLogins}
                     </p>
-                    <p className="text-xs text-[#7D4E35] mt-1 tabular-nums">
+                    <p className="text-[11px] sm:text-xs text-[#7D4E35] mt-1 tabular-nums">
                       الإجمالي: {statsData.global.supervisorLogins}
                     </p>
                   </div>
-                  <div className="w-14 h-14 rounded-2xl bg-[#FFA900]/15 text-[#D98A00] flex items-center justify-center shrink-0">
-                    <ShieldCheck className="w-7 h-7" />
+                  <div className="w-10 h-10 sm:w-14 sm:h-14 rounded-2xl bg-[#FFA900]/15 text-[#D98A00] flex items-center justify-center shrink-0">
+                    <ShieldCheck className="w-5 h-5 sm:w-7 sm:h-7" />
                   </div>
                 </div>
 
-                <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 flex items-center justify-between gap-4">
-                  <div>
-                    <p className="text-xs sm:text-sm font-bold text-[#7D4E35]">الزيارات اليوم</p>
-                    <p className="font-display text-3xl font-extrabold text-[#4A220D] tabular-nums mt-1">
+                <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-3.5 sm:p-5 flex items-center justify-between gap-2.5 sm:gap-4">
+                  <div className="min-w-0">
+                    <p className="text-[11px] sm:text-sm font-bold text-[#7D4E35] truncate">الزيارات اليوم</p>
+                    <p className="font-display text-2xl sm:text-3xl font-extrabold text-[#4A220D] tabular-nums mt-1">
                       {statsData.today.totalVisits}
                     </p>
-                    <p className="text-xs text-[#7D4E35] mt-1 tabular-nums">
+                    <p className="text-[11px] sm:text-xs text-[#7D4E35] mt-1 tabular-nums">
                       إجمالي الزيارات: {statsData.global.totalVisits}
                     </p>
                   </div>
-                  <div className="w-14 h-14 rounded-2xl bg-[#FDF6EE] border border-[#EADBC8] text-[#4A220D] flex items-center justify-center shrink-0">
-                    <Eye className="w-7 h-7" />
+                  <div className="w-10 h-10 sm:w-14 sm:h-14 rounded-2xl bg-[#FDF6EE] border border-[#EADBC8] text-[#4A220D] flex items-center justify-center shrink-0">
+                    <Eye className="w-5 h-5 sm:w-7 sm:h-7" />
                   </div>
                 </div>
 
-                <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 flex items-center justify-between gap-4">
-                  <div>
-                    <p className="text-xs sm:text-sm font-bold text-[#7D4E35]">عدد الآيات المسمّعة</p>
-                    <p className="font-display text-3xl font-extrabold text-[#F56900] tabular-nums mt-1">
+                <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-3.5 sm:p-5 flex items-center justify-between gap-2.5 sm:gap-4">
+                  <div className="min-w-0">
+                    <p className="text-[11px] sm:text-sm font-bold text-[#7D4E35] truncate">عدد الآيات المسمّعة</p>
+                    <p className="font-display text-2xl sm:text-3xl font-extrabold text-[#F56900] tabular-nums mt-1">
                       {statsData.today.recitedAyahs}
                     </p>
-                    <p className="text-xs text-[#7D4E35] mt-1 tabular-nums">
+                    <p className="text-[11px] sm:text-xs text-[#7D4E35] mt-1 tabular-nums">
                       الإجمالي: {statsData.global.recitedAyahs} آية
                     </p>
                   </div>
-                  <div className="w-14 h-14 rounded-2xl bg-[#F56900]/12 text-[#F56900] flex items-center justify-center shrink-0">
-                    <BookOpen className="w-7 h-7" />
+                  <div className="w-10 h-10 sm:w-14 sm:h-14 rounded-2xl bg-[#F56900]/12 text-[#F56900] flex items-center justify-center shrink-0">
+                    <BookOpen className="w-5 h-5 sm:w-7 sm:h-7" />
                   </div>
                 </div>
 
-                <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 flex items-center justify-between gap-4">
-                  <div>
-                    <p className="text-xs sm:text-sm font-bold text-[#7D4E35]">عدد الأوجه المسمّعة</p>
-                    <p className="font-display text-3xl font-extrabold text-[#46A302] tabular-nums mt-1">
+                <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-3.5 sm:p-5 flex items-center justify-between gap-2.5 sm:gap-4">
+                  <div className="min-w-0">
+                    <p className="text-[11px] sm:text-sm font-bold text-[#7D4E35] truncate">عدد الأوجه المسمّعة</p>
+                    <p className="font-display text-2xl sm:text-3xl font-extrabold text-[#46A302] tabular-nums mt-1">
                       {statsData.today.recitedPages}
                     </p>
-                    <p className="text-xs text-[#7D4E35] mt-1 tabular-nums">
+                    <p className="text-[11px] sm:text-xs text-[#7D4E35] mt-1 tabular-nums">
                       الإجمالي: {statsData.global.recitedPages} وجه
                     </p>
                   </div>
-                  <div className="w-14 h-14 rounded-2xl bg-[#58CC02]/15 text-[#46A302] flex items-center justify-center shrink-0">
-                    <BookOpen className="w-7 h-7" />
+                  <div className="w-10 h-10 sm:w-14 sm:h-14 rounded-2xl bg-[#58CC02]/15 text-[#46A302] flex items-center justify-center shrink-0">
+                    <BookOpen className="w-5 h-5 sm:w-7 sm:h-7" />
                   </div>
                 </div>
               </div>
@@ -561,7 +566,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
                 <h2 className="font-display text-lg font-extrabold text-[#4A220D]">
                   تحديث رصيد التسميع اليومي
                 </h2>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <input
                     type="number"
                     min={0}
@@ -582,7 +587,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
                 <button
                   type="submit"
                   disabled={savingRecitation}
-                  className="duo-btn-orange min-h-[46px] px-5 py-2 rounded-2xl font-display font-bold text-sm cursor-pointer disabled:opacity-60"
+                  className="duo-btn-orange w-full sm:w-auto min-h-[46px] px-5 py-2 rounded-2xl font-display font-bold text-sm cursor-pointer disabled:opacity-60"
                 >
                   {savingRecitation ? 'جاري التحديث...' : 'إضافة لإحصائيات التسميع'}
                 </button>
@@ -592,20 +597,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
         ) : !loading && page === 'complexes' ? (
           <div className="space-y-6">
             {/* Complexes Top Header */}
-            <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 sm:p-6 flex flex-wrap items-center justify-between gap-4">
+            <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
-                <h1 className="font-display text-2xl font-extrabold text-[#4A220D]">
+                <h1 className="font-display text-xl sm:text-2xl font-extrabold text-[#4A220D]">
                   المجمعات القرآنية
                 </h1>
-                <p className="text-sm text-[#7D4E35]">
+                <p className="text-xs sm:text-sm text-[#7D4E35]">
                   تُجلب المجمعات مباشرة من القاعدة الأساسية ومن كل قاعدة منفصلة مضافة، مع عزل تام للمجمعات المرتبطة بقواعد مستقلة.
                 </p>
               </div>
-              <div className="flex flex-wrap items-center gap-2.5">
+              <div className="grid grid-cols-1 sm:flex sm:flex-wrap items-center gap-2.5 w-full sm:w-auto">
                 <button
                   type="button"
                   onClick={() => setAddDbModalOpen(true)}
-                  className="duo-btn-cream min-h-[46px] px-4 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-2 cursor-pointer"
+                  className="duo-btn-cream min-h-[46px] px-4 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <Database className="w-4 h-4 text-[#F56900]" />
                   <span>إضافة قاعدة بيانات</span>
@@ -621,7 +626,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
                     setEditingMosqueConfigMap({});
                     setEditorOpen(true);
                   }}
-                  className="duo-btn-orange min-h-[46px] px-5 py-2 rounded-2xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center gap-2 cursor-pointer"
+                  className="duo-btn-orange min-h-[46px] px-5 py-2 rounded-2xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <Plus className="w-5 h-5" />
                   <span>إنشاء مجمع جديد</span>
@@ -773,7 +778,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
       {/* Mobile Bottom Nav */}
       <nav
         aria-label="تنقل المشرف للهاتف"
-        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t-2 border-[#EADBC8] h-16 px-4 grid grid-cols-3 items-center"
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t-2 border-[#EADBC8] min-h-[64px] pt-1.5 pb-safe px-3 grid grid-cols-3 items-center"
       >
         <button
           type="button"

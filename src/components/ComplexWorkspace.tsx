@@ -745,7 +745,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
               إدارة روابط التسجيل، الأعضاء، المساجد والحلقات، وروابط الدخول السريع للمجمع.
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-1.5 bg-[#FDF6EE] p-1.5 rounded-2xl border border-[#EADBC8]">
+          <div className="flex flex-nowrap sm:flex-wrap items-center gap-1.5 bg-[#FDF6EE] p-1.5 rounded-2xl border border-[#EADBC8] overflow-x-auto no-scrollbar max-w-full w-full lg:w-auto">
             {workspaceTabsList.map((t) => {
               const Icon = t.icon;
               const active = tab === t.id;
@@ -754,7 +754,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                   key={t.id}
                   type="button"
                   onClick={() => setTab(t.id)}
-                  className={`min-h-[42px] px-3 sm:px-4 py-2 rounded-xl font-display text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors ${
+                  className={`min-h-[42px] px-3 sm:px-4 py-2 rounded-xl font-display text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
                     active
                       ? 'bg-[#F56900] text-white'
                       : 'text-[#7D4E35] hover:text-[#4A220D] hover:bg-white'
@@ -769,21 +769,21 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
         </div>
       ) : (
         <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-4 sm:p-6 flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3 min-w-0">
             <button
               type="button"
               onClick={onBack}
-              className="duo-btn-cream min-h-[44px] px-3.5 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer"
+              className="duo-btn-cream min-h-[42px] px-3.5 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer shrink-0"
             >
               <ArrowRight className="w-4 h-4" />
               <span>المجمعات</span>
             </button>
-            <div className="flex flex-wrap items-center gap-2.5">
-              <div>
-                <h2 className="font-display text-lg sm:text-2xl font-extrabold text-[#4A220D]">
+            <div className="flex flex-wrap items-center gap-2.5 min-w-0">
+              <div className="min-w-0">
+                <h2 className="font-display text-lg sm:text-2xl font-extrabold text-[#4A220D] truncate">
                   {workspace.complex?.name || discovered.name}
                 </h2>
-                <p className="text-xs font-medium text-[#7D4E35]">
+                <p className="text-xs font-medium text-[#7D4E35] truncate">
                   {discovered.ownerDbLabel}
                 </p>
               </div>
@@ -806,7 +806,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
           </div>
 
           {/* Workspace Tabs */}
-          <div className="flex flex-wrap items-center gap-1.5 bg-[#FDF6EE] p-1.5 rounded-2xl border border-[#EADBC8]">
+          <div className="flex flex-nowrap sm:flex-wrap items-center gap-1.5 bg-[#FDF6EE] p-1.5 rounded-2xl border border-[#EADBC8] overflow-x-auto no-scrollbar max-w-full w-full lg:w-auto">
             {workspaceTabsList.map((t) => {
               const Icon = t.icon;
               const active = tab === t.id;
@@ -815,7 +815,7 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                   key={t.id}
                   type="button"
                   onClick={() => setTab(t.id)}
-                  className={`min-h-[42px] px-3 sm:px-4 py-2 rounded-xl font-display text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors ${
+                  className={`min-h-[42px] px-3 sm:px-4 py-2 rounded-xl font-display text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
                     active
                       ? 'bg-[#F56900] text-white'
                       : 'text-[#7D4E35] hover:text-[#4A220D] hover:bg-white'
@@ -886,43 +886,93 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
             {workspace.mosques.length === 0 ? (
               <p className="text-sm text-[#7D4E35]">لا توجد مساجد مضافة لهذا المجمع بعد.</p>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-right text-sm">
-                  <thead>
-                    <tr className="border-b-2 border-[#F7EBDD] text-[#7D4E35]">
-                      <th className="py-2.5 px-3 font-display font-bold">المسجد</th>
-                      <th className="py-2.5 px-3 font-display font-bold">الحلقات</th>
-                      <th className="py-2.5 px-3 font-display font-bold">المشرفين</th>
-                      <th className="py-2.5 px-3 font-display font-bold">المعلمين</th>
-                      <th className="py-2.5 px-3 font-display font-bold">الطلاب</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {workspace.mosques.map((m) => {
-                      const mHalaqat = workspace.halaqat.filter((h) => h.mosqueId === m.id);
-                      const mSups = supervisors.filter(
-                        (a) => a.mosqueId === m.id || a.mosqueIds.includes(m.id)
-                      );
-                      const mTeachers = teachers.filter((a) => a.mosqueId === m.id);
-                      const mStudents = students.filter((a) => a.mosqueId === m.id);
-                      return (
-                        <tr key={m.id} className="border-b border-[#F7EBDD] last:border-b-0">
-                          <td className="py-3 px-3 font-bold text-[#4A220D]">
+              <>
+                {/* Mobile Cards View */}
+                <div className="md:hidden space-y-3">
+                  {workspace.mosques.map((m) => {
+                    const mHalaqat = workspace.halaqat.filter((h) => h.mosqueId === m.id);
+                    const mSups = supervisors.filter(
+                      (a) => a.mosqueId === m.id || a.mosqueIds.includes(m.id)
+                    );
+                    const mTeachers = teachers.filter((a) => a.mosqueId === m.id);
+                    const mStudents = students.filter((a) => a.mosqueId === m.id);
+                    return (
+                      <div
+                        key={`mob_mosque_${m.id}`}
+                        className="bg-[#FDF6EE] border-2 border-[#EADBC8] rounded-2xl p-3.5 space-y-2.5"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-display font-extrabold text-sm text-[#4A220D]">
                             {m.name}
-                            {m.usesExternalDb && (
-                              <span className="text-xs text-[#F56900] mr-2">· قاعدة مستقلة</span>
-                            )}
-                          </td>
-                          <td className="py-3 px-3 tabular-nums">{mHalaqat.length}</td>
-                          <td className="py-3 px-3 tabular-nums">{mSups.length}</td>
-                          <td className="py-3 px-3 tabular-nums">{mTeachers.length}</td>
-                          <td className="py-3 px-3 tabular-nums">{mStudents.length}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+                          </span>
+                          {m.usesExternalDb && (
+                            <span className="text-[11px] font-bold text-[#F56900] bg-white border border-[#EADBC8] px-2 py-0.5 rounded-lg">
+                              قاعدة مستقلة
+                            </span>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-4 gap-1.5 text-center text-xs">
+                          <div className="bg-white border border-[#EADBC8] rounded-xl py-1.5 px-1">
+                            <p className="font-display font-extrabold text-[#F56900] tabular-nums">{mHalaqat.length}</p>
+                            <p className="text-[10px] font-bold text-[#7D4E35]">الحلقات</p>
+                          </div>
+                          <div className="bg-white border border-[#EADBC8] rounded-xl py-1.5 px-1">
+                            <p className="font-display font-extrabold text-[#4A220D] tabular-nums">{mSups.length}</p>
+                            <p className="text-[10px] font-bold text-[#7D4E35]">المشرفين</p>
+                          </div>
+                          <div className="bg-white border border-[#EADBC8] rounded-xl py-1.5 px-1">
+                            <p className="font-display font-extrabold text-[#46A302] tabular-nums">{mTeachers.length}</p>
+                            <p className="text-[10px] font-bold text-[#7D4E35]">المعلمين</p>
+                          </div>
+                          <div className="bg-white border border-[#EADBC8] rounded-xl py-1.5 px-1">
+                            <p className="font-display font-extrabold text-[#4A220D] tabular-nums">{mStudents.length}</p>
+                            <p className="text-[10px] font-bold text-[#7D4E35]">الطلاب</p>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Desktop Table View */}
+                <div className="hidden md:block overflow-x-auto">
+                  <table className="w-full text-right text-sm">
+                    <thead>
+                      <tr className="border-b-2 border-[#F7EBDD] text-[#7D4E35]">
+                        <th className="py-2.5 px-3 font-display font-bold">المسجد</th>
+                        <th className="py-2.5 px-3 font-display font-bold">الحلقات</th>
+                        <th className="py-2.5 px-3 font-display font-bold">المشرفين</th>
+                        <th className="py-2.5 px-3 font-display font-bold">المعلمين</th>
+                        <th className="py-2.5 px-3 font-display font-bold">الطلاب</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {workspace.mosques.map((m) => {
+                        const mHalaqat = workspace.halaqat.filter((h) => h.mosqueId === m.id);
+                        const mSups = supervisors.filter(
+                          (a) => a.mosqueId === m.id || a.mosqueIds.includes(m.id)
+                        );
+                        const mTeachers = teachers.filter((a) => a.mosqueId === m.id);
+                        const mStudents = students.filter((a) => a.mosqueId === m.id);
+                        return (
+                          <tr key={m.id} className="border-b border-[#F7EBDD] last:border-b-0">
+                            <td className="py-3 px-3 font-bold text-[#4A220D]">
+                              {m.name}
+                              {m.usesExternalDb && (
+                                <span className="text-xs text-[#F56900] mr-2">· قاعدة مستقلة</span>
+                              )}
+                            </td>
+                            <td className="py-3 px-3 tabular-nums">{mHalaqat.length}</td>
+                            <td className="py-3 px-3 tabular-nums">{mSups.length}</td>
+                            <td className="py-3 px-3 tabular-nums">{mTeachers.length}</td>
+                            <td className="py-3 px-3 tabular-nums">{mStudents.length}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             )}
           </div>
         </div>
@@ -1328,100 +1378,200 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                   لا توجد حسابات مطابقة للبحث أو التصفية المحددة.
                 </p>
               ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-right text-sm">
-                    <thead>
-                      <tr className="border-b-2 border-[#F7EBDD] text-[#7D4E35]">
-                        <th className="py-2.5 px-3 font-display font-bold">الاسم الرباعي</th>
-                        <th className="py-2.5 px-3 font-display font-bold">الرتبة</th>
-                        <th className="py-2.5 px-3 font-display font-bold">المسجد</th>
-                        <th className="py-2.5 px-3 font-display font-bold">الحلقات</th>
-                        <th className="py-2.5 px-3 font-display font-bold">الإجراءات ورابط الدخول</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredMemberList.map((acc) => {
-                        const mNames = (acc.mosqueIds.length ? acc.mosqueIds : [acc.mosqueId])
-                          .map((id) => workspace.mosques.find((m) => m.id === id)?.name)
-                          .filter(Boolean)
-                          .join('، ');
-                        const hNames = acc.halaqaIds
-                          .map((id) => workspace.halaqat.find((h) => h.id === id)?.name)
-                          .filter(Boolean)
-                          .join('، ');
-                        const isQuickCopied = copiedId === `qk_${acc.id}`;
-                        return (
-                          <tr key={acc.id} className="border-b border-[#F7EBDD] last:border-b-0">
-                            <td className="py-3 px-3">
-                              <p className="font-bold text-[#4A220D]">{acc.quadrupleName}</p>
+                <>
+                  {/* Mobile Cards View */}
+                  <div className="md:hidden space-y-3">
+                    {filteredMemberList.map((acc) => {
+                      const mNames = (acc.mosqueIds.length ? acc.mosqueIds : [acc.mosqueId])
+                        .map((id) => workspace.mosques.find((m) => m.id === id)?.name)
+                        .filter(Boolean)
+                        .join('، ');
+                      const hNames = acc.halaqaIds
+                        .map((id) => workspace.halaqat.find((h) => h.id === id)?.name)
+                        .filter(Boolean)
+                        .join('، ');
+                      const isQuickCopied = copiedId === `qk_${acc.id}`;
+                      const mosqueDisplay =
+                        acc.role === 'supervisor' && !acc.mosqueId && acc.mosqueIds.length === 0
+                          ? 'جميع المساجد'
+                          : mNames || '—';
+
+                      return (
+                        <div
+                          key={`mob_mem_${acc.id}`}
+                          className="bg-[#FDF6EE] border-2 border-[#EADBC8] rounded-2xl p-3.5 space-y-3"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="font-display font-extrabold text-sm text-[#4A220D] truncate">
+                                {acc.quadrupleName}
+                              </p>
                               {acc.email && (
-                                <p className="text-[11px] text-[#7D4E35]" dir="ltr">
+                                <p className="text-[11px] text-[#7D4E35] truncate" dir="ltr">
                                   {acc.email}
                                 </p>
                               )}
-                            </td>
-                            <td className="py-3 px-3 text-[#F56900] font-bold whitespace-nowrap">
+                            </div>
+                            <span className="px-2.5 py-0.5 rounded-lg bg-[#F56900]/12 text-[#F56900] text-[11px] font-extrabold shrink-0">
                               {getRoleDisplayLabel(acc)}
-                            </td>
-                            <td className="py-3 px-3 text-[#7D4E35]">
-                              {acc.role === 'supervisor' && !acc.mosqueId && acc.mosqueIds.length === 0
-                                ? 'جميع المساجد'
-                                : mNames || '—'}
-                            </td>
-                            <td className="py-3 px-3 text-[#7D4E35]">{hNames || '—'}</td>
-                            <td className="py-3 px-3">
-                              {acc.role === 'platform_admin' ? (
-                                <span className="text-xs font-bold text-[#7D4E35]">حساب المنصة الأساسي</span>
-                              ) : (
-                                <div className="flex flex-wrap items-center gap-1.5">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleCopyQuickUrl(acc)}
-                                    className={`min-h-[38px] px-3 py-1.5 rounded-xl font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors ${
-                                      isQuickCopied ? 'duo-btn-green' : 'duo-btn-orange'
-                                    }`}
-                                  >
-                                    {isQuickCopied ? (
-                                      <>
-                                        <Check className="w-3.5 h-3.5" />
-                                        <span>تم النسخ بنجاح</span>
-                                      </>
-                                    ) : (
-                                      <>
-                                        <KeyRound className="w-3.5 h-3.5" />
-                                        <span>نسخ الدخول السريع</span>
-                                      </>
-                                    )}
-                                  </button>
+                            </span>
+                          </div>
 
-                                  <button
-                                    type="button"
-                                    onClick={() => openEditMemberModal(acc)}
-                                    aria-label={`تعديل ${acc.quadrupleName}`}
-                                    className="min-h-[38px] px-2.5 py-1.5 rounded-xl border border-[#EADBC8] bg-[#FDF6EE] hover:border-[#F56900] text-xs font-bold text-[#4A220D] inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
-                                  >
-                                    <Edit3 className="w-3.5 h-3.5 text-[#F56900]" />
-                                    <span>تعديل</span>
-                                  </button>
+                          <div className="text-xs text-[#7D4E35] space-y-0.5">
+                            <p>
+                              <strong className="text-[#4A220D]">المسجد:</strong> {mosqueDisplay}
+                            </p>
+                            {hNames && (
+                              <p>
+                                <strong className="text-[#4A220D]">الحلقات:</strong> {hNames}
+                              </p>
+                            )}
+                          </div>
 
-                                  <button
-                                    type="button"
-                                    onClick={() => setConfirmDeleteMember(acc)}
-                                    aria-label={`حذف ${acc.quadrupleName}`}
-                                    className="min-h-[38px] px-2.5 py-1.5 rounded-xl border border-[#EADBC8] bg-white hover:border-[#D95338] hover:bg-[#D95338]/10 text-xs font-bold text-[#D95338] inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                    <span>حذف</span>
-                                  </button>
-                                </div>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                          {acc.role === 'platform_admin' ? (
+                            <p className="text-xs font-bold text-[#7D4E35]">حساب المنصة الأساسي</p>
+                          ) : (
+                            <div className="grid grid-cols-2 gap-1.5 pt-1">
+                              <button
+                                type="button"
+                                onClick={() => handleCopyQuickUrl(acc)}
+                                className={`col-span-2 min-h-[40px] px-3 py-1.5 rounded-xl font-display font-bold text-xs inline-flex items-center justify-center gap-1.5 cursor-pointer transition-colors ${
+                                  isQuickCopied ? 'duo-btn-green' : 'duo-btn-orange'
+                                }`}
+                              >
+                                {isQuickCopied ? (
+                                  <>
+                                    <Check className="w-3.5 h-3.5" />
+                                    <span>تم النسخ بنجاح</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <KeyRound className="w-3.5 h-3.5" />
+                                    <span>نسخ رابط الدخول السريع</span>
+                                  </>
+                                )}
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => openEditMemberModal(acc)}
+                                className="min-h-[40px] px-2.5 py-1.5 rounded-xl border border-[#EADBC8] bg-white hover:border-[#F56900] text-xs font-bold text-[#4A220D] inline-flex items-center justify-center gap-1 cursor-pointer"
+                              >
+                                <Edit3 className="w-3.5 h-3.5 text-[#F56900]" />
+                                <span>تعديل</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteMember(acc)}
+                                className="min-h-[40px] px-2.5 py-1.5 rounded-xl border border-[#EADBC8] bg-white hover:border-[#D95338] text-xs font-bold text-[#D95338] inline-flex items-center justify-center gap-1 cursor-pointer"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>حذف</span>
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Desktop Table View */}
+                  <div className="hidden md:block overflow-x-auto">
+                    <table className="w-full text-right text-sm">
+                      <thead>
+                        <tr className="border-b-2 border-[#F7EBDD] text-[#7D4E35]">
+                          <th className="py-2.5 px-3 font-display font-bold">الاسم الرباعي</th>
+                          <th className="py-2.5 px-3 font-display font-bold">الرتبة</th>
+                          <th className="py-2.5 px-3 font-display font-bold">المسجد</th>
+                          <th className="py-2.5 px-3 font-display font-bold">الحلقات</th>
+                          <th className="py-2.5 px-3 font-display font-bold">الإجراءات ورابط الدخول</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredMemberList.map((acc) => {
+                          const mNames = (acc.mosqueIds.length ? acc.mosqueIds : [acc.mosqueId])
+                            .map((id) => workspace.mosques.find((m) => m.id === id)?.name)
+                            .filter(Boolean)
+                            .join('، ');
+                          const hNames = acc.halaqaIds
+                            .map((id) => workspace.halaqat.find((h) => h.id === id)?.name)
+                            .filter(Boolean)
+                            .join('، ');
+                          const isQuickCopied = copiedId === `qk_${acc.id}`;
+                          return (
+                            <tr key={acc.id} className="border-b border-[#F7EBDD] last:border-b-0">
+                              <td className="py-3 px-3">
+                                <p className="font-bold text-[#4A220D]">{acc.quadrupleName}</p>
+                                {acc.email && (
+                                  <p className="text-[11px] text-[#7D4E35]" dir="ltr">
+                                    {acc.email}
+                                  </p>
+                                )}
+                              </td>
+                              <td className="py-3 px-3 text-[#F56900] font-bold whitespace-nowrap">
+                                {getRoleDisplayLabel(acc)}
+                              </td>
+                              <td className="py-3 px-3 text-[#7D4E35]">
+                                {acc.role === 'supervisor' && !acc.mosqueId && acc.mosqueIds.length === 0
+                                  ? 'جميع المساجد'
+                                  : mNames || '—'}
+                              </td>
+                              <td className="py-3 px-3 text-[#7D4E35]">{hNames || '—'}</td>
+                              <td className="py-3 px-3">
+                                {acc.role === 'platform_admin' ? (
+                                  <span className="text-xs font-bold text-[#7D4E35]">حساب المنصة الأساسي</span>
+                                ) : (
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleCopyQuickUrl(acc)}
+                                      className={`min-h-[38px] px-3 py-1.5 rounded-xl font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors ${
+                                        isQuickCopied ? 'duo-btn-green' : 'duo-btn-orange'
+                                      }`}
+                                    >
+                                      {isQuickCopied ? (
+                                        <>
+                                          <Check className="w-3.5 h-3.5" />
+                                          <span>تم النسخ بنجاح</span>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <KeyRound className="w-3.5 h-3.5" />
+                                          <span>نسخ الدخول السريع</span>
+                                        </>
+                                      )}
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => openEditMemberModal(acc)}
+                                      aria-label={`تعديل ${acc.quadrupleName}`}
+                                      className="min-h-[38px] px-2.5 py-1.5 rounded-xl border border-[#EADBC8] bg-[#FDF6EE] hover:border-[#F56900] text-xs font-bold text-[#4A220D] inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                                    >
+                                      <Edit3 className="w-3.5 h-3.5 text-[#F56900]" />
+                                      <span>تعديل</span>
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmDeleteMember(acc)}
+                                      aria-label={`حذف ${acc.quadrupleName}`}
+                                      className="min-h-[38px] px-2.5 py-1.5 rounded-xl border border-[#EADBC8] bg-white hover:border-[#D95338] hover:bg-[#D95338]/10 text-xs font-bold text-[#D95338] inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                      <span>حذف</span>
+                                    </button>
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
               )}
             </div>
           )}
@@ -2033,13 +2183,13 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
         typeof document !== 'undefined' &&
         createPortal(
           <div
-            className="fixed inset-0 z-[90] flex items-center justify-center bg-[#4A220D]/55 backdrop-blur-xs p-4"
+            className="fixed inset-0 z-[90] flex items-end sm:items-center justify-center bg-[#4A220D]/55 backdrop-blur-xs p-0 sm:p-4"
             role="dialog"
             aria-modal="true"
           >
             <form
               onSubmit={handleSaveMemberEdit}
-              className="w-full max-w-lg bg-white border-2 border-[#EADBC8] rounded-3xl p-5 sm:p-6 space-y-4 shadow-xl max-h-[90vh] overflow-y-auto"
+              className="w-full sm:max-w-lg bg-white border-2 border-[#EADBC8] rounded-t-3xl sm:rounded-3xl p-5 sm:p-6 pb-safe space-y-4 shadow-xl max-h-[92dvh] overflow-y-auto"
               dir="rtl"
             >
               <div className="flex items-center justify-between gap-2 pb-3 border-b border-[#F7EBDD]">

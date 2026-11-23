@@ -166,7 +166,7 @@ export const DatabaseTransferModal: React.FC<DatabaseTransferModalProps> = ({
       aria-modal="true"
       aria-labelledby="db-transfer-title"
     >
-      <div className="w-full sm:max-w-2xl bg-white border-2 border-[#EADBC8] rounded-t-3xl sm:rounded-3xl shadow-xl max-h-[92vh] flex flex-col">
+      <div className="w-full sm:max-w-2xl bg-white border-2 border-[#EADBC8] rounded-t-3xl sm:rounded-3xl shadow-xl max-h-[92dvh] pb-safe flex flex-col">
         {/* Header */}
         <div className="px-5 sm:px-6 py-4 border-b-2 border-[#F7EBDD] flex items-center justify-between gap-4 shrink-0">
           <div className="flex items-center gap-2.5">

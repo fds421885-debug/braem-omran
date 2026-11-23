@@ -296,35 +296,35 @@ export const TeacherBookWorkspace: React.FC<TeacherBookWorkspaceProps> = ({
     <div className="space-y-5" dir="rtl">
       {/* Top Student & Date Control Card */}
       <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-4 sm:p-6 space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
             <button
               type="button"
               onClick={onBack}
-              className="duo-btn-cream min-h-[42px] px-3.5 py-2 rounded-xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer shrink-0"
+              className="duo-btn-cream min-h-[42px] px-3 sm:px-3.5 py-2 rounded-xl font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer shrink-0"
             >
               <ArrowRight className="w-4 h-4" />
               <span>قائمة الطلاب</span>
             </button>
             <div className="min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="px-2.5 py-0.5 rounded-lg bg-[#F56900]/15 text-[#F56900] font-display font-extrabold text-xs tabular-nums">
+              <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                <span className="px-2 sm:px-2.5 py-0.5 rounded-lg bg-[#F56900]/15 text-[#F56900] font-display font-extrabold text-[11px] sm:text-xs tabular-nums">
                   طالب #{toArabicIndicDigits(studentNumber)}
                 </span>
-                <span className="px-2.5 py-0.5 rounded-lg bg-[#58CC02]/15 text-[#46A302] font-display font-extrabold text-xs inline-flex items-center gap-1">
-                  <BookMarked className="w-3.5 h-3.5" />
-                  <span>{curriculum.bookTitle}</span>
+                <span className="px-2 sm:px-2.5 py-0.5 rounded-lg bg-[#58CC02]/15 text-[#46A302] font-display font-extrabold text-[11px] sm:text-xs inline-flex items-center gap-1 max-w-full truncate">
+                  <BookMarked className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">{curriculum.bookTitle}</span>
                 </span>
               </div>
-              <h2 className="font-display text-lg sm:text-2xl font-extrabold text-[#4A220D] truncate mt-1">
+              <h2 className="font-display text-base sm:text-2xl font-extrabold text-[#4A220D] truncate mt-1">
                 {student.quadrupleName}
               </h2>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-1.5 bg-[#FDF6EE] border-2 border-[#EADBC8] rounded-xl px-3 py-1.5">
-              <Calendar className="w-4 h-4 text-[#F56900]" />
+          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+            <div className="flex items-center gap-1.5 bg-[#FDF6EE] border-2 border-[#EADBC8] rounded-xl px-3 py-1.5 flex-1 sm:flex-initial">
+              <Calendar className="w-4 h-4 text-[#F56900] shrink-0" />
               <input
                 type="date"
                 value={dateKey}
@@ -332,7 +332,7 @@ export const TeacherBookWorkspace: React.FC<TeacherBookWorkspaceProps> = ({
                   if (e.target.value) setDateKey(e.target.value);
                 }}
                 aria-label="تاريخ المتابعة"
-                className="bg-transparent text-xs sm:text-sm font-bold text-[#4A220D] focus:outline-none cursor-pointer"
+                className="bg-transparent w-full text-xs sm:text-sm font-bold text-[#4A220D] focus:outline-none cursor-pointer"
               />
             </div>
 
@@ -346,7 +346,7 @@ export const TeacherBookWorkspace: React.FC<TeacherBookWorkspaceProps> = ({
                 )
               }
               disabled={saving || loading}
-              className="duo-btn-green min-h-[42px] px-4 py-2 rounded-xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
+              className="duo-btn-green flex-1 sm:flex-initial min-h-[42px] px-4 py-2 rounded-xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60"
             >
               <Save className="w-4 h-4" />
               <span>{saving ? 'جاري الحفظ...' : 'حفظ الخطة'}</span>
@@ -356,8 +356,8 @@ export const TeacherBookWorkspace: React.FC<TeacherBookWorkspaceProps> = ({
 
         {/* Recorded History Chips */}
         {historyRecords.length > 0 && (
-          <div className="pt-2 border-t border-[#EADBC8] flex flex-wrap items-center gap-2">
-            <span className="text-xs font-extrabold text-[#7D4E35] inline-flex items-center gap-1">
+          <div className="pt-2 border-t border-[#EADBC8] flex flex-nowrap sm:flex-wrap items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+            <span className="text-xs font-extrabold text-[#7D4E35] inline-flex items-center gap-1 shrink-0">
               <History className="w-3.5 h-3.5 text-[#F56900]" />
               <span>سجلات سابقة:</span>
             </span>
@@ -368,7 +368,7 @@ export const TeacherBookWorkspace: React.FC<TeacherBookWorkspaceProps> = ({
                   key={rec.id}
                   type="button"
                   onClick={() => setDateKey(rec.dateKey)}
-                  className={`px-2.5 py-1 rounded-xl text-xs font-bold border transition-colors cursor-pointer tabular-nums ${
+                  className={`px-2.5 py-1 rounded-xl text-xs font-bold border transition-colors cursor-pointer tabular-nums shrink-0 ${
                     active
                       ? 'bg-[#F56900] border-[#C95200] text-white'
                       : 'bg-[#FDF6EE] border-[#EADBC8] text-[#4A220D] hover:border-[#F56900]'
@@ -428,7 +428,7 @@ export const TeacherBookWorkspace: React.FC<TeacherBookWorkspaceProps> = ({
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 sm:gap-3">
               <button
                 type="button"
                 onClick={() =>
@@ -437,14 +437,14 @@ export const TeacherBookWorkspace: React.FC<TeacherBookWorkspaceProps> = ({
                     initialPage: whereWeReachedPage,
                   })
                 }
-                className="duo-btn-green min-h-[48px] px-5 py-2.5 rounded-2xl font-display font-extrabold text-sm inline-flex items-center gap-2 cursor-pointer"
+                className="duo-btn-green w-full sm:w-auto min-h-[48px] px-5 py-2.5 rounded-2xl font-display font-extrabold text-sm inline-flex items-center justify-center gap-2 cursor-pointer"
               >
                 <BookOpen className="w-5 h-5" />
                 <span>فتح الكتاب عند صفحة {toArabicIndicDigits(whereWeReachedPage)}</span>
               </button>
 
               {matchedBook && (
-                <span className="text-xs font-bold text-[#7D4E35] bg-[#FDF6EE] border border-[#EADBC8] px-3 py-2 rounded-xl tabular-nums">
+                <span className="text-xs font-bold text-[#7D4E35] bg-[#FDF6EE] border border-[#EADBC8] px-3 py-2 rounded-xl tabular-nums text-center sm:text-right">
                   إجمالي صفحات الكتاب: {toArabicIndicDigits(matchedBook.totalPages)}
                 </span>
               )}

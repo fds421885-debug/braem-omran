@@ -172,10 +172,10 @@ export const DatabaseUsageDashboard: React.FC<DatabaseUsageDashboardProps> = ({
         </div>
 
         {/* Complex Scope Selector */}
-        <div className="pt-3 border-t border-[#EADBC8] flex flex-wrap items-center gap-3">
+        <div className="pt-3 border-t border-[#EADBC8] flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
           <label
             htmlFor="db-usage-scope-select"
-            className="text-xs sm:text-sm font-display font-extrabold text-[#4A220D]"
+            className="text-xs sm:text-sm font-display font-extrabold text-[#4A220D] shrink-0"
           >
             نطاق الفحص:
           </label>
@@ -183,7 +183,7 @@ export const DatabaseUsageDashboard: React.FC<DatabaseUsageDashboardProps> = ({
             id="db-usage-scope-select"
             value={selectedComplexId}
             onChange={(e) => setSelectedComplexId(e.target.value)}
-            className="min-h-[44px] px-3.5 py-2 rounded-2xl border-2 border-[#EADBC8] bg-[#FDF6EE] font-display font-bold text-xs sm:text-sm text-[#4A220D] cursor-pointer min-w-[240px]"
+            className="min-h-[44px] w-full sm:w-auto sm:min-w-[260px] max-w-full px-3.5 py-2 rounded-2xl border-2 border-[#EADBC8] bg-[#FDF6EE] font-display font-bold text-xs sm:text-sm text-[#4A220D] cursor-pointer"
           >
             <option value="all">جميع القواعد والمجمعات (شامل القاعدة الأساسية)</option>
             <option value="primary">القاعدة الأساسية للموقع فقط</option>
@@ -216,12 +216,12 @@ export const DatabaseUsageDashboard: React.FC<DatabaseUsageDashboardProps> = ({
           {/* 4 Summary KPI Cards */}
           <section
             aria-label="ملخص استهلاك قواعد البيانات"
-            className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4"
+            className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4"
           >
-            <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 flex items-center justify-between gap-3">
-              <div>
-                <p className="text-xs font-bold text-[#7D4E35]">عدد القواعد المفحوصة</p>
-                <p className="font-display text-3xl font-extrabold text-[#4A220D] tabular-nums mt-1">
+            <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-3.5 sm:p-5 flex items-center justify-between gap-2.5 sm:gap-3">
+              <div className="min-w-0">
+                <p className="text-[11px] sm:text-xs font-bold text-[#7D4E35]">عدد القواعد المفحوصة</p>
+                <p className="font-display text-2xl sm:text-3xl font-extrabold text-[#4A220D] tabular-nums mt-1">
                   {toArabicIndicDigits(report.totalDatabasesCount)}
                 </p>
                 <p className="text-[11px] font-semibold text-[#7D4E35] mt-1 tabular-nums">
@@ -229,53 +229,53 @@ export const DatabaseUsageDashboard: React.FC<DatabaseUsageDashboardProps> = ({
                   {toArabicIndicDigits(report.databases.filter((d) => d.reachable).length)}
                 </p>
               </div>
-              <div className="w-12 h-12 rounded-2xl bg-[#F56900]/12 text-[#F56900] flex items-center justify-center shrink-0">
-                <Database className="w-6 h-6" />
+              <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl bg-[#F56900]/12 text-[#F56900] flex items-center justify-center shrink-0">
+                <Database className="w-5 h-5 sm:w-6 sm:h-6" />
               </div>
             </div>
 
-            <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 flex items-center justify-between gap-3">
-              <div>
-                <p className="text-xs font-bold text-[#7D4E35]">إجمالي السجلات (المستندات)</p>
-                <p className="font-display text-3xl font-extrabold text-[#4A220D] tabular-nums mt-1">
+            <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-3.5 sm:p-5 flex items-center justify-between gap-2.5 sm:gap-3">
+              <div className="min-w-0">
+                <p className="text-[11px] sm:text-xs font-bold text-[#7D4E35]">إجمالي السجلات</p>
+                <p className="font-display text-2xl sm:text-3xl font-extrabold text-[#4A220D] tabular-nums mt-1">
                   {report.totalDocsCount.toLocaleString('en-US')}
                 </p>
                 <p className="text-[11px] font-semibold text-[#7D4E35] mt-1">
                   عبر جميع المجموعات
                 </p>
               </div>
-              <div className="w-12 h-12 rounded-2xl bg-[#FFA900]/15 text-[#D98A00] flex items-center justify-center shrink-0">
-                <Layers className="w-6 h-6" />
+              <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl bg-[#FFA900]/15 text-[#D98A00] flex items-center justify-center shrink-0">
+                <Layers className="w-5 h-5 sm:w-6 sm:h-6" />
               </div>
             </div>
 
-            <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 flex items-center justify-between gap-3">
-              <div>
-                <p className="text-xs font-bold text-[#7D4E35]">المساحة المستهلكة</p>
-                <p className="font-display text-xl sm:text-2xl font-extrabold text-[#F56900] tabular-nums mt-1">
+            <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-3.5 sm:p-5 flex items-center justify-between gap-2.5 sm:gap-3">
+              <div className="min-w-0">
+                <p className="text-[11px] sm:text-xs font-bold text-[#7D4E35]">المساحة المستهلكة</p>
+                <p className="font-display text-lg sm:text-2xl font-extrabold text-[#F56900] tabular-nums mt-1 truncate">
                   {formatBytesReadable(report.totalUsedBytes)}
                 </p>
                 <p className="text-[11px] font-semibold text-[#7D4E35] mt-1 tabular-nums">
-                  نسبة الإشغال: {totalUsagePercent.toFixed(4)}%
+                  الإشغال: {totalUsagePercent.toFixed(4)}%
                 </p>
               </div>
-              <div className="w-12 h-12 rounded-2xl bg-[#F56900]/12 text-[#F56900] flex items-center justify-center shrink-0">
-                <HardDrive className="w-6 h-6" />
+              <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl bg-[#F56900]/12 text-[#F56900] flex items-center justify-center shrink-0">
+                <HardDrive className="w-5 h-5 sm:w-6 sm:h-6" />
               </div>
             </div>
 
-            <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 flex items-center justify-between gap-3">
-              <div>
-                <p className="text-xs font-bold text-[#7D4E35]">كم باقي على الحدود</p>
-                <p className="font-display text-xl sm:text-2xl font-extrabold text-[#46A302] tabular-nums mt-1">
+            <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-3.5 sm:p-5 flex items-center justify-between gap-2.5 sm:gap-3">
+              <div className="min-w-0">
+                <p className="text-[11px] sm:text-xs font-bold text-[#7D4E35]">باقي على الحدود</p>
+                <p className="font-display text-lg sm:text-2xl font-extrabold text-[#46A302] tabular-nums mt-1 truncate">
                   {formatBytesReadable(report.totalRemainingBytes)}
                 </p>
                 <p className="text-[11px] font-semibold text-[#7D4E35] mt-1 tabular-nums">
-                  الحد المجمع: {formatLimitGbLabel(report.totalLimitBytes)}
+                  الحد: {formatLimitGbLabel(report.totalLimitBytes)}
                 </p>
               </div>
-              <div className="w-12 h-12 rounded-2xl bg-[#58CC02]/15 text-[#46A302] flex items-center justify-center shrink-0">
-                <CheckCircle2 className="w-6 h-6" />
+              <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl bg-[#58CC02]/15 text-[#46A302] flex items-center justify-center shrink-0">
+                <CheckCircle2 className="w-5 h-5 sm:w-6 sm:h-6" />
               </div>
             </div>
           </section>
@@ -463,7 +463,7 @@ export const DatabaseUsageDashboard: React.FC<DatabaseUsageDashboardProps> = ({
                         </h3>
                       </div>
 
-                      <p className="text-xs font-mono text-[#7D4E35]" dir="ltr">
+                      <p className="text-xs font-mono text-[#7D4E35] break-all" dir="ltr">
                         {dbItem.projectId} / {dbItem.firestoreDatabaseId}
                       </p>
 
@@ -537,51 +537,85 @@ export const DatabaseUsageDashboard: React.FC<DatabaseUsageDashboardProps> = ({
                     </div>
                   </div>
 
-                  {/* Per-Collection Breakdown Table */}
+                  {/* Per-Collection Breakdown: Mobile Cards + Desktop Table */}
                   {isExpanded && dbItem.collections.length > 0 && (
-                    <div className="overflow-x-auto border border-[#EADBC8] rounded-2xl">
-                      <table className="w-full text-right border-collapse text-xs sm:text-sm">
-                        <thead className="bg-[#FDF6EE] text-[#7D4E35] font-display font-extrabold">
-                          <tr>
-                            <th className="py-2.5 px-3.5 border-b border-[#EADBC8]">المجموعة</th>
-                            <th className="py-2.5 px-3.5 border-b border-[#EADBC8]">اسم المجموعة البرمجي</th>
-                            <th className="py-2.5 px-3.5 border-b border-[#EADBC8]">عدد السجلات</th>
-                            <th className="py-2.5 px-3.5 border-b border-[#EADBC8]">المساحة</th>
-                            <th className="py-2.5 px-3.5 border-b border-[#EADBC8]">الحصة</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {dbItem.collections.map((colItem) => {
-                            const colPct =
-                              dbItem.usedBytes > 0
-                                ? ((colItem.usedBytes / dbItem.usedBytes) * 100).toFixed(1)
-                                : '0.0';
-                            return (
-                              <tr
-                                key={colItem.collection}
-                                className="border-b border-[#F7EBDD] last:border-b-0 hover:bg-[#FDF6EE]/60"
-                              >
-                                <td className="py-2.5 px-3.5 font-bold text-[#4A220D]">
+                    <>
+                      <div className="md:hidden grid grid-cols-1 gap-2">
+                        {dbItem.collections.map((colItem) => {
+                          const colPct =
+                            dbItem.usedBytes > 0
+                              ? ((colItem.usedBytes / dbItem.usedBytes) * 100).toFixed(1)
+                              : '0.0';
+                          return (
+                            <div
+                              key={colItem.collection}
+                              className="rounded-2xl border border-[#EADBC8] bg-[#FDF6EE]/70 p-3 flex items-center justify-between gap-3"
+                            >
+                              <div className="min-w-0">
+                                <p className="font-display font-bold text-xs text-[#4A220D] truncate">
                                   {colItem.label}
-                                </td>
-                                <td className="py-2.5 px-3.5 font-mono text-xs text-[#7D4E35]" dir="ltr">
+                                </p>
+                                <p className="font-mono text-[11px] text-[#7D4E35] truncate" dir="ltr">
                                   {colItem.collection}
-                                </td>
-                                <td className="py-2.5 px-3.5 font-bold text-[#4A220D] tabular-nums">
-                                  {colItem.docsCount.toLocaleString('en-US')}
-                                </td>
-                                <td className="py-2.5 px-3.5 font-bold text-[#F56900] tabular-nums">
-                                  {formatBytesReadable(colItem.usedBytes)}
-                                </td>
-                                <td className="py-2.5 px-3.5 font-bold text-[#7D4E35] tabular-nums">
-                                  {colPct}%
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
+                                </p>
+                              </div>
+                              <div className="text-left shrink-0 space-y-0.5 tabular-nums">
+                                <p className="font-display font-extrabold text-xs text-[#F56900]">
+                                  {formatBytesReadable(colItem.usedBytes)} ({colPct}%)
+                                </p>
+                                <p className="text-[11px] font-bold text-[#7D4E35]">
+                                  {colItem.docsCount.toLocaleString('en-US')} سجل
+                                </p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      <div className="hidden md:block overflow-x-auto border border-[#EADBC8] rounded-2xl">
+                        <table className="w-full text-right border-collapse text-xs sm:text-sm">
+                          <thead className="bg-[#FDF6EE] text-[#7D4E35] font-display font-extrabold">
+                            <tr>
+                              <th className="py-2.5 px-3.5 border-b border-[#EADBC8]">المجموعة</th>
+                              <th className="py-2.5 px-3.5 border-b border-[#EADBC8]">اسم المجموعة البرمجي</th>
+                              <th className="py-2.5 px-3.5 border-b border-[#EADBC8]">عدد السجلات</th>
+                              <th className="py-2.5 px-3.5 border-b border-[#EADBC8]">المساحة</th>
+                              <th className="py-2.5 px-3.5 border-b border-[#EADBC8]">الحصة</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {dbItem.collections.map((colItem) => {
+                              const colPct =
+                                dbItem.usedBytes > 0
+                                  ? ((colItem.usedBytes / dbItem.usedBytes) * 100).toFixed(1)
+                                  : '0.0';
+                              return (
+                                <tr
+                                  key={colItem.collection}
+                                  className="border-b border-[#F7EBDD] last:border-b-0 hover:bg-[#FDF6EE]/60"
+                                >
+                                  <td className="py-2.5 px-3.5 font-bold text-[#4A220D]">
+                                    {colItem.label}
+                                  </td>
+                                  <td className="py-2.5 px-3.5 font-mono text-xs text-[#7D4E35]" dir="ltr">
+                                    {colItem.collection}
+                                  </td>
+                                  <td className="py-2.5 px-3.5 font-bold text-[#4A220D] tabular-nums">
+                                    {colItem.docsCount.toLocaleString('en-US')}
+                                  </td>
+                                  <td className="py-2.5 px-3.5 font-bold text-[#F56900] tabular-nums">
+                                    {formatBytesReadable(colItem.usedBytes)}
+                                  </td>
+                                  <td className="py-2.5 px-3.5 font-bold text-[#7D4E35] tabular-nums">
+                                    {colPct}%
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
                   )}
                 </article>
               );
