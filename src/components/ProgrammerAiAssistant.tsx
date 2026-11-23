@@ -279,7 +279,7 @@ export const ProgrammerAiAssistant: React.FC<ProgrammerAiAssistantProps> = ({
       }
 
       const controller = new AbortController();
-      const abortTimer = window.setTimeout(() => controller.abort(), 22000);
+      const abortTimer = window.setTimeout(() => controller.abort(), 35000);
       let resp: Response;
       try {
         resp = await fetch('/api/admin/ai-chat', {

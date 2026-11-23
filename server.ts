@@ -12,13 +12,83 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT) || 3000;
-const IS_PROD = process.env.NODE_ENV === 'production';
+const DIST_DIR = path.resolve(__dirname, 'dist');
+const DIST_INDEX = path.join(DIST_DIR, 'index.html');
+const IS_RENDER =
+  process.env.RENDER === 'true' ||
+  Boolean(process.env.RENDER_EXTERNAL_URL) ||
+  Boolean(process.env.RENDER_SERVICE_ID);
+const IS_PROD =
+  process.env.NODE_ENV === 'production' ||
+  IS_RENDER ||
+  (fs.existsSync(DIST_INDEX) &&
+    process.env.DISABLE_HMR !== 'true' &&
+    process.env.NODE_ENV !== 'development');
+
+function cleanEnvSecret(raw?: string): string {
+  if (typeof raw !== 'string') return '';
+  return raw.trim().replace(/^["']|["']$/g, '').trim();
+}
+
+function getConfiguredGeminiKey(customApiKey?: string): string {
+  const custom = cleanEnvSecret(customApiKey);
+  if (custom) return custom;
+  return (
+    cleanEnvSecret(process.env.GEMINI_API_KEY) ||
+    cleanEnvSecret(process.env.GOOGLE_API_KEY) ||
+    cleanEnvSecret(process.env.API_KEY)
+  );
+}
+
+function isAiStudioManagedModel(modelName: string): boolean {
+  return (
+    modelName === 'gemini-4-hydrogen' ||
+    modelName === 'gemini-3.1-flash-lite' ||
+    modelName === 'gemini-3.8-flash-lite-tts'
+  );
+}
+
+function shouldPreferPublicGeminiModels(customApiKey?: string): boolean {
+  const cleanedCustom = cleanEnvSecret(customApiKey);
+  if (IS_RENDER) return true;
+  if (cleanedCustom && !process.env.DISABLE_HMR) return true;
+  return false;
+}
+
+function buildOrderedModels(
+  aiStudioModels: string[],
+  publicModels: string[],
+  preferPublic: boolean
+): string[] {
+  return preferPublic ? [...publicModels, ...aiStudioModels] : [...aiStudioModels, ...publicModels];
+}
+
+function isModelRetryableOrFallbackError(err: unknown): boolean {
+  const errObj = err as { status?: number; code?: number; message?: string };
+  const statusCode = Number(errObj?.status || errObj?.code || 0);
+  const lower = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  if (statusCode === 404 || lower.includes('not_found') || lower.includes('not found')) {
+    return true;
+  }
+  // Invalid model/thinking argument for a specific model variant (e.g. 400 INVALID_ARGUMENT), not API_KEY_INVALID
+  if (
+    statusCode === 400 &&
+    !lower.includes('api_key_invalid') &&
+    !lower.includes('api key not valid')
+  ) {
+    return true;
+  }
+  if (statusCode === 429 || statusCode === 500 || statusCode === 503 || statusCode === 504) {
+    return true;
+  }
+  if (lower.includes('timeout') || lower.includes('network') || lower.includes('resource_exhausted')) {
+    return true;
+  }
+  return false;
+}
 
 function getGeminiClient(customApiKey?: string): GoogleGenAI {
-  const apiKey =
-    typeof customApiKey === 'string' && customApiKey.trim().length > 0
-      ? customApiKey.trim()
-      : process.env.GEMINI_API_KEY;
+  const apiKey = getConfiguredGeminiKey(customApiKey);
   if (!apiKey) {
     throw new Error('GEMINI_API_KEY is not configured on the server.');
   }
@@ -43,7 +113,8 @@ function getFriendlyGeminiError(err: unknown): { status: number; message: string
   if (lower.includes('gemini_api_key')) {
     return {
       status: 500,
-      message: 'مفتاح الذكاء الاصطناعي غير مضبوط على الخادم (Settings > Secrets).',
+      message:
+        'مفتاح الذكاء الاصطناعي غير مضبوط على الخادم (أضف GEMINI_API_KEY في متغيرات البيئة على Render ثم أعد النشر).',
     };
   }
   if (lower.includes('timeout')) {
@@ -53,19 +124,25 @@ function getFriendlyGeminiError(err: unknown): { status: number; message: string
     };
   }
   if (
-    statusCode === 400 ||
-    lower.includes('api_key_invalid') ||
-    lower.includes('api key not valid')
+    statusCode === 400 &&
+    (lower.includes('api_key_invalid') || lower.includes('api key not valid'))
   ) {
     return {
       status: 400,
       message: 'مفتاح Gemini API غير صالح أو يفتقد الإعداد المطلوب.',
     };
   }
+  if (statusCode === 400) {
+    return {
+      status: 400,
+      message: 'تعذّر قبول الطلب من واجهة Gemini API؛ تأكد من صحة المفتاح وصلاحياته.',
+    };
+  }
   if (statusCode === 403 || lower.includes('permission_denied') || lower.includes('403')) {
     return {
       status: 403,
-      message: 'تم رفض الصلاحية لمفتاح Gemini API؛ يرجى مراجعة المفتاح أو تفعيل خدمة Generative Language API.',
+      message:
+        'تم رفض الصلاحية لمفتاح Gemini API؛ يرجى مراجعة المفتاح أو تفعيل خدمة Generative Language API.',
     };
   }
   if (statusCode === 404 || lower.includes('not_found')) {
@@ -243,7 +320,18 @@ function setLruCache<K, V>(cache: Map<K, V>, key: K, val: V, maxSize = 250): voi
 
 async function startServer() {
   const app = express();
+  app.set('trust proxy', 1);
   app.use(express.json({ limit: '25mb' }));
+
+  app.get('/api/health', (_req: Request, res: Response) => {
+    res.json({
+      ok: true,
+      runtime: IS_RENDER ? 'render' : 'node',
+      isProd: IS_PROD,
+      hasGeminiKey: Boolean(getConfiguredGeminiKey()),
+      nodeVersion: process.version,
+    });
+  });
 
   // 1. Analyze an uploaded book page image (OCR with full Arabic Tashkeel + Bounding Boxes + Quran Ayah detection)
   app.post('/api/books/analyze-page', async (req: Request, res: Response) => {
@@ -296,8 +384,9 @@ async function startServer() {
 - تأكد أن 0 <= ymin < ymax <= 1000 و 0 <= xmin < xmax <= 1000 لكل كلمة.`;
 
       const runAnalyzeModel = async (
-        modelName: 'gemini-4-hydrogen' | 'gemini-3.1-flash-lite',
-        timeoutMs: number
+        modelName: string,
+        timeoutMs: number,
+        useMediaRes = true
       ) =>
         await withTimeout(
           withRetry(() =>
@@ -315,7 +404,9 @@ async function startServer() {
                 ],
               },
               config: {
-                mediaResolution: MediaResolution.MEDIA_RESOLUTION_HIGH,
+                ...(useMediaRes && isAiStudioManagedModel(modelName)
+                  ? { mediaResolution: MediaResolution.MEDIA_RESOLUTION_HIGH }
+                  : {}),
                 responseMimeType: 'application/json',
                 responseSchema: {
                   type: Type.OBJECT,
@@ -351,15 +442,26 @@ async function startServer() {
           timeoutMs
         );
 
+      const analyzeCandidates = buildOrderedModels(
+        ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'],
+        ['gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+        shouldPreferPublicGeminiModels()
+      );
       let result;
-      try {
-        result = await runAnalyzeModel('gemini-4-hydrogen', 16000);
-      } catch (primaryErr) {
-        const errCode = Number((primaryErr as { status?: number })?.status || 0);
-        if (errCode === 400 || errCode === 403) {
-          throw primaryErr;
+      let lastAnalyzeErr: unknown;
+      for (const candidateModel of analyzeCandidates) {
+        try {
+          result = await runAnalyzeModel(candidateModel, 20000);
+          break;
+        } catch (err) {
+          lastAnalyzeErr = err;
+          if (!isModelRetryableOrFallbackError(err)) {
+            throw err;
+          }
         }
-        result = await runAnalyzeModel('gemini-3.1-flash-lite', 20000);
+      }
+      if (!result) {
+        throw lastAnalyzeErr || new Error('No vision model succeeded.');
       }
 
       const rawJson = (result.text ?? '{}')
@@ -452,22 +554,23 @@ async function startServer() {
    - "ruleLabel": القاعدة مثل (فتحة، كسرة، ضمة، لام قمرية مظهرة، لام شمسية مدغمة، مد بالألف حركتان، سكون، شدة وفتحة، تنوين بالضم...)
    - "reading": النتيجة المجمعة حتى هذه الخطوة بالحركات الكاملة.`;
 
-      const runNoorModel = async (
-        modelName: 'gemini-3.1-flash-lite' | 'gemini-4-hydrogen',
-        timeoutMs: number
-      ) =>
+      const runNoorModel = async (modelName: string, timeoutMs: number) =>
         await withTimeout(
           withRetry(() =>
             ai.models.generateContent({
               model: modelName,
               contents: prompt,
               config: {
-                thinkingConfig: {
-                  thinkingLevel:
-                    modelName === 'gemini-3.1-flash-lite'
-                      ? ThinkingLevel.MINIMAL
-                      : ThinkingLevel.LOW,
-                },
+                ...(isAiStudioManagedModel(modelName)
+                  ? {
+                      thinkingConfig: {
+                        thinkingLevel:
+                          modelName === 'gemini-3.1-flash-lite'
+                            ? ThinkingLevel.MINIMAL
+                            : ThinkingLevel.LOW,
+                      },
+                    }
+                  : {}),
                 responseMimeType: 'application/json',
                 responseSchema: {
                   type: Type.OBJECT,
@@ -496,18 +599,33 @@ async function startServer() {
           timeoutMs
         );
 
+      const noorCandidates = buildOrderedModels(
+        ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'],
+        ['gemini-2.5-flash-lite', 'gemini-2.5-flash'],
+        shouldPreferPublicGeminiModels()
+      );
       let result;
-      try {
-        result = await runNoorModel('gemini-3.1-flash-lite', 9000);
-      } catch (primaryErr) {
-        const errCode = Number((primaryErr as { status?: number })?.status || 0);
-        if (errCode === 400 || errCode === 403) {
-          throw primaryErr;
+      let lastNoorErr: unknown;
+      for (const candidateModel of noorCandidates) {
+        try {
+          result = await runNoorModel(candidateModel, 12000);
+          break;
+        } catch (err) {
+          lastNoorErr = err;
+          if (!isModelRetryableOrFallbackError(err)) {
+            throw err;
+          }
         }
-        result = await runNoorModel('gemini-4-hydrogen', 11000);
+      }
+      if (!result) {
+        throw lastNoorErr || new Error('No Noor Al-Bayan model succeeded.');
       }
 
-      const rawJson = (result.text ?? '{}').trim();
+      const rawJson = (result.text ?? '{}')
+        .trim()
+        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/\s*```$/i, '')
+        .trim();
       const parsed = JSON.parse(rawJson) as RawNoorResponse;
       const vocalized = String(parsed.diacritizedWord || target).trim();
       const script = String(parsed.tahajjiScript || vocalized).trim();
@@ -553,32 +671,52 @@ async function startServer() {
       }
 
       const ai = getGeminiClient();
-      const response = await withTimeout(
-        withRetry(() =>
-          ai.models.generateContent({
-            model: 'gemini-3.8-flash-lite-tts',
-            contents: [
-              {
-                role: 'user',
-                parts: [
+      const ttsCandidates = buildOrderedModels(
+        ['gemini-3.8-flash-lite-tts'],
+        ['gemini-2.5-flash-preview-tts'],
+        shouldPreferPublicGeminiModels()
+      );
+      let response;
+      let lastTtsErr: unknown;
+      for (const candidateModel of ttsCandidates) {
+        try {
+          response = await withTimeout(
+            withRetry(() =>
+              ai.models.generateContent({
+                model: candidateModel,
+                contents: [
                   {
-                    text: spokenText,
+                    role: 'user',
+                    parts: [
+                      {
+                        text: spokenText,
+                      },
+                    ],
                   },
                 ],
-              },
-            ],
-            config: {
-              responseModalities: ['AUDIO'],
-              speechConfig: {
-                voiceConfig: {
-                  prebuiltVoiceConfig: { voiceName: 'Charon' },
+                config: {
+                  responseModalities: ['AUDIO'],
+                  speechConfig: {
+                    voiceConfig: {
+                      prebuiltVoiceConfig: { voiceName: 'Charon' },
+                    },
+                  },
                 },
-              },
-            },
-          })
-        ),
-        10500
-      );
+              })
+            ),
+            12000
+          );
+          break;
+        } catch (err) {
+          lastTtsErr = err;
+          if (!isModelRetryableOrFallbackError(err)) {
+            throw err;
+          }
+        }
+      }
+      if (!response) {
+        throw lastTtsErr || new Error('No TTS model succeeded.');
+      }
 
       const audioPart = response.candidates?.[0]?.content?.parts?.find(
         (p) => Boolean(p.inlineData?.data)
@@ -659,20 +797,15 @@ ${safeContext || 'لم يتم إرفاق بيانات بعد.'}`;
       ];
 
       const startedAt = Date.now();
-      const callModel = async (
-        modelName: 'gemini-3.1-flash-lite' | 'gemini-4-hydrogen',
-        timeoutMs: number
-      ) => {
-        const thinkingLevel =
-          modelName === 'gemini-3.1-flash-lite'
-            ? ThinkingLevel.LOW
-            : ThinkingLevel.LOW;
+      const callModel = async (modelName: string, timeoutMs: number) => {
         return await withTimeout(
           ai.models.generateContent({
             model: modelName,
             contents,
             config: {
-              thinkingConfig: { thinkingLevel },
+              ...(isAiStudioManagedModel(modelName)
+                ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+                : {}),
               systemInstruction,
             },
           }),
@@ -680,17 +813,30 @@ ${safeContext || 'لم يتم إرفاق بيانات بعد.'}`;
         );
       };
 
+      const chatCandidates = buildOrderedModels(
+        ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'],
+        ['gemini-2.5-flash-lite', 'gemini-2.5-flash'],
+        shouldPreferPublicGeminiModels(trimmedCustomKey)
+      );
+
       let result;
-      try {
-        result = await callModel('gemini-3.1-flash-lite', 14000);
-      } catch (primaryErr) {
-        const rawErr = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
-        console.warn('[AI Chat Primary Fallback]', rawErr.slice(0, 220));
-        const errCode = Number((primaryErr as { status?: number })?.status || 0);
-        if (errCode === 400 || errCode === 403) {
-          throw primaryErr;
+      let lastChatErr: unknown;
+      for (const candidateModel of chatCandidates) {
+        try {
+          result = await callModel(candidateModel, 18000);
+          break;
+        } catch (candidateErr) {
+          lastChatErr = candidateErr;
+          const rawErr =
+            candidateErr instanceof Error ? candidateErr.message : String(candidateErr);
+          console.warn(`[AI Chat fallback from ${candidateModel}]`, rawErr.slice(0, 220));
+          if (!isModelRetryableOrFallbackError(candidateErr)) {
+            throw candidateErr;
+          }
         }
-        result = await callModel('gemini-4-hydrogen', 14000);
+      }
+      if (!result) {
+        throw lastChatErr || new Error('No chat model succeeded.');
       }
 
       const latencyMs = Date.now() - startedAt;
@@ -724,13 +870,25 @@ ${safeContext || 'لم يتم إرفاق بيانات بعد.'}`;
     }
   });
 
+  app.all('/api/*', (_req: Request, res: Response) => {
+    res.status(404).json({ error: 'API route not found.' });
+  });
+
   if (IS_PROD) {
-    const distDir = path.resolve(__dirname, 'dist');
-    app.use(express.static(distDir));
+    app.use(
+      express.static(DIST_DIR, {
+        setHeaders: (res, filePath) => {
+          const baseName = path.basename(filePath);
+          if (baseName === 'version.json' || baseName === 'sw.js' || baseName === 'index.html') {
+            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+          }
+        },
+      })
+    );
     app.get('*', (_req, res) => {
-      const indexFile = path.join(distDir, 'index.html');
-      if (fs.existsSync(indexFile)) {
-        res.sendFile(indexFile);
+      if (fs.existsSync(DIST_INDEX)) {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        res.sendFile(DIST_INDEX);
       } else {
         res.status(404).send('Build not found.');
       }

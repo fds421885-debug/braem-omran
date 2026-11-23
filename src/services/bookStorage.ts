@@ -523,7 +523,12 @@ export async function extractBookFilePages(
 function isStaticMissingApi(res: Response): boolean {
   const ct = (res.headers.get('content-type') || '').toLowerCase();
   if (res.status === 404 || res.status === 405 || res.status === 501) return true;
-  if (!ct.includes('application/json')) return true;
+  if (res.status >= 500) return false;
+  if (!ct.includes('application/json')) {
+    const isGitHubPages =
+      typeof window !== 'undefined' && window.location.hostname.endsWith('.github.io');
+    return isGitHubPages;
+  }
   return false;
 }
 
