@@ -12,10 +12,12 @@ import {
 
 interface NotificationPermissionButtonProps {
   variant?: 'compact' | 'banner';
+  responsiveLabel?: 'sm' | 'md' | 'xl';
 }
 
 export const NotificationPermissionButton: React.FC<NotificationPermissionButtonProps> = ({
   variant = 'compact',
+  responsiveLabel = 'xl',
 }) => {
   const [permission, setPermission] = useState<NotificationPermissionState>(() =>
     getNotificationPermissionState()
@@ -94,7 +96,7 @@ export const NotificationPermissionButton: React.FC<NotificationPermissionButton
               if (e.target === e.currentTarget) setShowHelpModal(false);
             }}
           >
-            <div className="w-full sm:max-w-md bg-white border-2 border-[#EADBC8] rounded-t-3xl sm:rounded-3xl p-5 sm:p-6 space-y-4 shadow-2xl">
+            <div className="w-full sm:max-w-md bg-white border-2 border-[#EADBC8] rounded-t-3xl sm:rounded-3xl p-5 sm:p-6 space-y-4 shadow-2xl max-h-[90dvh] pb-safe overflow-y-auto">
               <div className="flex items-center justify-between gap-2 pb-3 border-b-2 border-[#F7EBDD]">
                 <div className="flex items-center gap-2">
                   {permission === 'granted' ? (
@@ -252,7 +254,13 @@ export const NotificationPermissionButton: React.FC<NotificationPermissionButton
               : 'إشعارات الهاتف مفعّلة'
             : 'تفعيل الإشعارات الفورية على الهاتف'
         }
-        className={`min-h-[40px] min-w-[40px] sm:min-h-[42px] px-2.5 md:px-3 py-2 rounded-xl font-display font-bold text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+        className={`min-h-[40px] min-w-[40px] sm:min-h-[42px] py-1.5 sm:py-2 rounded-xl font-display font-bold text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+          responsiveLabel === 'sm'
+            ? 'px-2.5 sm:px-3'
+            : responsiveLabel === 'md'
+            ? 'px-2.5 md:px-3'
+            : 'px-2.5 xl:px-3'
+        } ${
           permission === 'granted' && !outdated
             ? 'bg-[#58CC02]/12 border-2 border-[#58CC02]/50 text-[#46A302] hover:bg-[#58CC02]/20'
             : 'duo-btn-cream'
@@ -261,17 +269,47 @@ export const NotificationPermissionButton: React.FC<NotificationPermissionButton
         {permission === 'granted' && !outdated ? (
           <>
             <BellRing className="w-4 h-4 text-[#46A302] shrink-0" />
-            <span className="hidden md:inline">الإشعارات مفعّلة</span>
+            <span
+              className={
+                responsiveLabel === 'sm'
+                  ? 'hidden sm:inline'
+                  : responsiveLabel === 'md'
+                  ? 'hidden md:inline'
+                  : 'hidden xl:inline'
+              }
+            >
+              الإشعارات مفعّلة
+            </span>
           </>
         ) : permission === 'granted' && outdated ? (
           <>
             <RefreshCw className={`w-4 h-4 text-[#F56900] shrink-0 ${requesting ? 'animate-spin' : ''}`} />
-            <span className="hidden md:inline">{requesting ? 'تحديث...' : 'تحديث الإشعارات'}</span>
+            <span
+              className={
+                responsiveLabel === 'sm'
+                  ? 'hidden sm:inline'
+                  : responsiveLabel === 'md'
+                  ? 'hidden md:inline'
+                  : 'hidden xl:inline'
+              }
+            >
+              {requesting ? 'تحديث...' : 'تحديث الإشعارات'}
+            </span>
           </>
         ) : (
           <>
             <Bell className="w-4 h-4 text-[#F56900] shrink-0" />
-            <span className="hidden md:inline">{requesting ? 'تفعيل...' : 'تفعيل الإشعارات'}</span>
+            <span
+              className={
+                responsiveLabel === 'sm'
+                  ? 'hidden sm:inline'
+                  : responsiveLabel === 'md'
+                  ? 'hidden md:inline'
+                  : 'hidden xl:inline'
+              }
+            >
+              {requesting ? 'تفعيل...' : 'تفعيل الإشعارات'}
+            </span>
           </>
         )}
       </button>

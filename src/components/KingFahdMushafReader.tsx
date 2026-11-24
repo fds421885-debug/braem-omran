@@ -547,14 +547,14 @@ export const KingFahdMushafReader: React.FC<KingFahdMushafReaderProps> = ({
           </div>
 
           {/* Controls: Surah Picker, Page Jump, Sheikh Reciter Selector */}
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-1.5 bg-[#FDF6EE] border-2 border-[#EADBC8] rounded-xl px-2.5 py-1 min-h-[42px]">
+          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 w-full md:w-auto justify-between md:justify-end">
+            <div className="flex items-center gap-1 bg-[#FDF6EE] border-2 border-[#EADBC8] rounded-xl px-2 py-1 min-h-[38px] sm:min-h-[42px] min-w-0 max-w-[155px] sm:max-w-none">
               <Volume2 className="w-4 h-4 text-[#F56900] shrink-0" />
               <select
                 value={reciterId}
                 onChange={(e) => handleReciterChange(e.target.value)}
                 aria-label="اختيار القارئ"
-                className="bg-transparent text-xs sm:text-sm font-bold text-[#4A220D] focus:outline-none cursor-pointer max-w-[165px] sm:max-w-none"
+                className="bg-transparent text-xs sm:text-sm font-bold text-[#4A220D] focus:outline-none cursor-pointer w-full truncate"
               >
                 {QURAN_RECITERS.map((r) => (
                   <option key={r.id} value={r.id}>
@@ -572,7 +572,7 @@ export const KingFahdMushafReader: React.FC<KingFahdMushafReaderProps> = ({
                   if (s) navigateToPage(s.startPage);
                 }}
                 aria-label="الانتقال إلى سورة"
-                className="min-h-[42px] px-2.5 py-1 rounded-xl border-2 border-[#EADBC8] bg-white text-xs sm:text-sm font-bold text-[#4A220D] cursor-pointer"
+                className="min-h-[38px] sm:min-h-[42px] max-w-[125px] sm:max-w-none px-2 sm:px-2.5 py-1 rounded-xl border-2 border-[#EADBC8] bg-white text-xs sm:text-sm font-bold text-[#4A220D] cursor-pointer truncate"
               >
                 {surahs.map((s) => (
                   <option key={s.n} value={s.n}>
@@ -582,9 +582,9 @@ export const KingFahdMushafReader: React.FC<KingFahdMushafReaderProps> = ({
               </select>
             )}
 
-            <form onSubmit={handlePageJumpSubmit} className="flex items-center gap-1">
+            <form onSubmit={handlePageJumpSubmit} className="flex items-center gap-1 shrink-0">
               <label htmlFor="mushaf-page-input" className="text-xs font-bold text-[#7D4E35]">
-                صفحة
+                ص
               </label>
               <input
                 id="mushaf-page-input"
@@ -593,7 +593,7 @@ export const KingFahdMushafReader: React.FC<KingFahdMushafReaderProps> = ({
                 max={604}
                 value={pageInput}
                 onChange={(e) => setPageInput(e.target.value)}
-                className="w-16 min-h-[42px] px-2 text-center rounded-xl border-2 border-[#EADBC8] bg-white font-display font-extrabold text-sm tabular-nums"
+                className="w-14 sm:w-16 min-h-[38px] sm:min-h-[42px] px-1.5 sm:px-2 text-center rounded-xl border-2 border-[#EADBC8] bg-white font-display font-extrabold text-xs sm:text-sm tabular-nums"
               />
             </form>
           </div>

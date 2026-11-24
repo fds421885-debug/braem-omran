@@ -45,28 +45,30 @@ export const RoleWelcomeView: React.FC<RoleWelcomeViewProps> = ({
     <div className="min-h-screen bg-[#FDF6EE] text-[#4A220D] flex flex-col justify-between">
       {/* Header */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b-2 border-[#EADBC8]">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 min-h-16 py-2 flex flex-wrap items-center justify-between gap-2.5">
-          <div className="flex items-center gap-2.5 shrink-0">
+        <div className="max-w-6xl mx-auto px-3 sm:px-6 min-h-14 sm:min-h-16 py-2 flex items-center justify-between gap-2 sm:gap-4">
+          <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
             <img
               src={`${BASE_URL}icon.svg`}
               alt="براعم عمران"
-              className="w-9 h-9 rounded-xl border border-[#EADBC8]"
+              className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl border border-[#EADBC8] shrink-0"
             />
-            <span className="font-display text-lg sm:text-xl font-extrabold text-[#4A220D] whitespace-nowrap">
+            <span className="font-display text-base sm:text-xl font-extrabold text-[#4A220D] whitespace-nowrap truncate">
               براعم عمران
             </span>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
-            <NotificationPermissionButton variant="compact" />
-            <PWAInstallButton variant="compact" />
+          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+            <NotificationPermissionButton variant="compact" responsiveLabel="md" />
+            <PWAInstallButton variant="compact" responsiveLabel="sm" />
             <button
               type="button"
               onClick={handleLogout}
-              className="min-h-[42px] px-3.5 py-2 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] font-display font-bold text-xs sm:text-sm inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              aria-label="تسجيل الخروج"
+              className="min-h-[40px] sm:min-h-[42px] px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
             >
               <LogOut className="w-4 h-4 shrink-0" />
-              <span>تسجيل الخروج</span>
+              <span className="hidden sm:inline">تسجيل الخروج</span>
+              <span className="sm:hidden">خروج</span>
             </button>
           </div>
         </div>

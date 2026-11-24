@@ -15,6 +15,7 @@ import {
   LogOut,
   Medal,
   Megaphone,
+  MoreVertical,
   RefreshCw,
   Sparkles,
   Users,
@@ -81,6 +82,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
   const [pickerHalaqaId, setPickerHalaqaId] = useState('');
   const [pickerError, setPickerError] = useState<string | null>(null);
   const [messageModalOpen, setMessageModalOpen] = useState(false);
+  const [mobileHeaderMenuOpen, setMobileHeaderMenuOpen] = useState(false);
 
   const restrictMosqueIds = useMemo(() => {
     const ids = session.account.mosqueIds?.length
@@ -332,7 +334,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
           {/* Desktop Main Tabs */}
           <nav
             aria-label="أقسام لوحة المشرف"
-            className="hidden lg:flex items-center gap-1 bg-[#FDF6EE] p-1.5 rounded-2xl border border-[#EADBC8]"
+            className="hidden lg:flex items-center gap-1 bg-[#FDF6EE] p-1 rounded-2xl border border-[#EADBC8]"
           >
             {navItems.map((item) => {
               const Icon = item.icon;
@@ -342,7 +344,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                   key={item.id}
                   type="button"
                   onClick={() => setTab(item.id)}
-                  className={`min-h-[40px] px-2.5 xl:px-3.5 py-1.5 rounded-xl font-display text-xs xl:text-sm font-bold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors ${
+                  className={`min-h-[38px] px-2.5 xl:px-3.5 py-1.5 rounded-xl font-display text-xs xl:text-sm font-bold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors ${
                     active
                       ? 'bg-[#F56900] text-white'
                       : 'text-[#7D4E35] hover:text-[#4A220D] hover:bg-white'
@@ -355,6 +357,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
             })}
           </nav>
 
+          {/* Actions: Mobile compact + Tablet/Desktop inline */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {!loading && workspace && (
               <>
@@ -362,46 +365,118 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                   type="button"
                   onClick={() => setMessageModalOpen(true)}
                   aria-label="إرسال رسالة"
-                  className="duo-btn-orange min-h-[40px] min-w-[40px] px-2.5 sm:px-3 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+                  className="hidden sm:inline-flex duo-btn-orange min-h-[40px] min-w-[40px] px-2.5 sm:px-3 py-1.5 rounded-xl font-display font-extrabold text-xs items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
                 >
                   <Megaphone className="w-4 h-4 shrink-0" />
-                  <span className="hidden sm:inline">رسالة</span>
+                  <span>رسالة</span>
                 </button>
                 <button
                   type="button"
                   onClick={openTeacherPicker}
                   aria-label="الانتقال لدور المعلم"
-                  className="duo-btn-green min-h-[40px] px-2.5 sm:px-3 py-2 rounded-xl font-display font-bold text-xs inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                  className="hidden sm:inline-flex duo-btn-green min-h-[40px] px-2.5 sm:px-3 py-1.5 rounded-xl font-display font-bold text-xs items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
                 >
                   <ArrowLeftRight className="w-4 h-4 shrink-0" />
-                  <span className="hidden sm:inline">الانتقال لدور المعلم</span>
-                  <span className="sm:hidden">المعلم</span>
+                  <span className="hidden xl:inline">الانتقال لدور المعلم</span>
+                  <span className="xl:hidden">المعلم</span>
                 </button>
               </>
             )}
+
             <NotificationPermissionButton variant="compact" />
             <PWAInstallButton variant="compact" />
+
             <button
               type="button"
               onClick={() => void loadAll(true)}
               disabled={refreshing || loading}
               aria-label="تحديث البيانات"
-              className="min-h-[40px] min-w-[40px] px-2.5 sm:px-3 py-2 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] inline-flex items-center justify-center gap-1.5 font-display font-bold text-xs cursor-pointer disabled:opacity-50"
+              className="hidden sm:inline-flex min-h-[40px] min-w-[40px] px-2.5 py-1.5 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] items-center justify-center gap-1.5 font-display font-bold text-xs cursor-pointer disabled:opacity-50"
             >
               <RefreshCw
                 className={`w-4 h-4 text-[#F56900] ${refreshing ? 'animate-spin' : ''}`}
               />
               <span className="hidden xl:inline">تحديث</span>
             </button>
+
             <button
               type="button"
               onClick={handleLogout}
               aria-label="تسجيل الخروج"
-              className="min-h-[40px] min-w-[40px] px-2.5 sm:px-3 py-2 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+              className="min-h-[40px] min-w-[40px] px-2.5 sm:px-3 py-1.5 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
             >
               <LogOut className="w-4 h-4 shrink-0" />
-              <span className="hidden sm:inline">خروج</span>
+              <span className="hidden xl:inline">تسجيل الخروج</span>
+              <span className="hidden sm:inline xl:hidden">خروج</span>
             </button>
+
+            {/* Mobile Overflow Menu for Secondary Header Actions */}
+            <div className="sm:hidden relative">
+              <button
+                type="button"
+                onClick={() => setMobileHeaderMenuOpen((v) => !v)}
+                aria-label="المزيد من الخيارات"
+                aria-expanded={mobileHeaderMenuOpen}
+                className="min-h-[40px] min-w-[40px] rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE] text-[#4A220D] flex items-center justify-center cursor-pointer"
+              >
+                <MoreVertical className="w-4 h-4" />
+              </button>
+
+              {mobileHeaderMenuOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    aria-hidden="true"
+                    onClick={() => setMobileHeaderMenuOpen(false)}
+                  />
+                  <div
+                    dir="rtl"
+                    className="absolute left-0 top-12 z-50 w-52 bg-white border-2 border-[#EADBC8] rounded-2xl shadow-xl p-1.5 space-y-1"
+                  >
+                    {!loading && workspace && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMobileHeaderMenuOpen(false);
+                            openTeacherPicker();
+                          }}
+                          className="w-full min-h-[42px] px-3 py-2 rounded-xl hover:bg-[#58CC02]/10 text-[#357A02] font-display font-bold text-xs flex items-center gap-2 cursor-pointer"
+                        >
+                          <ArrowLeftRight className="w-4 h-4 shrink-0" />
+                          <span>الانتقال لدور المعلم</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMobileHeaderMenuOpen(false);
+                            setMessageModalOpen(true);
+                          }}
+                          className="w-full min-h-[42px] px-3 py-2 rounded-xl hover:bg-[#F56900]/10 text-[#F56900] font-display font-bold text-xs flex items-center gap-2 cursor-pointer"
+                        >
+                          <Megaphone className="w-4 h-4 shrink-0" />
+                          <span>إرسال رسالة</span>
+                        </button>
+                      </>
+                    )}
+                    <button
+                      type="button"
+                      disabled={refreshing || loading}
+                      onClick={() => {
+                        setMobileHeaderMenuOpen(false);
+                        void loadAll(true);
+                      }}
+                      className="w-full min-h-[42px] px-3 py-2 rounded-xl hover:bg-[#FDF6EE] text-[#4A220D] font-display font-bold text-xs flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                    >
+                      <RefreshCw
+                        className={`w-4 h-4 text-[#F56900] shrink-0 ${refreshing ? 'animate-spin' : ''}`}
+                      />
+                      <span>تحديث البيانات</span>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
       </header>

@@ -14,11 +14,15 @@ import { usePWAInstall } from '../hooks/usePWAInstall';
 
 interface PWAInstallButtonProps {
   variant?: 'compact' | 'full';
+  responsiveLabel?: 'always' | 'sm' | 'md' | 'xl';
 }
 
 const BASE_URL = import.meta.env.BASE_URL;
 
-export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'compact' }) => {
+export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
+  variant = 'compact',
+  responsiveLabel = 'xl',
+}) => {
   const { isInstalled, isIOS, isEmbeddedOrInApp, install } = usePWAInstall();
   const [showGuide, setShowGuide] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -61,7 +65,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'c
         if (e.target === e.currentTarget) setShowGuide(false);
       }}
     >
-      <div className="w-full sm:max-w-md bg-white border-2 border-[#EADBC8] rounded-t-3xl sm:rounded-3xl p-5 sm:p-6 text-right shadow-2xl max-h-[90vh] overflow-y-auto">
+      <div className="w-full sm:max-w-md bg-white border-2 border-[#EADBC8] rounded-t-3xl sm:rounded-3xl p-5 sm:p-6 text-right shadow-2xl max-h-[90dvh] pb-safe overflow-y-auto">
         <div className="flex items-center justify-between gap-3 mb-4 pb-3 border-b-2 border-[#F7EBDD]">
           <div className="flex items-center gap-3 min-w-0">
             <img
@@ -193,13 +197,42 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'c
         className={
           variant === 'full'
             ? 'duo-btn-cream w-full min-h-[48px] px-5 py-3 rounded-2xl font-display font-bold text-sm sm:text-base inline-flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap'
-            : 'duo-btn-cream min-h-[40px] min-w-[40px] sm:min-h-[42px] px-2.5 md:px-3.5 py-2 rounded-xl sm:rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0'
+            : `duo-btn-cream min-h-[40px] min-w-[40px] sm:min-h-[42px] py-1.5 sm:py-2 rounded-xl sm:rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
+                responsiveLabel === 'always'
+                  ? 'px-2.5 sm:px-3.5'
+                  : responsiveLabel === 'sm'
+                  ? 'px-2.5 sm:px-3.5'
+                  : responsiveLabel === 'md'
+                  ? 'px-2.5 md:px-3.5'
+                  : 'px-2.5 xl:px-3.5'
+              }`
         }
       >
         <Download className="w-4 h-4 text-[#F56900] shrink-0" />
-        <span className={variant === 'full' ? '' : 'hidden md:inline'}>
-          {installing ? 'جاري التحضير للتثبيت...' : 'تنزيل التطبيق'}
-        </span>
+        {variant === 'full' ? (
+          <span>{installing ? 'جاري التحضير للتثبيت...' : 'تنزيل التطبيق'}</span>
+        ) : responsiveLabel === 'always' ? (
+          <>
+            <span className="hidden min-[380px]:inline">
+              {installing ? 'جاري التحضير...' : 'تنزيل التطبيق'}
+            </span>
+            <span className="min-[380px]:hidden">
+              {installing ? 'تحضير...' : 'تنزيل'}
+            </span>
+          </>
+        ) : (
+          <span
+            className={
+              responsiveLabel === 'sm'
+                ? 'hidden sm:inline'
+                : responsiveLabel === 'md'
+                ? 'hidden md:inline'
+                : 'hidden xl:inline'
+            }
+          >
+            {installing ? 'جاري التحضير...' : 'تنزيل التطبيق'}
+          </span>
+        )}
       </button>
 
       {typeof document !== 'undefined' && modalNode
