@@ -9,6 +9,7 @@ import {
   ClipboardCheck,
   GraduationCap,
   LogOut,
+  Presentation,
   Users,
 } from 'lucide-react';
 import { getTodayDateKey } from '../services/multiDb';
@@ -33,6 +34,7 @@ import { AttendanceSection } from './AttendanceSection';
 import { KingFahdMushafReader } from './KingFahdMushafReader';
 import { ModernLoader } from './ModernLoader';
 import { NotificationPermissionButton } from './NotificationPermissionButton';
+import { PresentationsSection } from './PresentationsSection';
 import { PWAInstallButton } from './PWAInstallButton';
 import { TeacherBookReaderModal } from './TeacherBookReaderModal';
 import { TeacherBookWorkspace } from './TeacherBookWorkspace';
@@ -56,7 +58,7 @@ interface TeacherDashboardViewProps {
   onSwitchContext?: (ctx: TeacherRoleContext) => void;
 }
 
-type TeacherViewTab = 'overview' | 'attendance' | 'curricula' | 'students';
+type TeacherViewTab = 'overview' | 'attendance' | 'curricula' | 'presentations' | 'students';
 
 export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
   workspace,
@@ -273,6 +275,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
     { id: 'overview', label: 'الرئيسية للمعلم', mobileLabel: 'الرئيسية', icon: BookOpen },
     { id: 'attendance', label: 'تحضير الحلقة', mobileLabel: 'التحضير', icon: ClipboardCheck },
     { id: 'curricula', label: 'المقررات', mobileLabel: 'المقررات', icon: BookMarked },
+    { id: 'presentations', label: 'العروض التقديمية', mobileLabel: 'العروض', icon: Presentation },
     { id: 'students', label: `الطلاب (${halaqaStudents.length})`, mobileLabel: 'الطلاب', icon: GraduationCap },
   ];
 
@@ -408,6 +411,14 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                 >
                   <BookMarked className="w-4 h-4 text-[#F56900] shrink-0" />
                   <span>مقررات الطلاب والمصحف</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTab('presentations')}
+                  className="duo-btn-cream min-h-[44px] px-4 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Presentation className="w-4 h-4 text-[#F56900] shrink-0" />
+                  <span>العروض التقديمية</span>
                 </button>
               </div>
             </div>
@@ -953,6 +964,16 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
         </div>
       ))}
 
+      {tab === 'presentations' && (
+        <PresentationsSection
+          workspace={workspace}
+          currentUserId={currentUserId}
+          currentUserName={currentUserName}
+          fixedMosqueId={context.mosqueId}
+          fixedHalaqaId={context.halaqaId}
+        />
+      )}
+
       {tab === 'students' && (
         <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 sm:p-6 space-y-4">
           <h2 className="font-display text-lg font-extrabold text-[#4A220D]">
@@ -991,7 +1012,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
         className="md:hidden fixed bottom-0 inset-x-0 z-30 bg-white/95 backdrop-blur-md border-t-2 border-[#EADBC8] px-2 pt-1.5 pb-safe"
         aria-label="تنقل المعلم"
       >
-        <div className="max-w-lg mx-auto grid grid-cols-4 gap-1">
+        <div className="max-w-lg mx-auto grid grid-cols-5 gap-1">
           {navItems.map((item) => {
             const Icon = item.icon;
             const active = tab === item.id;

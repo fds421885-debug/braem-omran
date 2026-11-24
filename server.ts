@@ -51,8 +51,49 @@ function isAiStudioManagedModel(modelName: string): boolean {
 function shouldPreferPublicGeminiModels(customApiKey?: string): boolean {
   const cleanedCustom = cleanEnvSecret(customApiKey);
   if (IS_RENDER) return true;
-  if (cleanedCustom && !process.env.DISABLE_HMR) return true;
+  if (cleanedCustom) return true;
   return false;
+}
+
+function normalizeGeminiChatHistory(
+  rawHistory: unknown,
+  maxItems = 12,
+  maxCharsPerTurn = 4000
+): Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> {
+  if (!Array.isArray(rawHistory)) return [];
+  const filtered = rawHistory
+    .slice(-maxItems)
+    .filter(
+      (h): h is { role: 'user' | 'model'; text: string } =>
+        Boolean(h) &&
+        typeof h === 'object' &&
+        (h.role === 'user' || h.role === 'model') &&
+        typeof h.text === 'string' &&
+        h.text.trim().length > 0
+    );
+
+  // Merge consecutive identical roles so turns always strictly alternate, starting with 'user'
+  const merged: Array<{ role: 'user' | 'model'; text: string }> = [];
+  for (const item of filtered) {
+    const cleanText = item.text.trim().slice(0, maxCharsPerTurn);
+    if (merged.length === 0 && item.role !== 'user') {
+      continue;
+    }
+    const prev = merged[merged.length - 1];
+    if (prev && prev.role === item.role) {
+      prev.text = `${prev.text}\n${cleanText}`.slice(0, maxCharsPerTurn);
+    } else {
+      merged.push({ role: item.role, text: cleanText });
+    }
+  }
+  // Ensure the final entry before appending the new 'user' turn is 'model'
+  if (merged.length > 0 && merged[merged.length - 1].role === 'user') {
+    merged.pop();
+  }
+  return merged.map((m) => ({
+    role: m.role,
+    parts: [{ text: m.text }],
+  }));
 }
 
 function buildOrderedModels(
@@ -767,7 +808,14 @@ async function startServer() {
           result = await runNoorModel(candidateModel, 12000);
           break;
         } catch (err) {
-          lastNoorErr = err;
+          const errStatus = Number(
+            (err as { status?: number; code?: number })?.status ||
+              (err as { status?: number; code?: number })?.code ||
+              0
+          );
+          if (!lastNoorErr || errStatus !== 404) {
+            lastNoorErr = err;
+          }
           if (!isModelRetryableOrFallbackError(err)) {
             throw err;
           }
@@ -983,11 +1031,10 @@ async function startServer() {
   // 4. Smart & Fast Programmer AI Assistant for full platform & database diagnostics
   app.post('/api/admin/ai-chat', async (req: Request, res: Response) => {
     try {
-      const { message, history, systemContext, customApiKey } = req.body as {
+      const { message, history, systemContext } = req.body as {
         message?: string;
         history?: Array<{ role: 'user' | 'model'; text: string }>;
         systemContext?: string;
-        customApiKey?: string;
       };
 
       const cleanMessage = String(message || '').trim().slice(0, 4000);
@@ -996,9 +1043,7 @@ async function startServer() {
         return;
       }
 
-      const trimmedCustomKey =
-        typeof customApiKey === 'string' ? customApiKey.trim() : '';
-      const ai = getGeminiClient(trimmedCustomKey || undefined);
+      const ai = getGeminiClient();
 
       const safeContext = String(systemContext || '').slice(0, 95000);
       const systemInstruction = `أنت المساعد التقني الذكي المتخصص لمبرمج منصة «براعم عمران» (منصة تعليمية قرآنية متعددة قواعد البيانات).
@@ -1013,21 +1058,7 @@ async function startServer() {
 اللقطة الحية الشاملة الحالية للمنصة وقواعدها:
 ${safeContext || 'لم يتم إرفاق بيانات بعد.'}`;
 
-      const safeHistory = Array.isArray(history)
-        ? history
-            .slice(-12)
-            .filter(
-              (h) =>
-                h &&
-                (h.role === 'user' || h.role === 'model') &&
-                typeof h.text === 'string' &&
-                h.text.trim().length > 0
-            )
-            .map((h) => ({
-              role: h.role,
-              parts: [{ text: h.text.trim().slice(0, 4000) }],
-            }))
-        : [];
+      const safeHistory = normalizeGeminiChatHistory(history, 10, 3500);
 
       const contents = [
         ...safeHistory,
@@ -1039,6 +1070,17 @@ ${safeContext || 'لم يتم إرفاق بيانات بعد.'}`;
 
       const startedAt = Date.now();
       const callModel = async (modelName: string, timeoutMs: number) => {
+        const thinkingCfg = isAiStudioManagedModel(modelName)
+          ? {
+              thinkingLevel:
+                modelName === 'gemini-3.1-flash-lite'
+                  ? ThinkingLevel.MINIMAL
+                  : ThinkingLevel.LOW,
+            }
+          : modelName === 'gemini-2.5-flash'
+          ? { thinkingBudget: 0 }
+          : undefined;
+
         return await withTimeout(
           withRetry(
             () =>
@@ -1046,36 +1088,28 @@ ${safeContext || 'لم يتم إرفاق بيانات بعد.'}`;
                 model: modelName,
                 contents,
                 config: {
-                  ...(isAiStudioManagedModel(modelName)
-                    ? {
-                        thinkingConfig: {
-                          thinkingLevel:
-                            modelName === 'gemini-3.1-flash-lite'
-                              ? ThinkingLevel.MINIMAL
-                              : ThinkingLevel.LOW,
-                        },
-                      }
-                    : {}),
+                  ...(thinkingCfg ? { thinkingConfig: thinkingCfg } : {}),
+                  temperature: 0.35,
                   systemInstruction,
                 },
               }),
-            2
+            1
           ),
           timeoutMs
         );
       };
 
       const chatCandidates = buildOrderedModels(
-        ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'],
+        ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'],
         ['gemini-2.5-flash', 'gemini-2.5-flash-lite'],
-        shouldPreferPublicGeminiModels(trimmedCustomKey)
+        shouldPreferPublicGeminiModels()
       );
 
       let result;
       let lastChatErr: unknown;
       for (const candidateModel of chatCandidates) {
         try {
-          result = await callModel(candidateModel, 18000);
+          result = await callModel(candidateModel, 14000);
           break;
         } catch (candidateErr) {
           const errStatus = Number(
@@ -1116,16 +1150,399 @@ ${safeContext || 'لم يتم إرفاق بيانات بعد.'}`;
             }
           : null,
         latencyMs,
-        usingCustomKey: Boolean(trimmedCustomKey),
       });
     } catch (err) {
       const friendly = getFriendlyGeminiError(err);
-      const customKeyNote =
-        typeof (req.body as { customApiKey?: string })?.customApiKey === 'string' &&
-        (req.body as { customApiKey?: string }).customApiKey?.trim()
-          ? ' (تم استخدام مفتاح API المخصص المدخل من زر القلم — تأكد من صحته وصلاحياته)'
-          : '';
-      res.status(friendly.status).json({ error: `${friendly.message}${customKeyNote}` });
+      res.status(friendly.status).json({ error: friendly.message });
+    }
+  });
+
+  // 5. Interactive Braem Omran Presentation Studio AI Generator & Editor
+  app.post('/api/presentations/chat', async (req: Request, res: Response) => {
+    try {
+      const {
+        message,
+        history,
+        presentationTitle,
+        currentSlides,
+        targetSlideIndex,
+        importedPptxSlides,
+      } = req.body as {
+        message?: string;
+        history?: Array<{ role: 'user' | 'model'; text: string }>;
+        presentationTitle?: string;
+        currentSlides?: Array<{
+          id: string;
+          order: number;
+          title: string;
+          subtitle?: string;
+          layout?: string;
+          themeTone?: string;
+          htmlContent?: string;
+          speakerNotes?: string;
+          interactiveBlocks?: Array<{
+            id?: string;
+            type?: string;
+            label?: string;
+            arabicText?: string;
+            surahNumber?: number;
+            ayahNumber?: number;
+            surahName?: string;
+            note?: string;
+          }>;
+        }>;
+        targetSlideIndex?: number;
+        importedPptxSlides?: Array<{
+          slideNumber: number;
+          title?: string;
+          paragraphs?: string[];
+          notes?: string;
+        }>;
+      };
+
+      const hasPptx = Array.isArray(importedPptxSlides) && importedPptxSlides.length > 0;
+      const cleanMessage = String(
+        message || (hasPptx ? 'حوّل ملف الباوربوينت المرفق إلى عرض تفاعلي متكامل بثيم منصة براعم عمران.' : '')
+      )
+        .trim()
+        .slice(0, 4000);
+
+      if (!cleanMessage && !hasPptx) {
+        res.status(400).json({ error: 'يرجى كتابة وصف العرض أو التعديل المطلوب.' });
+        return;
+      }
+
+      const slidesArr = Array.isArray(currentSlides) ? currentSlides.slice(0, 40) : [];
+      const isTargetedSlideEdit =
+        typeof targetSlideIndex === 'number' &&
+        targetSlideIndex >= 0 &&
+        targetSlideIndex < slidesArr.length &&
+        !hasPptx;
+
+      const ai = getGeminiClient();
+
+      const slideSummaryContext = slidesArr.length
+        ? slidesArr.map((s, idx) => ({
+            slideIndex: idx,
+            title: String(s.title || '').slice(0, 140),
+            subtitle: String(s.subtitle || '').slice(0, 140),
+            layout: s.layout || 'points',
+            themeTone: s.themeTone || 'cream',
+            htmlSnippet:
+              isTargetedSlideEdit && idx === targetSlideIndex
+                ? String(s.htmlContent || '').slice(0, 5000)
+                : String(s.htmlContent || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 240),
+            speakerNotes: String(s.speakerNotes || '').slice(0, 250),
+            interactiveBlocks: Array.isArray(s.interactiveBlocks) ? s.interactiveBlocks.slice(0, 6) : [],
+          }))
+        : [];
+
+      const pptxContext = hasPptx
+        ? importedPptxSlides!.slice(0, 35).map((ps) => ({
+            slideNumber: ps.slideNumber,
+            title: String(ps.title || '').slice(0, 200),
+            paragraphs: (Array.isArray(ps.paragraphs) ? ps.paragraphs : [])
+              .map((p) => String(p || '').trim())
+              .filter(Boolean)
+              .slice(0, 24),
+            notes: String(ps.notes || '').slice(0, 400),
+          }))
+        : null;
+
+      const systemInstruction = `أنت مصمم مناهج ومطور عروض تقديمية تعليمية عربية وقرآنية داخل منصة «براعم عمران».
+مهمتك إنشاء وتعديل عروض تقديمية تفاعلية بصيغة HTML أنيقة ومتناسقة بالكامل مع ثيم منصة براعم عمران (RTL عربي).
+
+القواعد التصميمية الصارمة (ممنوع مخالفتها):
+1. الهوية البصرية والألوان حصراً:
+   - الخلفيات: #FDF6EE (كريم دافئ)، #FFFFFF (أبيض نقي)، #F7EBDD (رمل فاتح)
+   - الحدود: #EADBC8
+   - النصوص: #4A220D (بني إسبريسو عميق للعناوين)، #7D4E35 (كاكاو دافئ للنصوص الفرعية)
+   - الألوان المميزة: البرتقالي #F56900 / #FF851B والأخضر القرآني #58CC02 / #46A302
+   - يُمنع تماماً استخدام اللون البنفسجي أو الوردي أو النيون أو تدرجات الخلفيات الداكنة المبتذلة.
+   - يجب أن يكون محتوى الشريحة "htmlContent" باللغة العربية RTL باستخدام HTML نظيف + أصناف Tailwind CSS فقط، دون أي وسوم <script> أو <style> أو <iframe> أو أحداث inline مثل onclick=.
+2. التفاعل الصوتي الذكي (التهجي والقرآن):
+   - اضبط التشكيل الكامل (الحركات والشدات والسكون) لكل كلمة تعليمية ولكل آية قرآنية!
+   - عند وضع آية قرآنية داخل الشريحة: ضعها داخل عنصر يحمل السمات:
+     data-ayah="true" data-surah="رقم_السورة" data-ayah-num="رقم_الآية" data-surah-name="اسم_السورة"
+     مع صفوف Tailwind مثل: class="quran-ayah-card rounded-2xl border-2 border-[#58CC02] bg-[#58CC02]/10 p-4 text-center cursor-pointer transition-all hover:border-[#F56900]"
+   - عند وضع كلمات أو مقاطع للتدريب على التهجي (منهج الفتح الرباني / نور البيان): ضع كل كلمة/عبارة داخل عنصر:
+     data-tahajji="true" class="tahajji-chip inline-flex items-center px-3 py-1.5 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE] hover:border-[#F56900] text-[#4A220D] font-extrabold cursor-pointer transition-colors"
+   - وأيضاً أدرج في حقل "interactiveBlocks" على كل شريحة 1 إلى 6 عناصر تفاعلية واضحة (type: "ayah" للآيات مع surahNumber و ayahNumber و surahName الدقيقة، أو "tahajji_words" للكلمات/العبارات التعليمية المشكولة، أو "card" / "tip").
+3. جودة البناء:
+   - اجعل كل شريحة متوازنة بصرياً كشاشة عرض حقيقية (تدرج هرمي واضح، بطاقات منسقة، تباعد رحب، جداول أو مقارنات أو خطوات مرقمة عند اللزوم، مع جمل موجزة واضحة غير مكدسة).
+   - عند طلب عرض جديد: أنشئ 4 إلى 8 شرائح متدرجة (غلاف جذاب -> أهداف/تمهيد -> شرائح المحتوى والتدريب والآيات والتهجي -> مقارنة أو تطبيق -> خلاصة وتوصية).
+   - إذا كان المطلوب تعديل شريحة محددة (targetSlideIndex=${isTargetedSlideEdit ? targetSlideIndex : 'none'}): أرجع operation="update_slide" مع targetSlideIndex=${isTargetedSlideEdit ? targetSlideIndex : 0} وشريحة واحدة محدثة في مصفوفة slides تحافظ على سياق العرض وتنفذ التعديل المطلوب بدقة!
+   - إذا تم رفع ملف PowerPoint (pptx): التزم بمحتوى شرائح الملف كاملة وحافظ على عناوينه ونقاطه وأفكاره مع إعادة تصميمه بثيم براعم عمران وإضافة التشكيل الدقيق للآيات والكلمات وإرجاع operation="replace_deck".`;
+
+      const userPromptParts: string[] = [
+        `طلب المعلم/المشرف: ${cleanMessage}`,
+        `عنوان العرض الحالي: ${String(presentationTitle || 'عرض جديد').slice(0, 160)}`,
+      ];
+
+      if (isTargetedSlideEdit) {
+        userPromptParts.push(
+          `وضع التعديل المحدد: عدّل الشريحة رقم ${(targetSlideIndex || 0) + 1} فقط (index=${targetSlideIndex}). أرجع operation="update_slide" وtargetSlideIndex=${targetSlideIndex} ومصفوفة slides فيها تلك الشريحة المعدلة فقط.`
+        );
+      } else if (slidesArr.length > 0 && !hasPptx) {
+        userPromptParts.push(
+          `العرض الحالي يحتوي على ${slidesArr.length} شريحة. إذا كان الطلب تعديلاً عاماً على العرض كله فأرجع operation="replace_deck" بكامل الشرائح، وإذا أشار الطلب إلى شريحة معينة بالرقم فعدّلها هي أو أعد بناء العرض حسب طلب المستخدم.`
+        );
+      }
+
+      if (slideSummaryContext.length > 0) {
+        userPromptParts.push(`ملخص الشرائح الحالية:\n${JSON.stringify(slideSummaryContext)}`);
+      }
+      if (pptxContext) {
+        userPromptParts.push(
+          `محتوى ملف PowerPoint المستورد (${pptxContext.length} شريحة):\n${JSON.stringify(pptxContext)}`
+        );
+      }
+
+      const safeHistory = normalizeGeminiChatHistory(history, 6, 1500);
+      const contents = [
+        ...safeHistory,
+        {
+          role: 'user' as const,
+          parts: [{ text: userPromptParts.join('\n\n') }],
+        },
+      ];
+
+      const presentationSchema = {
+        type: Type.OBJECT,
+        properties: {
+          assistantReply: {
+            type: Type.STRING,
+            description: 'Short clear Arabic confirmation explaining what was created or edited.',
+          },
+          operation: {
+            type: Type.STRING,
+            enum: ['replace_deck', 'update_slide', 'append_slides'],
+          },
+          targetSlideIndex: { type: Type.INTEGER },
+          deckTitle: { type: Type.STRING },
+          description: { type: Type.STRING },
+          slides: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                title: { type: Type.STRING },
+                subtitle: { type: Type.STRING },
+                layout: {
+                  type: Type.STRING,
+                  enum: ['cover', 'quran_ayah', 'tahajji_words', 'points', 'comparison', 'summary'],
+                },
+                themeTone: {
+                  type: Type.STRING,
+                  enum: ['cream', 'orange', 'green', 'espresso'],
+                },
+                htmlContent: {
+                  type: Type.STRING,
+                  description:
+                    'Rich RTL Arabic HTML content with Tailwind classes in Braem Omran theme (#FDF6EE, #FFFFFF, #4A220D, #F56900, #58CC02, #EADBC8). No scripts or styles.',
+                },
+                speakerNotes: { type: Type.STRING },
+                interactiveBlocks: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      type: {
+                        type: Type.STRING,
+                        enum: ['ayah', 'tahajji_words', 'card', 'tip'],
+                      },
+                      label: { type: Type.STRING },
+                      arabicText: { type: Type.STRING },
+                      surahNumber: { type: Type.INTEGER },
+                      ayahNumber: { type: Type.INTEGER },
+                      surahName: { type: Type.STRING },
+                      note: { type: Type.STRING },
+                    },
+                    required: ['type', 'arabicText'],
+                  },
+                },
+              },
+              required: ['title', 'layout', 'themeTone', 'htmlContent', 'interactiveBlocks'],
+            },
+          },
+        },
+        required: ['assistantReply', 'operation', 'deckTitle', 'slides'],
+      };
+
+      const runPresentationModel = async (modelName: string, timeoutMs: number) => {
+        const thinkingCfg = isAiStudioManagedModel(modelName)
+          ? {
+              thinkingLevel:
+                modelName === 'gemini-3.1-flash-lite'
+                  ? ThinkingLevel.MINIMAL
+                  : ThinkingLevel.LOW,
+            }
+          : modelName === 'gemini-2.5-flash'
+          ? { thinkingBudget: 0 }
+          : undefined;
+
+        return await withTimeout(
+          withRetry(
+            () =>
+              ai.models.generateContent({
+                model: modelName,
+                contents,
+                config: {
+                  ...(thinkingCfg ? { thinkingConfig: thinkingCfg } : {}),
+                  temperature: 0.45,
+                  systemInstruction,
+                  responseMimeType: 'application/json',
+                  responseSchema: presentationSchema,
+                },
+              }),
+            1
+          ),
+          timeoutMs
+        );
+      };
+
+      const presCandidates = buildOrderedModels(
+        ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'],
+        ['gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+        shouldPreferPublicGeminiModels()
+      );
+
+      let result;
+      let lastPresErr: unknown;
+      for (const candidateModel of presCandidates) {
+        try {
+          result = await runPresentationModel(candidateModel, 25000);
+          break;
+        } catch (candidateErr) {
+          const errStatus = Number(
+            (candidateErr as { status?: number; code?: number })?.status ||
+              (candidateErr as { status?: number; code?: number })?.code ||
+              0
+          );
+          if (!lastPresErr || errStatus !== 404) {
+            lastPresErr = candidateErr;
+          }
+          const rawErr =
+            candidateErr instanceof Error ? candidateErr.message : String(candidateErr);
+          console.warn(`[Presentation AI fallback from ${candidateModel}]`, rawErr.slice(0, 220));
+          if (!isModelRetryableOrFallbackError(candidateErr)) {
+            throw candidateErr;
+          }
+        }
+      }
+      if (!result) {
+        throw lastPresErr || new Error('No presentation AI model succeeded.');
+      }
+
+      const rawJson = (result.text ?? '{}')
+        .trim()
+        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/\s*```$/i, '')
+        .trim();
+      const parsed = JSON.parse(rawJson || '{}') as {
+        assistantReply?: string;
+        operation?: 'replace_deck' | 'update_slide' | 'append_slides';
+        targetSlideIndex?: number;
+        deckTitle?: string;
+        description?: string;
+        slides?: Array<{
+          title?: string;
+          subtitle?: string;
+          layout?: string;
+          themeTone?: string;
+          htmlContent?: string;
+          speakerNotes?: string;
+          interactiveBlocks?: Array<{
+            type?: string;
+            label?: string;
+            arabicText?: string;
+            surahNumber?: number;
+            ayahNumber?: number;
+            surahName?: string;
+            note?: string;
+          }>;
+        }>;
+      };
+
+      const validLayouts = new Set(['cover', 'quran_ayah', 'tahajji_words', 'points', 'comparison', 'summary']);
+      const validTones = new Set(['cream', 'orange', 'green', 'espresso']);
+      const validBlockTypes = new Set(['ayah', 'tahajji_words', 'card', 'tip']);
+
+      const normalizedSlides = (Array.isArray(parsed.slides) ? parsed.slides : [])
+        .slice(0, 40)
+        .map((s, idx) => {
+          const layout = validLayouts.has(String(s.layout)) ? String(s.layout) : 'points';
+          const themeTone = validTones.has(String(s.themeTone)) ? String(s.themeTone) : 'cream';
+          const blocks = (Array.isArray(s.interactiveBlocks) ? s.interactiveBlocks : [])
+            .filter((b) => b && typeof b.arabicText === 'string' && b.arabicText.trim().length > 0)
+            .slice(0, 8)
+            .map((b, bIdx) => {
+              const bType = validBlockTypes.has(String(b.type)) ? String(b.type) : 'card';
+              const isAyah =
+                bType === 'ayah' &&
+                Number(b.surahNumber) >= 1 &&
+                Number(b.surahNumber) <= 114 &&
+                Number(b.ayahNumber) >= 1;
+              return {
+                id: `blk_${Date.now()}_${idx}_${bIdx}`,
+                type: bType,
+                label: String(b.label || '').trim().slice(0, 80),
+                arabicText: String(b.arabicText || '').trim().slice(0, 1200),
+                ...(isAyah
+                  ? {
+                      surahNumber: Math.round(Number(b.surahNumber)),
+                      ayahNumber: Math.round(Number(b.ayahNumber)),
+                      surahName: String(b.surahName || '').trim().slice(0, 60),
+                    }
+                  : {}),
+                note: String(b.note || '').trim().slice(0, 300),
+              };
+            });
+
+          return {
+            id: `slide_${Date.now()}_${idx}`,
+            order: idx,
+            title: String(s.title || `الشريحة ${idx + 1}`).trim().slice(0, 180),
+            subtitle: String(s.subtitle || '').trim().slice(0, 220),
+            layout,
+            themeTone,
+            htmlContent: String(s.htmlContent || '').trim().slice(0, 18000),
+            speakerNotes: String(s.speakerNotes || '').trim().slice(0, 1000),
+            interactiveBlocks: blocks,
+          };
+        });
+
+      if (normalizedSlides.length === 0) {
+        res.status(502).json({ error: 'لم يتم توليد شرائح صالحة؛ جرّب وصفاً أوضح للدرس.' });
+        return;
+      }
+
+      const finalOperation =
+        isTargetedSlideEdit && normalizedSlides.length === 1
+          ? 'update_slide'
+          : parsed.operation === 'update_slide' || parsed.operation === 'append_slides'
+          ? parsed.operation
+          : 'replace_deck';
+
+      res.json({
+        assistantReply:
+          String(parsed.assistantReply || 'تم إنشاء الشرائح التفاعلية بنجاح.').trim(),
+        operation: finalOperation,
+        targetSlideIndex:
+          isTargetedSlideEdit
+            ? targetSlideIndex
+            : typeof parsed.targetSlideIndex === 'number'
+            ? parsed.targetSlideIndex
+            : undefined,
+        deckTitle: String(parsed.deckTitle || presentationTitle || 'عرض تعليمي جديد')
+          .trim()
+          .slice(0, 180),
+        description: String(parsed.description || '').trim().slice(0, 500),
+        slides: normalizedSlides,
+      });
+    } catch (err) {
+      const friendly = getFriendlyGeminiError(err);
+      res.status(friendly.status).json({ error: friendly.message });
     }
   });
 

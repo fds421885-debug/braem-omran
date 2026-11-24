@@ -594,3 +594,64 @@ export interface StudentBookPlanRecord {
   updatedAt?: unknown;
 }
 
+export type PresentationSlideLayout =
+  | 'cover'
+  | 'quran_ayah'
+  | 'tahajji_words'
+  | 'points'
+  | 'comparison'
+  | 'summary';
+
+export type PresentationThemeTone = 'cream' | 'orange' | 'green' | 'espresso';
+
+export interface PresentationInteractiveBlock {
+  id: string;
+  type: 'ayah' | 'tahajji_words' | 'card' | 'tip';
+  label?: string;
+  arabicText: string;
+  surahNumber?: number;
+  ayahNumber?: number;
+  surahName?: string;
+  note?: string;
+}
+
+export interface PresentationSlide {
+  id: string;
+  order: number;
+  title: string;
+  subtitle?: string;
+  layout: PresentationSlideLayout;
+  themeTone: PresentationThemeTone;
+  htmlContent: string;
+  interactiveBlocks: PresentationInteractiveBlock[];
+  speakerNotes?: string;
+  slideImageDataUrl?: string;
+}
+
+export interface PresentationChatTurn {
+  id: string;
+  role: 'user' | 'model';
+  text: string;
+  timestampMs: number;
+  targetSlideIndex?: number;
+}
+
+export interface PresentationRecord {
+  id: string;
+  complexId: string;
+  mosqueId: string;
+  halaqaId: string;
+  title: string;
+  description: string;
+  sourceType: 'ai' | 'pptx_import';
+  sourceFileName: string;
+  slides: PresentationSlide[];
+  chatHistory: PresentationChatTurn[];
+  createdBy: string;
+  createdByName: string;
+  active: boolean;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+

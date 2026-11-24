@@ -219,7 +219,7 @@ export async function removeExternalDatabaseConnection(registryDocId: string): P
   await deleteDoc(doc(primaryDb, 'dbRegistry', registryDocId));
 }
 
-async function getDocFresh(
+export async function getDocFresh(
   ref: DocumentReference<DocumentData>
 ): Promise<DocumentSnapshot<DocumentData>> {
   try {
@@ -229,7 +229,7 @@ async function getDocFresh(
   }
 }
 
-async function getDocsFresh(
+export async function getDocsFresh(
   q: Query<DocumentData>
 ): Promise<QuerySnapshot<DocumentData>> {
   try {
@@ -2187,7 +2187,7 @@ function recordShardWriteUsage(
   saveComplexTabPool(workspace.complex.id, tabKey, pool).catch(() => {});
 }
 
-async function executeTabWriteWithRollover<T>(
+export async function executeTabWriteWithRollover<T>(
   workspace: ComplexWorkspaceData,
   tabKey: ComplexFeatureTabKey,
   incomingBytes: number,
@@ -2215,7 +2215,7 @@ async function executeTabWriteWithRollover<T>(
   }
 }
 
-async function findExistingDocInTabPool(
+export async function findExistingDocInTabPool(
   workspace: ComplexWorkspaceData,
   tabKey: ComplexFeatureTabKey,
   colName: string,
@@ -4407,7 +4407,7 @@ async function measureTabUsageOnDb(
   let docsCount = 0;
   const colMap: Record<ComplexFeatureTabKey, string[]> = {
     attendance: ['attendance'],
-    curricula: ['curricula', 'studentQuranPlans', 'studentMushafMistakes', 'studentBookPlans'],
+    curricula: ['curricula', 'studentQuranPlans', 'studentMushafMistakes', 'studentBookPlans', 'presentations'],
     library: ['books', 'bookPages', 'wordAudio'],
     mosques_halaqat: ['mosques', 'halaqat'],
     accounts_invites: ['accounts', 'inviteLinks', 'quickLinks'],
@@ -4474,6 +4474,7 @@ async function migrateSingleTabRecords(params: {
         'studentQuranPlans',
         'studentMushafMistakes',
         'studentBookPlans',
+        'presentations',
       ]) {
         const snap = await getDocsFresh(
           query(collection(sDb, colName), where('complexId', '==', complexId))
@@ -4496,6 +4497,7 @@ async function migrateSingleTabRecords(params: {
         'studentQuranPlans',
         'studentMushafMistakes',
         'studentBookPlans',
+        'presentations',
       ]) {
         const pSnap = await getDocs(
           query(collection(primaryDb, colName), where('complexId', '==', complexId))
@@ -5156,6 +5158,7 @@ export async function cloneComplexToBackupDatabase(params: {
   const seenQuranPlanIds = new Set<string>();
   const seenMistakeIds = new Set<string>();
   const seenBookPlanIds = new Set<string>();
+  const seenPresentationIds = new Set<string>();
   for (const curDb of curriculaReadDbs) {
     const qpSnap = await getDocsFresh(
       query(collection(curDb, 'studentQuranPlans'), where('complexId', '==', workspace.complex.id))
@@ -5205,6 +5208,22 @@ export async function cloneComplexToBackupDatabase(params: {
         totalCopiedDocs++;
       }
     }
+    const prSnap = await getDocsFresh(
+      query(collection(curDb, 'presentations'), where('complexId', '==', workspace.complex.id))
+    ).catch(() => null);
+    if (prSnap) {
+      for (const d of prSnap.docs) {
+        if (seenPresentationIds.has(d.id)) continue;
+        seenPresentationIds.add(d.id);
+        await upsertTransferredDoc(
+          backupDb,
+          'presentations',
+          d.id,
+          d.data() as Record<string, unknown>
+        );
+        totalCopiedDocs++;
+      }
+    }
   }
 
   return { totalCopiedDocs };
@@ -5236,8 +5255,9 @@ export async function exportComplexTabJsonPayload(
     const qpMap = new Map<string, StudentQuranPlanRecord>();
     const mmMap = new Map<string, StudentMushafMistakesRecord>();
     const bpMap = new Map<string, StudentBookPlanRecord>();
+    const prMap = new Map<string, Record<string, unknown>>();
     for (const curDb of getReadDbsForComplexTab(workspace, 'curricula')) {
-      const [qpSnap, mmSnap, bpSnap] = await Promise.all([
+      const [qpSnap, mmSnap, bpSnap, prSnap] = await Promise.all([
         getDocsFresh(
           query(collection(curDb, 'studentQuranPlans'), where('complexId', '==', workspace.complex.id))
         ).catch(() => null),
@@ -5250,6 +5270,9 @@ export async function exportComplexTabJsonPayload(
         getDocsFresh(
           query(collection(curDb, 'studentBookPlans'), where('complexId', '==', workspace.complex.id))
         ).catch(() => null),
+        getDocsFresh(
+          query(collection(curDb, 'presentations'), where('complexId', '==', workspace.complex.id))
+        ).catch(() => null),
       ]);
       qpSnap?.forEach((d) => {
         if (!qpMap.has(d.id)) qpMap.set(d.id, d.data() as StudentQuranPlanRecord);
@@ -5260,12 +5283,16 @@ export async function exportComplexTabJsonPayload(
       bpSnap?.forEach((d) => {
         if (!bpMap.has(d.id)) bpMap.set(d.id, d.data() as StudentBookPlanRecord);
       });
+      prSnap?.forEach((d) => {
+        if (!prMap.has(d.id)) prMap.set(d.id, d.data() as Record<string, unknown>);
+      });
     }
     data = {
       curricula: records,
       studentQuranPlans: Array.from(qpMap.values()),
       studentMushafMistakes: Array.from(mmMap.values()),
       studentBookPlans: Array.from(bpMap.values()),
+      presentations: Array.from(prMap.values()),
     };
   } else if (tabKey === 'library') {
     const books = await listBooksInComplex(workspace);
@@ -5524,6 +5551,39 @@ export async function importComplexTabJsonPayload(params: {
         true,
         async (writeDb) => {
           await upsertTransferredDoc(writeDb, 'studentBookPlans', planId, payload);
+        }
+      );
+      importedCount++;
+    }
+
+    const presentationsList = Array.isArray(sourceData.presentations)
+      ? (sourceData.presentations as Array<Record<string, unknown>>)
+      : [];
+    for (const pr of presentationsList) {
+      if (!pr || !pr.id || !pr.title) continue;
+      const prId = String(pr.id);
+      const payload: Record<string, unknown> = {
+        id: prId,
+        complexId,
+        mosqueId: String(pr.mosqueId || ''),
+        halaqaId: String(pr.halaqaId || ''),
+        title: String(pr.title || 'عرض مستورد').slice(0, 180),
+        description: String(pr.description || '').slice(0, 600),
+        sourceType: pr.sourceType === 'pptx_import' ? 'pptx_import' : 'ai',
+        sourceFileName: String(pr.sourceFileName || '').slice(0, 200),
+        slides: Array.isArray(pr.slides) ? pr.slides.slice(0, 40) : [],
+        chatHistory: Array.isArray(pr.chatHistory) ? pr.chatHistory.slice(-60) : [],
+        createdBy: String(pr.createdBy || auth.currentUser?.uid || 'admin').slice(0, 128),
+        createdByName: String(pr.createdByName || 'استيراد JSON').slice(0, 120),
+        active: pr.active !== false,
+      };
+      await executeTabWriteWithRollover(
+        workspace,
+        'curricula',
+        estimateRecordBytes(payload),
+        true,
+        async (writeDb) => {
+          await upsertTransferredDoc(writeDb, 'presentations', prId, payload);
         }
       );
       importedCount++;
@@ -6084,6 +6144,7 @@ const ALL_TRACKED_COLLECTIONS: {
   { col: 'studentQuranPlans', label: 'خطط الحفظ والمراجعة', tabGroup: 'curricula' },
   { col: 'studentMushafMistakes', label: 'أخطاء تلاوة الطلاب', tabGroup: 'curricula' },
   { col: 'studentBookPlans', label: 'متابعة وواجبات الكتب', tabGroup: 'curricula' },
+  { col: 'presentations', label: 'العروض التقديمية التفاعلية', tabGroup: 'curricula' },
   { col: 'broadcasts', label: 'الإشعارات والرسائل', tabGroup: 'core_broadcasts' },
   { col: 'stats', label: 'الإحصائيات', tabGroup: 'core_broadcasts' },
   { col: 'dbRegistry', label: 'سجل القواعد المرتبطة', tabGroup: 'core_broadcasts', primaryOnly: true },
@@ -7692,6 +7753,7 @@ export async function gatherProgrammerAiPlatformSnapshot(params: {
           'studentQuranPlans',
           'studentMushafMistakes',
           'studentBookPlans',
+          'presentations',
         ],
       },
     },
@@ -7812,7 +7874,7 @@ export async function gatherProgrammerAiPlatformSnapshot(params: {
   };
 
   return {
-    snapshotText: JSON.stringify(payload, null, 2),
+    snapshotText: JSON.stringify(payload),
     summary: {
       databasesCount: usageReport?.totalDatabasesCount ?? connectedDbs.length,
       complexesCount: complexes.length,

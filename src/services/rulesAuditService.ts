@@ -71,6 +71,7 @@ const PRIMARY_READ_CHECK_COLLECTIONS: PrimaryCollectionProbe[] = [
   { col: 'studentQuranPlans', label: 'خطط حفظ ومراجعة الطلاب (studentQuranPlans)', mode: 'list_unfiltered' },
   { col: 'studentMushafMistakes', label: 'أخطاء تلاوة الطلاب بالمصحف (studentMushafMistakes)', mode: 'list_unfiltered' },
   { col: 'studentBookPlans', label: 'متابعة وواجبات الكتب (studentBookPlans)', mode: 'list_unfiltered' },
+  { col: 'presentations', label: 'العروض التقديمية (presentations)', mode: 'list_unfiltered' },
   { col: 'broadcasts', label: 'الإشعارات والرسائل الفورية (broadcasts)', mode: 'list_unfiltered' },
   { col: 'dbRegistry', label: 'سجل ربط القواعد (dbRegistry)', mode: 'list_active_true' },
   { col: 'stats', label: 'الإحصائيات (stats)', mode: 'get_global_doc' },
@@ -93,6 +94,7 @@ const EXTERNAL_ALL_COLLECTIONS: { col: string; label: string }[] = [
   { col: 'studentQuranPlans', label: 'خطط حفظ ومراجعة الطلاب (studentQuranPlans)' },
   { col: 'studentMushafMistakes', label: 'أخطاء تلاوة الطلاب بالمصحف (studentMushafMistakes)' },
   { col: 'studentBookPlans', label: 'متابعة وواجبات الكتب (studentBookPlans)' },
+  { col: 'presentations', label: 'العروض التقديمية (presentations)' },
   { col: 'wordAudio', label: 'صوتيات القراءة والتهجي (wordAudio)' },
   { col: 'broadcasts', label: 'الإشعارات والرسائل الفورية (broadcasts)' },
 ];

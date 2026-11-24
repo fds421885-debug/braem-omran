@@ -468,6 +468,36 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidPresentation(data, presentationId) {
+      return data.keys().hasAll([
+          'id', 'complexId', 'mosqueId', 'halaqaId', 'title', 'description',
+          'sourceType', 'sourceFileName', 'slides', 'chatHistory',
+          'createdBy', 'createdByName', 'active', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'complexId', 'mosqueId', 'halaqaId', 'title', 'description',
+          'sourceType', 'sourceFileName', 'slides', 'chatHistory',
+          'createdBy', 'createdByName', 'active', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == presentationId && isValidId(data.id)
+        && data.complexId is string && isValidId(data.complexId)
+        && data.mosqueId is string && data.mosqueId.size() <= 128
+        && data.halaqaId is string && data.halaqaId.size() <= 128
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 180
+        && data.description is string && data.description.size() <= 600
+        && data.sourceType is string && data.sourceType in ['ai', 'pptx_import']
+        && data.sourceFileName is string && data.sourceFileName.size() <= 200
+        && data.slides is list && data.slides.size() <= 40
+        && (data.slides.size() == 0 || data.slides[0] is map)
+        && data.chatHistory is list && data.chatHistory.size() <= 60
+        && (data.chatHistory.size() == 0 || data.chatHistory[0] is map)
+        && data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128
+        && data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 120
+        && data.active is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     match /admins/{userId} {
       allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
       allow list: if false;
@@ -1091,6 +1121,45 @@ service cloud.firestore {
         ]);
       allow delete: if isValidId(planId) && (
         isPlatformAdmin() || isComplexStaff(existing().complexId)
+      );
+    }
+
+    match /presentations/{presentationId} {
+      allow get: if isSignedIn() && isValidId(presentationId) && (
+        isPlatformAdmin() || isComplexStaff(existing().complexId)
+      );
+      allow list: if isSignedIn() && (
+        isPlatformAdmin()
+        || (resource.data.complexId is string && isComplexStaff(resource.data.complexId))
+      );
+      allow create: if (isPlatformAdmin() || isComplexStaff(incoming().complexId))
+        && isValidId(presentationId)
+        && isValidPresentation(incoming(), presentationId)
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if (
+          isPlatformAdmin()
+          || (isComplexStaff(existing().complexId) && incoming().complexId == existing().complexId)
+        )
+        && isValidId(presentationId)
+        && isValidPresentation(incoming(), presentationId)
+        && incoming().id == existing().id
+        && incoming().complexId == existing().complexId
+        && incoming().sourceType == existing().sourceType
+        && incoming().sourceFileName == existing().sourceFileName
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdByName == existing().createdByName
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'mosqueId', 'halaqaId', 'title', 'description', 'slides',
+          'chatHistory', 'active', 'updatedAt'
+        ]);
+      allow delete: if isValidId(presentationId) && (
+        isPlatformAdmin()
+        || isComplexSupervisor(existing().complexId)
+        || (isComplexStaff(existing().complexId) && existing().createdBy == request.auth.uid)
       );
     }
   }

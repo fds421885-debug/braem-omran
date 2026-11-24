@@ -16,6 +16,7 @@ import {
   Medal,
   Megaphone,
   MoreVertical,
+  Presentation,
   RefreshCw,
   Sparkles,
   Users,
@@ -43,6 +44,7 @@ import { ComplexWorkspace } from './ComplexWorkspace';
 import { CurriculaSection } from './CurriculaSection';
 import { ModernLoader } from './ModernLoader';
 import { NotificationPermissionButton } from './NotificationPermissionButton';
+import { PresentationsSection } from './PresentationsSection';
 import { PWAInstallButton } from './PWAInstallButton';
 import { TeacherDashboardView } from './TeacherDashboardView';
 
@@ -56,7 +58,8 @@ type SupervisorTab =
   | 'attendance'
   | 'accounts_mosques'
   | 'library'
-  | 'curricula';
+  | 'curricula'
+  | 'presentations';
 
 const BASE_URL = import.meta.env.BASE_URL;
 
@@ -273,6 +276,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
     { id: 'accounts_mosques', label: 'الحسابات والمساجد', mobileLabel: 'الحسابات', icon: Building2 },
     { id: 'library', label: 'الملفات والكتب', mobileLabel: 'الكتب', icon: BookOpen },
     { id: 'curricula', label: 'المقررات', mobileLabel: 'المقررات', icon: BookMarked },
+    { id: 'presentations', label: 'العروض التقديمية', mobileLabel: 'العروض', icon: Presentation },
   ];
 
   const rankMedals = [
@@ -559,6 +563,14 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                     >
                       <BookMarked className="w-4 h-4 shrink-0" />
                       <span>المقررات</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTab('presentations')}
+                      className="duo-btn-cream min-h-[44px] px-3 sm:px-4 py-2 rounded-2xl font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                    >
+                      <Presentation className="w-4 h-4 text-[#F56900] shrink-0" />
+                      <span>العروض التقديمية</span>
                     </button>
                   </div>
                 </div>
@@ -997,6 +1009,15 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                 restrictMosqueIds={
                   restrictMosqueIds.length > 0 ? restrictMosqueIds : undefined
                 }
+              />
+            )}
+
+            {/* ==================== TAB 6: PRESENTATIONS STUDIO ==================== */}
+            {tab === 'presentations' && (
+              <PresentationsSection
+                workspace={workspace}
+                currentUserId={session.account.uid || session.account.id}
+                currentUserName={session.account.quadrupleName}
               />
             )}
           </>

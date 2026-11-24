@@ -516,6 +516,45 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "PresentationRecord": {
+      "title": "PresentationRecord",
+      "description": "Interactive AI-generated and PowerPoint-imported educational HTML presentations with Arabic Tahajji and Quran audio support for teachers and supervisors.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "complexId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "mosqueId": { "type": "string", "maxLength": 128 },
+        "halaqaId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 180 },
+        "description": { "type": "string", "maxLength": 600 },
+        "sourceType": { "type": "string", "enum": ["ai", "pptx_import"] },
+        "sourceFileName": { "type": "string", "maxLength": 200 },
+        "slides": { "type": "array", "maxItems": 40 },
+        "chatHistory": { "type": "array", "maxItems": 60 },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "complexId",
+        "mosqueId",
+        "halaqaId",
+        "title",
+        "description",
+        "sourceType",
+        "sourceFileName",
+        "slides",
+        "chatHistory",
+        "createdBy",
+        "createdByName",
+        "active",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -594,6 +633,10 @@
     "/studentBookPlans/{planId}": {
       "schema": { "$ref": "#/entities/StudentBookPlanRecord" },
       "description": "Daily per-student book reading checkpoint (where we reached) and book homeworks."
+    },
+    "/presentations/{presentationId}": {
+      "schema": { "$ref": "#/entities/PresentationRecord" },
+      "description": "Interactive educational presentations created with AI or imported from PowerPoint by teachers and supervisors."
     }
   }
 }

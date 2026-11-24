@@ -4,10 +4,6 @@ import {
   Activity,
   Bot,
   Database,
-  Edit3,
-  Eye,
-  EyeOff,
-  KeyRound,
   RefreshCw,
   Send,
   ShieldAlert,
@@ -36,7 +32,6 @@ interface ChatMessage {
   timestampMs: number;
   tokensUsed?: number;
   latencyMs?: number;
-  usingCustomKey?: boolean;
   isError?: boolean;
 }
 
@@ -51,7 +46,6 @@ interface SnapshotSummary {
   estimatedRemainingAudioClips: number;
 }
 
-const SESSION_KEY_STORAGE = 'braem_admin_ai_custom_key';
 const SESSION_LIMIT_TOKENS = 1_000_000;
 
 function formatCompactBytes(bytes: number): string {
@@ -121,20 +115,6 @@ export const ProgrammerAiAssistant: React.FC<ProgrammerAiAssistantProps> = ({
   rulesAuditReport,
 }) => {
   const [open, setOpen] = useState(false);
-
-  // Temporary custom API key (stored strictly in sessionStorage — never in Firestore)
-  const [customApiKey, setCustomApiKey] = useState<string>(() => {
-    try {
-      return typeof window !== 'undefined'
-        ? window.sessionStorage.getItem(SESSION_KEY_STORAGE) || ''
-        : '';
-    } catch {
-      return '';
-    }
-  });
-  const [keyEditorOpen, setKeyEditorOpen] = useState(false);
-  const [keyDraft, setKeyDraft] = useState(customApiKey);
-  const [showKeyText, setShowKeyText] = useState(false);
 
   // Live snapshot telemetry
   const [snapshotText, setSnapshotText] = useState<string>('');
@@ -224,33 +204,6 @@ export const ProgrammerAiAssistant: React.FC<ProgrammerAiAssistantProps> = ({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, sending]);
 
-  const handleSaveCustomKey = (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = keyDraft.trim();
-    setCustomApiKey(trimmed);
-    try {
-      if (trimmed) {
-        window.sessionStorage.setItem(SESSION_KEY_STORAGE, trimmed);
-      } else {
-        window.sessionStorage.removeItem(SESSION_KEY_STORAGE);
-      }
-    } catch {
-      // Non-fatal
-    }
-    setKeyEditorOpen(false);
-  };
-
-  const handleClearCustomKey = () => {
-    setKeyDraft('');
-    setCustomApiKey('');
-    try {
-      window.sessionStorage.removeItem(SESSION_KEY_STORAGE);
-    } catch {
-      // Non-fatal
-    }
-    setKeyEditorOpen(false);
-  };
-
   const sendMessageText = async (rawText: string) => {
     const trimmed = rawText.trim();
     if (!trimmed || sending) return;
@@ -262,10 +215,20 @@ export const ProgrammerAiAssistant: React.FC<ProgrammerAiAssistantProps> = ({
       timestampMs: Date.now(),
     };
 
-    const historyForApi = messages
-      .filter((m) => !m.isError)
-      .slice(-12)
-      .map((m) => ({ role: m.role, text: m.text }));
+    const validNonError = messages.filter((m) => !m.isError).slice(-12);
+    const historyForApi: Array<{ role: 'user' | 'model'; text: string }> = [];
+    for (const m of validNonError) {
+      if (historyForApi.length === 0 && m.role !== 'user') continue;
+      const last = historyForApi[historyForApi.length - 1];
+      if (last && last.role === m.role) {
+        last.text = `${last.text}\n${m.text}`;
+      } else {
+        historyForApi.push({ role: m.role, text: m.text });
+      }
+    }
+    if (historyForApi.length > 0 && historyForApi[historyForApi.length - 1].role === 'user') {
+      historyForApi.pop();
+    }
 
     setMessages((prev) => [...prev, userMsg]);
     setInput('');
@@ -282,7 +245,7 @@ export const ProgrammerAiAssistant: React.FC<ProgrammerAiAssistantProps> = ({
       }
 
       const controller = new AbortController();
-      const abortTimer = window.setTimeout(() => controller.abort(), 35000);
+      const abortTimer = window.setTimeout(() => controller.abort(), 50000);
       let resp: Response;
       try {
         resp = await fetch('/api/admin/ai-chat', {
@@ -293,7 +256,6 @@ export const ProgrammerAiAssistant: React.FC<ProgrammerAiAssistantProps> = ({
             message: trimmed,
             history: historyForApi,
             systemContext: currentContext,
-            customApiKey: customApiKey.trim() || undefined,
           }),
         });
       } finally {
@@ -309,7 +271,6 @@ export const ProgrammerAiAssistant: React.FC<ProgrammerAiAssistantProps> = ({
           totalTokenCount?: number;
         };
         latencyMs?: number;
-        usingCustomKey?: boolean;
       } | null;
 
       if (!resp.ok || !data?.reply) {
@@ -337,7 +298,6 @@ export const ProgrammerAiAssistant: React.FC<ProgrammerAiAssistantProps> = ({
         timestampMs: Date.now(),
         tokensUsed: totalTok,
         latencyMs: latency,
-        usingCustomKey: Boolean(data.usingCustomKey),
       };
       setMessages((prev) => [...prev, botMsg]);
     } catch (err) {
@@ -445,28 +405,12 @@ export const ProgrammerAiAssistant: React.FC<ProgrammerAiAssistantProps> = ({
                     </span>
                   </div>
                   <p className="text-[11px] font-bold text-white/90 truncate">
-                    {customApiKey ? 'يعمل بمفتاح API مخصص للجلسة' : 'يعمل بمفتاح الخادم الافتراضي'}
+                    تحليل مباشر لجميع قواعد البيانات والحدود المجانية
                   </p>
                 </div>
               </div>
 
               <div className="flex items-center gap-1 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setKeyDraft(customApiKey);
-                    setKeyEditorOpen((v) => !v);
-                  }}
-                  title="تعيين أو تعديل مفتاح API المخصص"
-                  aria-label="تعديل مفتاح API"
-                  className={`w-8 h-8 rounded-xl flex items-center justify-center transition-colors cursor-pointer ${
-                    keyEditorOpen || customApiKey
-                      ? 'bg-white text-[#F56900]'
-                      : 'bg-white/20 hover:bg-white/30 text-white'
-                  }`}
-                >
-                  <Edit3 className="w-4 h-4" />
-                </button>
                 <button
                   type="button"
                   onClick={() => void refreshSnapshot()}
@@ -499,64 +443,6 @@ export const ProgrammerAiAssistant: React.FC<ProgrammerAiAssistantProps> = ({
                 </button>
               </div>
             </div>
-
-            {/* Collapsible Custom API Key Editor (Pencil Button) */}
-            <AnimatePresence>
-              {keyEditorOpen && (
-                <motion.form
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  transition={{ duration: 0.2 }}
-                  onSubmit={handleSaveCustomKey}
-                  className="overflow-hidden bg-[#FFF9F2] border-b-2 border-[#EADBC8] shrink-0"
-                >
-                  <div className="p-3 space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <label className="text-xs font-extrabold text-[#4A220D] flex items-center gap-1.5">
-                        <KeyRound className="w-3.5 h-3.5 text-[#F56900]" />
-                        <span>مفتاح Gemini API مخصص لهذه الجلسة (بدل الافتراضي)</span>
-                      </label>
-                      {customApiKey && (
-                        <button
-                          type="button"
-                          onClick={handleClearCustomKey}
-                          className="text-[11px] font-bold text-[#D95338] hover:underline cursor-pointer"
-                        >
-                          رجوع للافتراضي
-                        </button>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="relative flex-1">
-                        <input
-                          type={showKeyText ? 'text' : 'password'}
-                          value={keyDraft}
-                          onChange={(e) => setKeyDraft(e.target.value)}
-                          placeholder="AIzaSy... (اتركه فارغاً للافتراضي)"
-                          dir="ltr"
-                          className="w-full min-h-[38px] pl-9 pr-3 rounded-xl border-2 border-[#EADBC8] bg-white text-xs font-mono text-[#4A220D] focus:outline-none focus:border-[#F56900]"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowKeyText((v) => !v)}
-                          aria-label={showKeyText ? 'إخفاء المفتاح' : 'إظهار المفتاح'}
-                          className="absolute left-2 top-1/2 -translate-y-1/2 text-[#7D4E35] hover:text-[#4A220D] cursor-pointer"
-                        >
-                          {showKeyText ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                        </button>
-                      </div>
-                      <button
-                        type="submit"
-                        className="duo-btn-green min-h-[38px] px-3 rounded-xl font-display font-bold text-xs cursor-pointer shrink-0"
-                      >
-                        تطبيق
-                      </button>
-                    </div>
-                  </div>
-                </motion.form>
-              )}
-            </AnimatePresence>
 
             {/* Limits Counter & Telemetry Strip */}
             <div className="bg-[#FDF6EE] border-b border-[#EADBC8] px-3.5 py-2 space-y-1.5 shrink-0">
@@ -685,7 +571,6 @@ export const ProgrammerAiAssistant: React.FC<ProgrammerAiAssistantProps> = ({
                       <span className="text-[10px] font-bold text-[#7D4E35] mt-1 px-1 tabular-nums">
                         {msg.latencyMs ? `${msg.latencyMs}ms` : ''}
                         {msg.tokensUsed ? ` · ${msg.tokensUsed} توكن` : ''}
-                        {msg.usingCustomKey ? ' · مفتاح مخصص' : ''}
                       </span>
                     )}
                   </div>
