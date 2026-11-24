@@ -6,6 +6,7 @@ import {
   BookOpen,
   Building2,
   CheckCircle2,
+  Cpu,
   Database,
   Edit3,
   Eye,
@@ -46,6 +47,7 @@ import type {
   MosqueRecord,
 } from '../types/platform';
 import { AdminAccountsSection } from './AdminAccountsSection';
+import { AdminAiSection } from './AdminAiSection';
 import { BroadcastComposerModal } from './BroadcastComposerModal';
 import { ComplexEditorModal } from './ComplexEditorModal';
 import { ComplexWorkspace } from './ComplexWorkspace';
@@ -61,7 +63,7 @@ interface AdminDashboardProps {
   session: ActiveSession;
 }
 
-type AdminPage = 'home' | 'complexes' | 'accounts' | 'databases';
+type AdminPage = 'home' | 'complexes' | 'accounts' | 'databases' | 'ai';
 
 const BASE_URL = import.meta.env.BASE_URL;
 const WAVING_FOX_PATH = `${BASE_URL}src/assets/images/fox_welcome_wave_1794991801893.jpg`;
@@ -368,6 +370,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
             >
               <Database className="w-4 h-4 shrink-0" />
               <span>قواعد البيانات</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedComplex(null);
+                setPage('ai');
+              }}
+              className={`min-h-[38px] px-3.5 py-1.5 rounded-xl font-display text-xs lg:text-sm font-bold whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 transition-colors cursor-pointer ${
+                page === 'ai' && !selectedComplex
+                  ? 'bg-[#F56900] text-white'
+                  : 'text-[#7D4E35] hover:text-[#4A220D] hover:bg-white'
+              }`}
+            >
+              <Cpu className="w-4 h-4 shrink-0" />
+              <span>AI</span>
             </button>
           </nav>
         </div>
@@ -819,13 +836,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
           />
         ) : !loading && page === 'databases' ? (
           <DatabaseUsageDashboard complexes={complexes} />
+        ) : !loading && page === 'ai' ? (
+          <AdminAiSection complexes={complexes} />
         ) : null}
       </main>
 
       {/* Mobile Bottom Nav */}
       <nav
         aria-label="تنقل المشرف للهاتف"
-        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t-2 border-[#EADBC8] min-h-[64px] pt-1.5 pb-safe px-2 grid grid-cols-4 items-center"
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t-2 border-[#EADBC8] min-h-[64px] pt-1.5 pb-safe px-1 grid grid-cols-5 items-center"
       >
         <button
           type="button"
@@ -881,6 +900,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
         >
           <Database className="w-5 h-5" />
           <span className="font-display text-[11px] font-bold">القواعد</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setSelectedComplex(null);
+            setPage('ai');
+          }}
+          className={`min-h-[48px] flex flex-col items-center justify-center gap-0.5 rounded-xl cursor-pointer ${
+            page === 'ai' && !selectedComplex ? 'text-[#F56900]' : 'text-[#7D4E35]'
+          }`}
+        >
+          <Cpu className="w-5 h-5" />
+          <span className="font-display text-[11px] font-bold">AI</span>
         </button>
       </nav>
 

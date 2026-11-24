@@ -30,14 +30,83 @@ function cleanEnvSecret(raw?: string): string {
   return raw.trim().replace(/^["']|["']$/g, '').trim();
 }
 
-function getConfiguredGeminiKey(customApiKey?: string): string {
-  const custom = cleanEnvSecret(customApiKey);
-  if (custom) return custom;
+export type ServerAiKeySlotId =
+  | 'default'
+  | 'slot_1'
+  | 'slot_2'
+  | 'slot_3'
+  | 'slot_4'
+  | 'slot_5';
+
+interface ServerAiKeySlotDefinition {
+  slotId: ServerAiKeySlotId;
+  envVarName: string;
+  label: string;
+}
+
+const SERVER_AI_KEY_SLOTS: ServerAiKeySlotDefinition[] = [
+  { slotId: 'default', envVarName: 'GEMINI_API_KEY', label: 'المسار الافتراضي للخادم (GEMINI_API_KEY)' },
+  { slotId: 'slot_1', envVarName: 'GEMINI_API_KEY_1', label: 'مفتاح خادم مخصص 1 (GEMINI_API_KEY_1)' },
+  { slotId: 'slot_2', envVarName: 'GEMINI_API_KEY_2', label: 'مفتاح خادم مخصص 2 (GEMINI_API_KEY_2)' },
+  { slotId: 'slot_3', envVarName: 'GEMINI_API_KEY_3', label: 'مفتاح خادم مخصص 3 (GEMINI_API_KEY_3)' },
+  { slotId: 'slot_4', envVarName: 'GEMINI_API_KEY_4', label: 'مفتاح خادم مخصص 4 (GEMINI_API_KEY_4)' },
+  { slotId: 'slot_5', envVarName: 'GEMINI_API_KEY_5', label: 'مفتاح خادم مخصص 5 (GEMINI_API_KEY_5)' },
+];
+
+function normalizeKeySlotId(rawSlot?: unknown): ServerAiKeySlotId {
+  const s = String(rawSlot || '').trim();
+  if (
+    s === 'slot_1' ||
+    s === 'slot_2' ||
+    s === 'slot_3' ||
+    s === 'slot_4' ||
+    s === 'slot_5'
+  ) {
+    return s;
+  }
+  return 'default';
+}
+
+function getSlotRawKey(slotId: ServerAiKeySlotId): string {
+  if (slotId === 'slot_1') return cleanEnvSecret(process.env.GEMINI_API_KEY_1);
+  if (slotId === 'slot_2') return cleanEnvSecret(process.env.GEMINI_API_KEY_2);
+  if (slotId === 'slot_3') return cleanEnvSecret(process.env.GEMINI_API_KEY_3);
+  if (slotId === 'slot_4') return cleanEnvSecret(process.env.GEMINI_API_KEY_4);
+  if (slotId === 'slot_5') return cleanEnvSecret(process.env.GEMINI_API_KEY_5);
   return (
     cleanEnvSecret(process.env.GEMINI_API_KEY) ||
     cleanEnvSecret(process.env.GOOGLE_API_KEY) ||
     cleanEnvSecret(process.env.API_KEY)
   );
+}
+
+function listConfiguredKeySlots() {
+  return SERVER_AI_KEY_SLOTS.map((def) => {
+    const val = getSlotRawKey(def.slotId);
+    return {
+      slotId: def.slotId,
+      envVarName: def.envVarName,
+      label: def.label,
+      configured: Boolean(val),
+    };
+  });
+}
+
+function getConfiguredGeminiKey(slotId: ServerAiKeySlotId = 'default'): string {
+  if (slotId !== 'default') {
+    const slotKey = getSlotRawKey(slotId);
+    if (!slotKey) {
+      const def = SERVER_AI_KEY_SLOTS.find((d) => d.slotId === slotId);
+      throw Object.assign(
+        new Error(
+          `MISSING_SLOT_KEY: مسار المفتاح "${def?.envVarName || slotId}" غير مضبوط في متغيرات البيئة على الخادم.`
+        ),
+        { status: 500 }
+      );
+    }
+    return slotKey;
+  }
+  return getSlotRawKey('default');
 }
 
 function isAiStudioManagedModel(modelName: string): boolean {
@@ -48,10 +117,13 @@ function isAiStudioManagedModel(modelName: string): boolean {
   );
 }
 
-function shouldPreferPublicGeminiModels(customApiKey?: string): boolean {
-  const cleanedCustom = cleanEnvSecret(customApiKey);
+function supportsLegacySamplingParams(modelName: string): boolean {
+  return !modelName.startsWith('gemini-4-');
+}
+
+function shouldPreferPublicGeminiModels(slotId: ServerAiKeySlotId = 'default'): boolean {
   if (IS_RENDER) return true;
-  if (cleanedCustom) return true;
+  if (slotId !== 'default') return true;
   return false;
 }
 
@@ -135,8 +207,8 @@ function isModelRetryableOrFallbackError(err: unknown): boolean {
   return false;
 }
 
-function getGeminiClient(customApiKey?: string): GoogleGenAI {
-  const apiKey = getConfiguredGeminiKey(customApiKey);
+function getGeminiClient(slotId: ServerAiKeySlotId = 'default'): GoogleGenAI {
+  const apiKey = getConfiguredGeminiKey(slotId);
   if (!apiKey) {
     throw new Error('GEMINI_API_KEY is not configured on the server.');
   }
@@ -148,6 +220,51 @@ function getGeminiClient(customApiKey?: string): GoogleGenAI {
       },
     },
   });
+}
+
+interface AiAttemptTrace {
+  model: string;
+  status: number;
+  latencyMs: number;
+  rawError: string;
+  keySlot: ServerAiKeySlotId;
+}
+
+interface AiDiagnosticLogEntry {
+  id: string;
+  timestampMs: number;
+  endpoint: string;
+  keySlot: ServerAiKeySlotId;
+  complexId?: string;
+  accountId?: string;
+  finalStatus: number;
+  friendlyMessage: string;
+  rawError: string;
+  attempts: AiAttemptTrace[];
+}
+
+const aiDiagnosticLogs: AiDiagnosticLogEntry[] = [];
+
+function extractRawErrorInfo(err: unknown): { status: number; rawMessage: string } {
+  const errObj = err as { status?: number; code?: number; message?: string };
+  const status = Number(errObj?.status || errObj?.code || 0);
+  const rawMessage = (err instanceof Error ? err.message : String(err || 'Unknown error'))
+    .replace(/AIza[0-9A-Za-z_-]{16,}/g, '[REDACTED_KEY]')
+    .slice(0, 600);
+  return { status, rawMessage };
+}
+
+function recordAiDiagnosticLog(entry: Omit<AiDiagnosticLogEntry, 'id' | 'timestampMs'>): AiDiagnosticLogEntry {
+  const record: AiDiagnosticLogEntry = {
+    id: `err_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    timestampMs: Date.now(),
+    ...entry,
+  };
+  aiDiagnosticLogs.unshift(record);
+  if (aiDiagnosticLogs.length > 60) {
+    aiDiagnosticLogs.length = 60;
+  }
+  return record;
 }
 
 function normalizeUthmaniForTts(input: string): string {
@@ -212,11 +329,17 @@ function getFriendlyGeminiError(err: unknown): { status: number; message: string
     console.error('[Gemini API Error]', { statusCode, message: raw.slice(0, 500) });
   }
 
+  if (lower.includes('missing_slot_key')) {
+    return {
+      status: 500,
+      message: raw.replace(/^MISSING_SLOT_KEY:\s*/i, ''),
+    };
+  }
   if (lower.includes('gemini_api_key')) {
     return {
       status: 500,
       message:
-        'مفتاح الذكاء الاصطناعي غير مضبوط على الخادم (أضف GEMINI_API_KEY في متغيرات البيئة على Render ثم أعد النشر).',
+        'مفتاح الذكاء الاصطناعي غير مضبوط على الخادم (أضف GEMINI_API_KEY في متغيرات البيئة ثم أعد التشغيل).',
     };
   }
   if (lower.includes('timeout')) {
@@ -469,21 +592,150 @@ async function startServer() {
       ok: true,
       runtime: IS_RENDER ? 'render' : 'node',
       isProd: IS_PROD,
-      hasGeminiKey: Boolean(getConfiguredGeminiKey()),
+      hasGeminiKey: Boolean(getSlotRawKey('default')),
       nodeVersion: process.version,
+    });
+  });
+
+  app.get('/api/admin/ai-diagnostics', (_req: Request, res: Response) => {
+    res.json({
+      ok: true,
+      runtime: IS_RENDER ? 'render' : 'node',
+      isProd: IS_PROD,
+      preferPublicModels: shouldPreferPublicGeminiModels('default'),
+      keySlots: listConfiguredKeySlots(),
+      recentErrors: aiDiagnosticLogs,
+      serverTimeMs: Date.now(),
+    });
+  });
+
+  app.delete('/api/admin/ai-diagnostics/logs', (_req: Request, res: Response) => {
+    aiDiagnosticLogs.length = 0;
+    res.json({ ok: true });
+  });
+
+  app.post('/api/admin/ai-test', async (req: Request, res: Response) => {
+    const slotId = normalizeKeySlotId((req.body as { aiSlotId?: string })?.aiSlotId);
+    const keyVal = getSlotRawKey(slotId);
+    if (!keyVal) {
+      const def = SERVER_AI_KEY_SLOTS.find((d) => d.slotId === slotId);
+      res.status(400).json({
+        ok: false,
+        slotId,
+        error: `المسار ${def?.envVarName || slotId} غير مضبوط في متغيرات البيئة على الخادم.`,
+        results: [],
+      });
+      return;
+    }
+
+    const ai = getGeminiClient(slotId);
+    const modelsToProbe = [
+      ...buildOrderedModels(
+        ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'],
+        ['gemini-3.8-flash', 'gemini-3.5-flash-lite'],
+        shouldPreferPublicGeminiModels(slotId)
+      ),
+    ];
+
+    const probeResults = await Promise.all(
+      modelsToProbe.map(async (modelName) => {
+        const start = Date.now();
+        try {
+          const r = await withTimeout(
+            ai.models.generateContent({
+              model: modelName,
+              contents: 'أجب بكلمة واحدة فقط: جاهز',
+            }),
+            9000
+          );
+          return {
+            model: modelName,
+            ok: Boolean((r.text || '').trim()),
+            status: 200,
+            latencyMs: Date.now() - start,
+            sampleText: (r.text || '').trim().slice(0, 80),
+            rawError: '',
+          };
+        } catch (err) {
+          const info = extractRawErrorInfo(err);
+          return {
+            model: modelName,
+            ok: false,
+            status: info.status || 500,
+            latencyMs: Date.now() - start,
+            sampleText: '',
+            rawError: info.rawMessage,
+          };
+        }
+      })
+    );
+
+    // Also probe TTS connectivity briefly
+    const ttsStart = Date.now();
+    try {
+      const ttsRes = await withTimeout(
+        ai.models.generateContent({
+          model: 'gemini-3.8-flash-lite-tts',
+          contents: 'مَرْحَباً',
+          config: {
+            responseModalities: ['AUDIO'],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName: 'Charon' },
+              },
+            },
+          },
+        }),
+        9000
+      );
+      const hasAudio = Boolean(
+        ttsRes.candidates?.[0]?.content?.parts?.some((p) => Boolean(p.inlineData?.data))
+      );
+      probeResults.push({
+        model: 'gemini-3.8-flash-lite-tts',
+        ok: hasAudio,
+        status: hasAudio ? 200 : 502,
+        latencyMs: Date.now() - ttsStart,
+        sampleText: hasAudio ? 'AUDIO_OK' : '',
+        rawError: hasAudio ? '' : 'Empty audio output',
+      });
+    } catch (ttsErr) {
+      const info = extractRawErrorInfo(ttsErr);
+      probeResults.push({
+        model: 'gemini-3.8-flash-lite-tts',
+        ok: false,
+        status: info.status || 500,
+        latencyMs: Date.now() - ttsStart,
+        sampleText: '',
+        rawError: info.rawMessage,
+      });
+    }
+
+    res.json({
+      ok: probeResults.some((r) => r.ok),
+      slotId,
+      runtime: IS_RENDER ? 'render' : 'node',
+      results: probeResults,
+      checkedAtMs: Date.now(),
     });
   });
 
   // 1. Analyze an uploaded book page image (OCR with full Arabic Tashkeel + Bounding Boxes + Quran Ayah detection)
   app.post('/api/books/analyze-page', async (req: Request, res: Response) => {
+    const body = (req.body || {}) as {
+      imageBase64?: string;
+      imageDataUrl?: string;
+      mimeType?: string;
+      pageNumber?: number;
+      bookTitle?: string;
+      aiSlotId?: string;
+      complexId?: string;
+      accountId?: string;
+    };
+    const slotId = normalizeKeySlotId(body.aiSlotId);
+    const analyzeAttempts: AiAttemptTrace[] = [];
     try {
-      const { imageBase64, imageDataUrl, mimeType, pageNumber, bookTitle } = req.body as {
-        imageBase64?: string;
-        imageDataUrl?: string;
-        mimeType?: string;
-        pageNumber?: number;
-        bookTitle?: string;
-      };
+      const { imageBase64, imageDataUrl, mimeType, pageNumber, bookTitle } = body;
 
       const rawImageInput = imageBase64 || imageDataUrl;
       if (!rawImageInput || typeof rawImageInput !== 'string') {
@@ -503,7 +755,7 @@ async function startServer() {
         ? rawImageInput.split(',')[1] || ''
         : rawImageInput;
 
-      const ai = getGeminiClient();
+      const ai = getGeminiClient(slotId);
 
       const promptText = `أنت خبير متخصص في الرقمنة القرآنية والتعليمية واللغة العربية وضبط الحركات (التشكيل) ومنهج نور البيان.
 قم بتحليل صورة صفحة الكتاب العربي التالية (عنوان الكتاب: "${bookTitle || 'كتاب تعليمي'}", صفحة رقم ${pageNumber || 1}) بدقة فائقة:
@@ -585,17 +837,28 @@ async function startServer() {
 
       const analyzeCandidates = buildOrderedModels(
         ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'],
-        ['gemini-2.5-flash', 'gemini-2.5-flash-lite'],
-        shouldPreferPublicGeminiModels()
+        ['gemini-3.8-flash', 'gemini-3.5-flash-lite'],
+        shouldPreferPublicGeminiModels(slotId)
       );
       let result;
       let lastAnalyzeErr: unknown;
       for (const candidateModel of analyzeCandidates) {
+        const attemptStart = Date.now();
         try {
           result = await runAnalyzeModel(candidateModel, 20000);
           break;
         } catch (err) {
-          lastAnalyzeErr = err;
+          const info = extractRawErrorInfo(err);
+          analyzeAttempts.push({
+            model: candidateModel,
+            status: info.status,
+            latencyMs: Date.now() - attemptStart,
+            rawError: info.rawMessage,
+            keySlot: slotId,
+          });
+          if (!lastAnalyzeErr || info.status !== 404) {
+            lastAnalyzeErr = err;
+          }
           if (!isModelRetryableOrFallbackError(err)) {
             throw err;
           }
@@ -651,19 +914,36 @@ async function startServer() {
       });
     } catch (err) {
       const friendly = getFriendlyGeminiError(err);
-      res.status(friendly.status).json({ error: friendly.message });
+      const rawInfo = extractRawErrorInfo(err);
+      const diagnostic = recordAiDiagnosticLog({
+        endpoint: '/api/books/analyze-page',
+        keySlot: slotId,
+        complexId: body.complexId,
+        accountId: body.accountId,
+        finalStatus: friendly.status,
+        friendlyMessage: friendly.message,
+        rawError: rawInfo.rawMessage,
+        attempts: analyzeAttempts,
+      });
+      res.status(friendly.status).json({ error: friendly.message, diagnostic });
     }
   });
 
   // 2. Generate authentic Al-Fath Al-Rabbani (أكاديمية الفتح العالمية بعرب القرآن) Tajweed-integrated Tahajji
   app.post('/api/books/noor-albayan', async (req: Request, res: Response) => {
+    const body = (req.body || {}) as {
+      text?: string;
+      surahName?: string;
+      nextWord?: string;
+      isEndOfAyah?: boolean;
+      aiSlotId?: string;
+      complexId?: string;
+      accountId?: string;
+    };
+    const slotId = normalizeKeySlotId(body.aiSlotId);
+    const noorAttempts: AiAttemptTrace[] = [];
     try {
-      const { text, surahName, nextWord, isEndOfAyah } = req.body as {
-        text?: string;
-        surahName?: string;
-        nextWord?: string;
-        isEndOfAyah?: boolean;
-      };
+      const { text, surahName, nextWord, isEndOfAyah } = body;
       const target = String(text || '').trim().slice(0, 400);
       if (!target) {
         res.status(400).json({ error: 'النص مطلوب لإنشاء التهجي.' });
@@ -691,7 +971,7 @@ async function startServer() {
       const contextBlock =
         contextNotes.length > 0 ? `\nسياق القراءة:\n- ${contextNotes.join('\n- ')}\n` : '';
 
-      const ai = getGeminiClient();
+      const ai = getGeminiClient(slotId);
       const prompt = `أنت معلم متقن لمنهج "الفتح الرباني" (طريقة أكاديمية الفتح العالمية بعرب القرآن) في تعليم القراءة العربية وتهجي القرآن الكريم بأحكام التجويد.
 حلّل النص التالي بالتهجي التفصيلي حسب منهج الفتح الرباني:
 النص: "${target}"${contextBlock}
@@ -798,22 +1078,26 @@ async function startServer() {
 
       const noorCandidates = buildOrderedModels(
         ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'],
-        ['gemini-2.5-flash-lite', 'gemini-2.5-flash'],
-        shouldPreferPublicGeminiModels()
+        ['gemini-3.5-flash-lite', 'gemini-3.8-flash'],
+        shouldPreferPublicGeminiModels(slotId)
       );
       let result;
       let lastNoorErr: unknown;
       for (const candidateModel of noorCandidates) {
+        const attemptStart = Date.now();
         try {
           result = await runNoorModel(candidateModel, 12000);
           break;
         } catch (err) {
-          const errStatus = Number(
-            (err as { status?: number; code?: number })?.status ||
-              (err as { status?: number; code?: number })?.code ||
-              0
-          );
-          if (!lastNoorErr || errStatus !== 404) {
+          const info = extractRawErrorInfo(err);
+          noorAttempts.push({
+            model: candidateModel,
+            status: info.status,
+            latencyMs: Date.now() - attemptStart,
+            rawError: info.rawMessage,
+            keySlot: slotId,
+          });
+          if (!lastNoorErr || info.status !== 404) {
             lastNoorErr = err;
           }
           if (!isModelRetryableOrFallbackError(err)) {
@@ -844,17 +1128,34 @@ async function startServer() {
       res.json(payload);
     } catch (err) {
       const friendly = getFriendlyGeminiError(err);
-      res.status(friendly.status).json({ error: friendly.message });
+      const rawInfo = extractRawErrorInfo(err);
+      const diagnostic = recordAiDiagnosticLog({
+        endpoint: '/api/books/noor-albayan',
+        keySlot: slotId,
+        complexId: body.complexId,
+        accountId: body.accountId,
+        finalStatus: friendly.status,
+        friendlyMessage: friendly.message,
+        rawError: rawInfo.rawMessage,
+        attempts: noorAttempts,
+      });
+      res.status(friendly.status).json({ error: friendly.message, diagnostic });
     }
   });
 
   // 3. Generate Studio Arabic Audio (WAV) via Gemini TTS respecting Harakat & Tajweed articulation
   app.post('/api/tts/speak', async (req: Request, res: Response) => {
+    const body = (req.body || {}) as {
+      text?: string;
+      mode?: 'tahajji' | 'noor_albayan' | 'normal';
+      aiSlotId?: string;
+      complexId?: string;
+      accountId?: string;
+    };
+    const slotId = normalizeKeySlotId(body.aiSlotId);
+    const ttsAttempts: AiAttemptTrace[] = [];
     try {
-      const { text, mode } = req.body as {
-        text?: string;
-        mode?: 'tahajji' | 'noor_albayan' | 'normal';
-      };
+      const { text, mode } = body;
 
       const spokenText = normalizeUthmaniForTts(String(text || '').trim().slice(0, 1800));
       if (!spokenText) {
@@ -893,11 +1194,11 @@ async function startServer() {
             ? 'Arabic Tajweed teacher reciting Al-Fath Al-Rabbani step-by-step spelling. Articulate every single short vowel (Fatha, Kasra, Damma) crisply and accurately even on isolated one-letter syllables—never mute them into Sukoon or change Kasra to Fatha. Hold every Sukoon cleanly without adding extra vowels. Pronounce every Shadda with clear double gemination and its exact attached vowel. Lengthen Madd letters and Ghunnah clearly and naturally at a calm, measured instructional pace.'
             : 'Eloquent Classical Arabic Quran and pedagogy teacher reciting with exact Tashkeel, clear Shadda gemination, accurate Sukoon stops, proper Madd elongation, and natural connected pacing without rushing.';
 
-        const ai = getGeminiClient();
+        const ai = getGeminiClient(slotId);
         const ttsCandidates = buildOrderedModels(
           ['gemini-3.8-flash-lite-tts'],
           ['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts'],
-          shouldPreferPublicGeminiModels()
+          shouldPreferPublicGeminiModels(slotId)
         ).filter((m, idx, arr) => arr.indexOf(m) === idx);
 
         pendingPromise = enqueueTtsRequest(async () => {
@@ -943,6 +1244,7 @@ async function startServer() {
                 12000
               );
 
+            const attemptStart = Date.now();
             try {
               response = await sendTts(true);
               break;
@@ -953,6 +1255,14 @@ async function startServer() {
                   response = await sendTts(false);
                   break;
                 } catch (err2) {
+                  const info2 = extractRawErrorInfo(err2);
+                  ttsAttempts.push({
+                    model: candidateModel,
+                    status: info2.status,
+                    latencyMs: Date.now() - attemptStart,
+                    rawError: info2.rawMessage,
+                    keySlot: slotId,
+                  });
                   lastTtsErr = err2;
                   if (!isModelRetryableOrFallbackError(err2)) {
                     throw err2;
@@ -960,6 +1270,14 @@ async function startServer() {
                   continue;
                 }
               }
+              const info = extractRawErrorInfo(err);
+              ttsAttempts.push({
+                model: candidateModel,
+                status: info.status,
+                latencyMs: Date.now() - attemptStart,
+                rawError: info.rawMessage,
+                keySlot: slotId,
+              });
               lastTtsErr = err;
               if (!isModelRetryableOrFallbackError(err)) {
                 throw err;
@@ -1015,6 +1333,17 @@ async function startServer() {
         return;
       }
       const friendly = getFriendlyGeminiError(err);
+      const rawInfo = extractRawErrorInfo(err);
+      const diagnostic = recordAiDiagnosticLog({
+        endpoint: '/api/tts/speak',
+        keySlot: slotId,
+        complexId: body.complexId,
+        accountId: body.accountId,
+        finalStatus: friendly.status,
+        friendlyMessage: friendly.message,
+        rawError: rawInfo.rawMessage,
+        attempts: ttsAttempts,
+      });
       if (friendly.status === 429) {
         if (ttsRateLimitUntilMs <= Date.now()) {
           ttsRateLimitUntilMs = Date.now() + 12000;
@@ -1024,18 +1353,22 @@ async function startServer() {
           String(Math.max(2, Math.ceil(Math.max(0, ttsRateLimitUntilMs - Date.now()) / 1000) || 12))
         );
       }
-      res.status(friendly.status).json({ error: friendly.message });
+      res.status(friendly.status).json({ error: friendly.message, diagnostic });
     }
   });
 
   // 4. Smart & Fast Programmer AI Assistant for full platform & database diagnostics
   app.post('/api/admin/ai-chat', async (req: Request, res: Response) => {
+    const body = (req.body || {}) as {
+      message?: string;
+      history?: Array<{ role: 'user' | 'model'; text: string }>;
+      systemContext?: string;
+      aiSlotId?: string;
+    };
+    const slotId = normalizeKeySlotId(body.aiSlotId);
+    const chatAttempts: AiAttemptTrace[] = [];
     try {
-      const { message, history, systemContext } = req.body as {
-        message?: string;
-        history?: Array<{ role: 'user' | 'model'; text: string }>;
-        systemContext?: string;
-      };
+      const { message, history, systemContext } = body;
 
       const cleanMessage = String(message || '').trim().slice(0, 4000);
       if (!cleanMessage) {
@@ -1043,7 +1376,7 @@ async function startServer() {
         return;
       }
 
-      const ai = getGeminiClient();
+      const ai = getGeminiClient(slotId);
 
       const safeContext = String(systemContext || '').slice(0, 95000);
       const systemInstruction = `أنت المساعد التقني الذكي المتخصص لمبرمج منصة «براعم عمران» (منصة تعليمية قرآنية متعددة قواعد البيانات).
@@ -1089,7 +1422,7 @@ ${safeContext || 'لم يتم إرفاق بيانات بعد.'}`;
                 contents,
                 config: {
                   ...(thinkingCfg ? { thinkingConfig: thinkingCfg } : {}),
-                  temperature: 0.35,
+                  ...(supportsLegacySamplingParams(modelName) ? { temperature: 0.35 } : {}),
                   systemInstruction,
                 },
               }),
@@ -1101,28 +1434,32 @@ ${safeContext || 'لم يتم إرفاق بيانات بعد.'}`;
 
       const chatCandidates = buildOrderedModels(
         ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'],
-        ['gemini-2.5-flash', 'gemini-2.5-flash-lite'],
-        shouldPreferPublicGeminiModels()
+        ['gemini-3.8-flash', 'gemini-3.5-flash-lite'],
+        shouldPreferPublicGeminiModels(slotId)
       );
 
       let result;
       let lastChatErr: unknown;
+      let usedModel = '';
       for (const candidateModel of chatCandidates) {
+        const attemptStart = Date.now();
         try {
           result = await callModel(candidateModel, 14000);
+          usedModel = candidateModel;
           break;
         } catch (candidateErr) {
-          const errStatus = Number(
-            (candidateErr as { status?: number; code?: number })?.status ||
-              (candidateErr as { status?: number; code?: number })?.code ||
-              0
-          );
-          if (!lastChatErr || errStatus !== 404) {
+          const info = extractRawErrorInfo(candidateErr);
+          chatAttempts.push({
+            model: candidateModel,
+            status: info.status,
+            latencyMs: Date.now() - attemptStart,
+            rawError: info.rawMessage,
+            keySlot: slotId,
+          });
+          if (!lastChatErr || info.status !== 404) {
             lastChatErr = candidateErr;
           }
-          const rawErr =
-            candidateErr instanceof Error ? candidateErr.message : String(candidateErr);
-          console.warn(`[AI Chat fallback from ${candidateModel}]`, rawErr.slice(0, 220));
+          console.warn(`[AI Chat fallback from ${candidateModel}]`, info.rawMessage.slice(0, 220));
           if (!isModelRetryableOrFallbackError(candidateErr)) {
             throw candidateErr;
           }
@@ -1142,6 +1479,8 @@ ${safeContext || 'لم يتم إرفاق بيانات بعد.'}`;
 
       res.json({
         reply: replyText,
+        modelUsed: usedModel,
+        keySlot: slotId,
         usageMetadata: result.usageMetadata
           ? {
               promptTokenCount: result.usageMetadata.promptTokenCount ?? 0,
@@ -1153,12 +1492,58 @@ ${safeContext || 'لم يتم إرفاق بيانات بعد.'}`;
       });
     } catch (err) {
       const friendly = getFriendlyGeminiError(err);
-      res.status(friendly.status).json({ error: friendly.message });
+      const rawInfo = extractRawErrorInfo(err);
+      const diagnostic = recordAiDiagnosticLog({
+        endpoint: '/api/admin/ai-chat',
+        keySlot: slotId,
+        finalStatus: friendly.status,
+        friendlyMessage: friendly.message,
+        rawError: rawInfo.rawMessage,
+        attempts: chatAttempts,
+      });
+      res.status(friendly.status).json({ error: friendly.message, diagnostic });
     }
   });
 
   // 5. Interactive Braem Omran Presentation Studio AI Generator & Editor
   app.post('/api/presentations/chat', async (req: Request, res: Response) => {
+    const body = (req.body || {}) as {
+      message?: string;
+      history?: Array<{ role: 'user' | 'model'; text: string }>;
+      presentationTitle?: string;
+      currentSlides?: Array<{
+        id: string;
+        order: number;
+        title: string;
+        subtitle?: string;
+        layout?: string;
+        themeTone?: string;
+        htmlContent?: string;
+        speakerNotes?: string;
+        interactiveBlocks?: Array<{
+          id?: string;
+          type?: string;
+          label?: string;
+          arabicText?: string;
+          surahNumber?: number;
+          ayahNumber?: number;
+          surahName?: string;
+          note?: string;
+        }>;
+      }>;
+      targetSlideIndex?: number;
+      importedPptxSlides?: Array<{
+        slideNumber: number;
+        title?: string;
+        paragraphs?: string[];
+        notes?: string;
+      }>;
+      aiSlotId?: string;
+      complexId?: string;
+      accountId?: string;
+    };
+    const slotId = normalizeKeySlotId(body.aiSlotId);
+    const presAttempts: AiAttemptTrace[] = [];
     try {
       const {
         message,
@@ -1167,38 +1552,7 @@ ${safeContext || 'لم يتم إرفاق بيانات بعد.'}`;
         currentSlides,
         targetSlideIndex,
         importedPptxSlides,
-      } = req.body as {
-        message?: string;
-        history?: Array<{ role: 'user' | 'model'; text: string }>;
-        presentationTitle?: string;
-        currentSlides?: Array<{
-          id: string;
-          order: number;
-          title: string;
-          subtitle?: string;
-          layout?: string;
-          themeTone?: string;
-          htmlContent?: string;
-          speakerNotes?: string;
-          interactiveBlocks?: Array<{
-            id?: string;
-            type?: string;
-            label?: string;
-            arabicText?: string;
-            surahNumber?: number;
-            ayahNumber?: number;
-            surahName?: string;
-            note?: string;
-          }>;
-        }>;
-        targetSlideIndex?: number;
-        importedPptxSlides?: Array<{
-          slideNumber: number;
-          title?: string;
-          paragraphs?: string[];
-          notes?: string;
-        }>;
-      };
+      } = body;
 
       const hasPptx = Array.isArray(importedPptxSlides) && importedPptxSlides.length > 0;
       const cleanMessage = String(
@@ -1219,7 +1573,7 @@ ${safeContext || 'لم يتم إرفاق بيانات بعد.'}`;
         targetSlideIndex < slidesArr.length &&
         !hasPptx;
 
-      const ai = getGeminiClient();
+      const ai = getGeminiClient(slotId);
 
       const slideSummaryContext = slidesArr.length
         ? slidesArr.map((s, idx) => ({
@@ -1389,7 +1743,7 @@ ${safeContext || 'لم يتم إرفاق بيانات بعد.'}`;
                 contents,
                 config: {
                   ...(thinkingCfg ? { thinkingConfig: thinkingCfg } : {}),
-                  temperature: 0.45,
+                  ...(supportsLegacySamplingParams(modelName) ? { temperature: 0.45 } : {}),
                   systemInstruction,
                   responseMimeType: 'application/json',
                   responseSchema: presentationSchema,
@@ -1403,28 +1757,30 @@ ${safeContext || 'لم يتم إرفاق بيانات بعد.'}`;
 
       const presCandidates = buildOrderedModels(
         ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'],
-        ['gemini-2.5-flash', 'gemini-2.5-flash-lite'],
-        shouldPreferPublicGeminiModels()
+        ['gemini-3.8-flash', 'gemini-3.5-flash-lite'],
+        shouldPreferPublicGeminiModels(slotId)
       );
 
       let result;
       let lastPresErr: unknown;
       for (const candidateModel of presCandidates) {
+        const attemptStart = Date.now();
         try {
           result = await runPresentationModel(candidateModel, 25000);
           break;
         } catch (candidateErr) {
-          const errStatus = Number(
-            (candidateErr as { status?: number; code?: number })?.status ||
-              (candidateErr as { status?: number; code?: number })?.code ||
-              0
-          );
-          if (!lastPresErr || errStatus !== 404) {
+          const info = extractRawErrorInfo(candidateErr);
+          presAttempts.push({
+            model: candidateModel,
+            status: info.status,
+            latencyMs: Date.now() - attemptStart,
+            rawError: info.rawMessage,
+            keySlot: slotId,
+          });
+          if (!lastPresErr || info.status !== 404) {
             lastPresErr = candidateErr;
           }
-          const rawErr =
-            candidateErr instanceof Error ? candidateErr.message : String(candidateErr);
-          console.warn(`[Presentation AI fallback from ${candidateModel}]`, rawErr.slice(0, 220));
+          console.warn(`[Presentation AI fallback from ${candidateModel}]`, info.rawMessage.slice(0, 220));
           if (!isModelRetryableOrFallbackError(candidateErr)) {
             throw candidateErr;
           }
@@ -1542,7 +1898,18 @@ ${safeContext || 'لم يتم إرفاق بيانات بعد.'}`;
       });
     } catch (err) {
       const friendly = getFriendlyGeminiError(err);
-      res.status(friendly.status).json({ error: friendly.message });
+      const rawInfo = extractRawErrorInfo(err);
+      const diagnostic = recordAiDiagnosticLog({
+        endpoint: '/api/presentations/chat',
+        keySlot: slotId,
+        complexId: body.complexId,
+        accountId: body.accountId,
+        finalStatus: friendly.status,
+        friendlyMessage: friendly.message,
+        rawError: rawInfo.rawMessage,
+        attempts: presAttempts,
+      });
+      res.status(friendly.status).json({ error: friendly.message, diagnostic });
     }
   });
 

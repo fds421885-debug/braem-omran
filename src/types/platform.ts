@@ -654,4 +654,93 @@ export interface PresentationRecord {
   updatedAt?: unknown;
 }
 
+export type AiServerKeySlotId =
+  | 'default'
+  | 'slot_1'
+  | 'slot_2'
+  | 'slot_3'
+  | 'slot_4'
+  | 'slot_5';
+
+export type AiComplexSubscriptionTier = 'subscribed' | 'trial' | 'disabled';
+
+export interface AiFeaturePermissions {
+  ocr: boolean;
+  tahajji: boolean;
+  tts: boolean;
+  presentations: boolean;
+}
+
+export interface ComplexAiPolicy {
+  complexId: string;
+  enabled: boolean;
+  tier: AiComplexSubscriptionTier;
+  serverKeySlot: AiServerKeySlotId;
+  dailyLimit: number;
+  features: AiFeaturePermissions;
+  note: string;
+  updatedAtMs: number;
+}
+
+export interface AccountAiPolicy {
+  accountId: string;
+  mode: 'inherit' | 'enabled' | 'disabled';
+  serverKeySlot: 'inherit' | AiServerKeySlotId;
+  tierLabel: string;
+  note: string;
+  updatedAtMs: number;
+}
+
+export interface AiPolicyConfigStore {
+  complexes: Record<string, ComplexAiPolicy>;
+  accounts: Record<string, AccountAiPolicy>;
+  updatedAtMs: number;
+}
+
+export interface AiServerKeySlotStatus {
+  slotId: AiServerKeySlotId;
+  envVarName: string;
+  label: string;
+  configured: boolean;
+}
+
+export interface AiDiagnosticAttempt {
+  model: string;
+  status: number;
+  latencyMs: number;
+  rawError: string;
+  keySlot: AiServerKeySlotId;
+}
+
+export interface AiDiagnosticErrorEntry {
+  id: string;
+  timestampMs: number;
+  endpoint: string;
+  keySlot: AiServerKeySlotId;
+  complexId?: string;
+  accountId?: string;
+  finalStatus: number;
+  friendlyMessage: string;
+  rawError: string;
+  attempts: AiDiagnosticAttempt[];
+}
+
+export interface AiDiagnosticsReport {
+  ok: boolean;
+  runtime: string;
+  isProd: boolean;
+  preferPublicModels: boolean;
+  keySlots: AiServerKeySlotStatus[];
+  recentErrors: AiDiagnosticErrorEntry[];
+  serverTimeMs: number;
+}
+
+export interface AiModelProbeResult {
+  model: string;
+  ok: boolean;
+  status: number;
+  latencyMs: number;
+  sampleText: string;
+  rawError: string;
+}
 

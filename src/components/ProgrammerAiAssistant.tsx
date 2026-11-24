@@ -17,7 +17,10 @@ import {
   gatherProgrammerAiPlatformSnapshot,
   type DiscoveredComplex,
 } from '../services/platformService';
-import type { ConnectedDatabaseInfo } from '../types/platform';
+import type {
+  AiDiagnosticErrorEntry,
+  ConnectedDatabaseInfo,
+} from '../types/platform';
 
 interface ProgrammerAiAssistantProps {
   complexes: DiscoveredComplex[];
@@ -32,7 +35,9 @@ interface ChatMessage {
   timestampMs: number;
   tokensUsed?: number;
   latencyMs?: number;
+  modelUsed?: string;
   isError?: boolean;
+  diagnostic?: AiDiagnosticErrorEntry;
 }
 
 interface SnapshotSummary {
@@ -265,6 +270,8 @@ export const ProgrammerAiAssistant: React.FC<ProgrammerAiAssistantProps> = ({
       const data = (await resp.json().catch(() => null)) as {
         reply?: string;
         error?: string;
+        modelUsed?: string;
+        diagnostic?: AiDiagnosticErrorEntry;
         usageMetadata?: {
           promptTokenCount?: number;
           candidatesTokenCount?: number;
@@ -274,7 +281,11 @@ export const ProgrammerAiAssistant: React.FC<ProgrammerAiAssistantProps> = ({
       } | null;
 
       if (!resp.ok || !data?.reply) {
-        throw new Error(data?.error || 'تعذّر الحصول على استجابة من المساعد الذكي.');
+        const err = new Error(data?.error || 'تعذّر الحصول على استجابة من المساعد الذكي.') as Error & {
+          diagnostic?: AiDiagnosticErrorEntry;
+        };
+        err.diagnostic = data?.diagnostic;
+        throw err;
       }
 
       const promptTok = Number(data.usageMetadata?.promptTokenCount || 0);
@@ -298,6 +309,7 @@ export const ProgrammerAiAssistant: React.FC<ProgrammerAiAssistantProps> = ({
         timestampMs: Date.now(),
         tokensUsed: totalTok,
         latencyMs: latency,
+        modelUsed: data.modelUsed,
       };
       setMessages((prev) => [...prev, botMsg]);
     } catch (err) {
@@ -308,6 +320,10 @@ export const ProgrammerAiAssistant: React.FC<ProgrammerAiAssistantProps> = ({
         : err instanceof Error
         ? err.message
         : 'حدث خطأ غير متوقع أثناء الاتصال بالذكاء الاصطناعي.';
+      const diagnostic =
+        err && typeof err === 'object' && 'diagnostic' in err
+          ? (err as { diagnostic?: AiDiagnosticErrorEntry }).diagnostic
+          : undefined;
       setMessages((prev) => [
         ...prev,
         {
@@ -316,6 +332,7 @@ export const ProgrammerAiAssistant: React.FC<ProgrammerAiAssistantProps> = ({
           text: errorText,
           timestampMs: Date.now(),
           isError: true,
+          diagnostic,
         },
       ]);
     } finally {
@@ -551,11 +568,11 @@ export const ProgrammerAiAssistant: React.FC<ProgrammerAiAssistantProps> = ({
                     }`}
                   >
                     <div
-                      className={`max-w-[90%] rounded-2xl px-3.5 py-2.5 ${
+                      className={`max-w-[92%] rounded-2xl px-3.5 py-2.5 ${
                         msg.role === 'user'
                           ? 'bg-[#F56900] text-white rounded-tr-sm'
                           : msg.isError
-                          ? 'bg-[#D95338]/10 border border-[#D95338] text-[#D95338] rounded-tl-sm'
+                          ? 'bg-[#D95338]/10 border border-[#D95338] text-[#B92B14] rounded-tl-sm'
                           : 'bg-[#FDF6EE] border border-[#EADBC8] text-[#4A220D] rounded-tl-sm'
                       }`}
                     >
@@ -564,11 +581,53 @@ export const ProgrammerAiAssistant: React.FC<ProgrammerAiAssistantProps> = ({
                           {msg.text}
                         </p>
                       ) : (
-                        renderFormattedMessage(msg.text)
+                        <>
+                          {renderFormattedMessage(msg.text)}
+                          {msg.isError && msg.diagnostic && (
+                            <div
+                              dir="ltr"
+                              className="mt-2.5 pt-2 border-t border-[#D95338]/30 text-left space-y-1.5"
+                            >
+                              <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-mono font-bold text-[#911F0D]">
+                                <span className="px-1.5 py-0.5 rounded bg-[#D95338]/15">
+                                  HTTP {msg.diagnostic.finalStatus}
+                                </span>
+                                <span className="px-1.5 py-0.5 rounded bg-white/80">
+                                  {msg.diagnostic.endpoint}
+                                </span>
+                                <span className="px-1.5 py-0.5 rounded bg-white/80">
+                                  slot: {msg.diagnostic.keySlot}
+                                </span>
+                              </div>
+                              {msg.diagnostic.attempts.length > 0 ? (
+                                <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
+                                  {msg.diagnostic.attempts.map((att, aIdx) => (
+                                    <div
+                                      key={`${att.model}_${aIdx}`}
+                                      className="rounded-lg bg-white/85 border border-[#D95338]/25 px-2 py-1 text-[10px] font-mono text-[#4A220D] break-words"
+                                    >
+                                      <span className="font-bold text-[#B92B14]">
+                                        {att.model} ({att.status || 'ERR'}, {att.latencyMs}ms):
+                                      </span>{' '}
+                                      <span>{att.rawError}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                msg.diagnostic.rawError && (
+                                  <p className="rounded-lg bg-white/85 border border-[#D95338]/25 px-2 py-1 text-[10px] font-mono text-[#4A220D] break-words">
+                                    {msg.diagnostic.rawError}
+                                  </p>
+                                )
+                              )}
+                            </div>
+                          )}
+                        </>
                       )}
                     </div>
                     {msg.role === 'model' && !msg.isError && (
                       <span className="text-[10px] font-bold text-[#7D4E35] mt-1 px-1 tabular-nums">
+                        {msg.modelUsed ? `${msg.modelUsed} · ` : ''}
                         {msg.latencyMs ? `${msg.latencyMs}ms` : ''}
                         {msg.tokensUsed ? ` · ${msg.tokensUsed} توكن` : ''}
                       </span>

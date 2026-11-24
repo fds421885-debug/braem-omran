@@ -1,5 +1,6 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import type { BookTextSegment, NoorAlBayanStep } from '../types/platform';
+import { resolveEffectiveAiAccess } from './aiPolicyService';
 import {
   analyzeBookPageInBrowser,
   enhanceImageDataUrlForRecognition,
@@ -590,7 +591,14 @@ export async function analyzeBookPageOnServer(params: {
     params.ocrImageDataUrl ||
     (await enhanceImageDataUrlForRecognition(params.imageDataUrl));
 
-  if (staticHostWithoutApi !== true) {
+  const ocrAccess = await resolveEffectiveAiAccess({ feature: 'ocr' }).catch(() => ({
+    allowed: true,
+    slotId: 'default' as const,
+    complexId: '',
+    accountId: '',
+  }));
+
+  if (staticHostWithoutApi !== true && ocrAccess.allowed) {
     let serverPct = 16;
     let progressTimer: number | null = null;
     try {
@@ -617,6 +625,9 @@ export async function analyzeBookPageOnServer(params: {
             imageDataUrl: highResSource,
             pageNumber: params.pageNumber,
             bookTitle: params.bookTitle,
+            aiSlotId: ocrAccess.slotId,
+            complexId: ocrAccess.complexId,
+            accountId: ocrAccess.accountId,
           }),
         },
         22000
@@ -679,14 +690,26 @@ export async function generateNoorAlBayanOnServer(params: {
   steps: NoorAlBayanStep[];
   fullReading: string;
 }> {
-  if (staticHostWithoutApi !== true) {
+  const noorAccess = await resolveEffectiveAiAccess({ feature: 'tahajji' }).catch(() => ({
+    allowed: true,
+    slotId: 'default' as const,
+    complexId: '',
+    accountId: '',
+  }));
+
+  if (staticHostWithoutApi !== true && noorAccess.allowed) {
     try {
       const res = await fetchWithTimeout(
         '/api/books/noor-albayan',
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(params),
+          body: JSON.stringify({
+            ...params,
+            aiSlotId: noorAccess.slotId,
+            complexId: noorAccess.complexId,
+            accountId: noorAccess.accountId,
+          }),
         },
         6000
       );
@@ -781,7 +804,22 @@ export async function synthesizeSpeechOnServer(params: {
     );
   }
 
-  const dedupeKey = `${params.mode}:${preparedText}`;
+  const ttsAccess = await resolveEffectiveAiAccess({ feature: 'tts' }).catch(() => ({
+    allowed: true,
+    slotId: 'default' as const,
+    complexId: '',
+    accountId: '',
+    reason: undefined,
+  }));
+  if (!ttsAccess.allowed) {
+    return makeUnavailable(
+      ttsAccess.reason || 'ميزة التوليد الصوتي بالذكاء الاصطناعي غير مفعّلة لهذا المجمع أو الحساب.',
+      15000,
+      false
+    );
+  }
+
+  const dedupeKey = `${params.mode}:${ttsAccess.slotId}:${preparedText}`;
   const existing = inFlightTtsRequests.get(dedupeKey);
   if (existing) {
     return existing;
@@ -797,6 +835,9 @@ export async function synthesizeSpeechOnServer(params: {
           body: JSON.stringify({
             text: preparedText,
             mode: params.mode,
+            aiSlotId: ttsAccess.slotId,
+            complexId: ttsAccess.complexId,
+            accountId: ttsAccess.accountId,
           }),
         },
         13000

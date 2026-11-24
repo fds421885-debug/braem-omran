@@ -16,6 +16,7 @@ import { StartupNotificationGate } from './components/StartupNotificationGate';
 import { SupervisorDashboard } from './components/SupervisorDashboard';
 import { TeacherSessionHost } from './components/TeacherSessionHost';
 import { auth as primaryAuth, db as primaryDb } from './firebase';
+import { setActiveAiSessionContext } from './services/aiPolicyService';
 import { getAuthForConfig } from './services/multiDb';
 import {
   ensureBroadcastOfflineSyncListeners,
@@ -97,7 +98,13 @@ function AppContent() {
 
   useEffect(() => {
     if (activeSession) {
+      setActiveAiSessionContext({
+        complexId: activeSession.account.complexId || '',
+        accountId: activeSession.account.id || activeSession.account.uid || '',
+      });
       void flushPendingBroadcastOutbox();
+    } else {
+      setActiveAiSessionContext(null);
     }
   }, [activeSession]);
 

@@ -550,7 +550,19 @@ export async function generateOrEditPresentationWithAi(params: {
   currentSlides: PresentationSlide[];
   targetSlideIndex?: number;
   importedPptxSlides?: ParsedPptxSlide[];
+  complexId?: string;
+  accountId?: string;
 }): Promise<PresentationAiChatResponse> {
+  const { resolveEffectiveAiAccess, extractAiDiagnosticFromPayload } = await import('./aiPolicyService');
+  const access = await resolveEffectiveAiAccess({
+    complexId: params.complexId,
+    accountId: params.accountId,
+    feature: 'presentations',
+  });
+  if (!access.allowed) {
+    throw new Error(access.reason || 'ميزة العروض التقديمية بالذكاء الاصطناعي غير مفعّلة حالياً.');
+  }
+
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), 65000);
 
@@ -560,7 +572,12 @@ export async function generateOrEditPresentationWithAi(params: {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
-      body: JSON.stringify(params),
+      body: JSON.stringify({
+        ...params,
+        aiSlotId: access.slotId,
+        complexId: access.complexId,
+        accountId: access.accountId,
+      }),
     });
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') {
@@ -572,11 +589,14 @@ export async function generateOrEditPresentationWithAi(params: {
   }
 
   const data = (await resp.json().catch(() => null)) as
-    | (PresentationAiChatResponse & { error?: string })
+    | (PresentationAiChatResponse & { error?: string; diagnostic?: unknown })
     | null;
 
   if (!resp.ok || !data || !Array.isArray(data.slides) || data.slides.length === 0) {
-    throw new Error(data?.error || 'تعذّر توليد العرض التقديمي حالياً.');
+    const diag = extractAiDiagnosticFromPayload(data);
+    const baseMsg = data?.error || 'تعذّر توليد العرض التقديمي حالياً.';
+    const extraCode = diag?.finalStatus ? ` [${diag.finalStatus}]` : '';
+    throw new Error(`${baseMsg}${extraCode}`);
   }
 
   return {
