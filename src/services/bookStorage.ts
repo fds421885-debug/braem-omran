@@ -722,26 +722,23 @@ export async function generateNoorAlBayanOnServer(params: {
   });
 }
 
-const inFlightTtsRequests = new Map<
-  string,
-  Promise<{
-    engine: 'server_wav' | 'browser_speech';
-    audioBase64: string;
-    mimeType: string;
-    text: string;
-  }>
->();
+export interface ServerSpeechSynthesisResult {
+  engine: 'server_wav' | 'unavailable';
+  audioBase64: string;
+  mimeType: string;
+  text: string;
+  error?: string;
+  retryAfterMs?: number;
+  isRateLimited?: boolean;
+}
+
+const inFlightTtsRequests = new Map<string, Promise<ServerSpeechSynthesisResult>>();
 let ttsServerCooldownUntilMs = 0;
 
 export async function synthesizeSpeechOnServer(params: {
   text: string;
   mode: 'noor_albayan' | 'normal';
-}): Promise<{
-  engine: 'server_wav' | 'browser_speech';
-  audioBase64: string;
-  mimeType: string;
-  text: string;
-}> {
+}): Promise<ServerSpeechSynthesisResult> {
   const rawPrepared =
     params.mode === 'normal'
       ? params.text
@@ -753,15 +750,35 @@ export async function synthesizeSpeechOnServer(params: {
       : params.text;
   const preparedText = normalizeUthmaniForTts(rawPrepared) || rawPrepared;
 
-  const fallbackResult = {
-    engine: 'browser_speech' as const,
+  const makeUnavailable = (
+    error: string,
+    retryAfterMs = 5000,
+    isRateLimited = false
+  ): ServerSpeechSynthesisResult => ({
+    engine: 'unavailable',
     audioBase64: '',
-    mimeType: 'text/speech',
+    mimeType: 'audio/wav',
     text: preparedText,
-  };
+    error,
+    retryAfterMs,
+    isRateLimited,
+  });
 
-  if (staticHostWithoutApi === true || Date.now() < ttsServerCooldownUntilMs) {
-    return fallbackResult;
+  if (staticHostWithoutApi === true) {
+    return makeUnavailable(
+      'خادم توليد الصوت غير متصل حالياً؛ يرجى الانتظار أو إعادة المحاولة.',
+      8000,
+      false
+    );
+  }
+
+  if (Date.now() < ttsServerCooldownUntilMs) {
+    const waitMs = Math.max(1500, ttsServerCooldownUntilMs - Date.now());
+    return makeUnavailable(
+      'هناك ضغط مؤقت على محرك الصوت الآن؛ يرجى الانتظار لحين استعادة القراءة تلقائياً.',
+      waitMs,
+      true
+    );
   }
 
   const dedupeKey = `${params.mode}:${preparedText}`;
@@ -770,7 +787,7 @@ export async function synthesizeSpeechOnServer(params: {
     return existing;
   }
 
-  const requestPromise = (async () => {
+  const requestPromise = (async (): Promise<ServerSpeechSynthesisResult> => {
     try {
       const res = await fetchWithTimeout(
         '/api/tts/speak',
@@ -782,14 +799,19 @@ export async function synthesizeSpeechOnServer(params: {
             mode: params.mode,
           }),
         },
-        9500
+        13000
       );
 
       if (res.status === 429) {
-        const retryAfterSec = Number(res.headers.get('Retry-After')) || 18;
-        const clampedSec = Math.max(5, Math.min(30, retryAfterSec));
-        ttsServerCooldownUntilMs = Date.now() + clampedSec * 1000;
-        return fallbackResult;
+        const retryAfterSec = Number(res.headers.get('Retry-After')) || 12;
+        const clampedSec = Math.max(4, Math.min(25, retryAfterSec));
+        const waitMs = clampedSec * 1000;
+        ttsServerCooldownUntilMs = Date.now() + waitMs;
+        return makeUnavailable(
+          'هناك ضغط مؤقت على محرك الصوت الآن؛ يرجى الانتظار لحين استعادة القراءة تلقائياً.',
+          waitMs,
+          true
+        );
       }
 
       if (!isStaticMissingApi(res)) {
@@ -800,21 +822,34 @@ export async function synthesizeSpeechOnServer(params: {
         };
         if (res.ok && data.audioBase64 && data.audioBase64.length > 120) {
           staticHostWithoutApi = false;
+          ttsServerCooldownUntilMs = 0;
           return {
-            engine: 'server_wav' as const,
+            engine: 'server_wav',
             audioBase64: data.audioBase64,
             mimeType: data.mimeType || 'audio/wav',
             text: preparedText,
           };
         }
+        return makeUnavailable(
+          data.error || 'هناك ضغط مؤقت على محرك الصوت الآن؛ يرجى الانتظار.',
+          5000,
+          res.status === 503
+        );
       } else {
         staticHostWithoutApi = true;
+        return makeUnavailable(
+          'خادم توليد الصوت غير متصل حالياً؛ يرجى الانتظار أو المحاولة لاحقاً.',
+          8000,
+          false
+        );
       }
     } catch {
-      // Static host, timeout, rate limit, or offline API — fall through to chunked browser SpeechSynthesis
+      return makeUnavailable(
+        'هناك ضغط أو بطء مؤقت في الاتصال بمحرك الصوت؛ يرجى الانتظار.',
+        5000,
+        true
+      );
     }
-
-    return fallbackResult;
   })().finally(() => {
     inFlightTtsRequests.delete(dedupeKey);
   });

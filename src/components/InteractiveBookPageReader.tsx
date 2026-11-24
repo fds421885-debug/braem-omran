@@ -125,6 +125,8 @@ interface ResolvedWordAudio {
   wasAutoDiacritized: boolean;
   steps: NoorAlBayanStep[];
   fullReading: string;
+  ttsError?: string;
+  ttsRetryAfterMs?: number;
 }
 
 interface InteractiveBookPageReaderProps {
@@ -219,6 +221,7 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
   const activeObjectUrlRef = useRef<string | null>(null);
   const audioLoadWatchdogRef = useRef<number | null>(null);
   const audioRunTokenRef = useRef<number>(0);
+  const audioRequestTokenRef = useRef<number>(0);
   const continuousTokenRef = useRef<number>(0);
   const continuousPausedRef = useRef<boolean>(false);
   const continuousPositionRef = useRef<{
@@ -238,7 +241,18 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
   });
   const wordChipRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const prefetchMapRef = useRef<Map<string, Promise<ResolvedWordAudio>>>(new Map());
-  const phrasePrefetchMapRef = useRef<Map<string, Promise<{ base64Wav: string; mimeType: string; cacheKey: string } | null>>>(new Map());
+  const phrasePrefetchMapRef = useRef<
+    Map<
+      string,
+      Promise<{
+        base64Wav: string;
+        mimeType: string;
+        cacheKey: string;
+        error?: string;
+        retryAfterMs?: number;
+      }>
+    >
+  >(new Map());
   const dbRecordSessionCacheRef = useRef<Map<string, BookWordAudioRecord | null>>(new Map());
   const activeNavSeqRef = useRef<number>(manualNavigationSeq);
   const selectedSegmentIdRef = useRef<string | null>(null);
@@ -246,68 +260,6 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
   const continuousStatusRef = useRef<'idle' | 'playing' | 'paused'>('idle');
   continuousStatusRef.current = continuousStatus;
   const lastPageKeyRef = useRef<string>('');
-
-  const speechStateRef = useRef<{
-    active: boolean;
-    text: string;
-    chunks: string[];
-    chunkIndex: number;
-    mode: AudioMode;
-    startedAtMs: number;
-    elapsedBeforePauseMs: number;
-    timerId: number | null;
-    startDelayId: number | null;
-    startWatchdogId: number | null;
-    maxDurationId: number | null;
-  }>({
-    active: false,
-    text: '',
-    chunks: [],
-    chunkIndex: 0,
-    mode: 'normal',
-    startedAtMs: 0,
-    elapsedBeforePauseMs: 0,
-    timerId: null,
-    startDelayId: null,
-    startWatchdogId: null,
-    maxDurationId: null,
-  });
-
-  // Pre-warm Web Speech API voices list
-  useEffect(() => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
-    const warm = () => {
-      try {
-        window.speechSynthesis.getVoices();
-      } catch {
-        // Ignore
-      }
-    };
-    warm();
-    window.speechSynthesis.addEventListener?.('voiceschanged', warm);
-    return () => {
-      window.speechSynthesis.removeEventListener?.('voiceschanged', warm);
-    };
-  }, []);
-
-  const clearSpeechTimers = useCallback(() => {
-    if (speechStateRef.current.timerId !== null) {
-      window.clearInterval(speechStateRef.current.timerId);
-      speechStateRef.current.timerId = null;
-    }
-    if (speechStateRef.current.startDelayId !== null) {
-      window.clearTimeout(speechStateRef.current.startDelayId);
-      speechStateRef.current.startDelayId = null;
-    }
-    if (speechStateRef.current.startWatchdogId !== null) {
-      window.clearTimeout(speechStateRef.current.startWatchdogId);
-      speechStateRef.current.startWatchdogId = null;
-    }
-    if (speechStateRef.current.maxDurationId !== null) {
-      window.clearTimeout(speechStateRef.current.maxDurationId);
-      speechStateRef.current.maxDurationId = null;
-    }
-  }, []);
 
   const detachAndStopAudioElement = useCallback(() => {
     if (audioLoadWatchdogRef.current !== null) {
@@ -333,16 +285,11 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
   }, []);
 
   const stopAndResetAudio = useCallback(() => {
+    audioRequestTokenRef.current++;
     audioRunTokenRef.current++;
     detachAndStopAudioElement();
-    clearSpeechTimers();
-    speechStateRef.current.active = false;
-    speechStateRef.current.chunks = [];
-    speechStateRef.current.chunkIndex = 0;
-    speechStateRef.current.elapsedBeforePauseMs = 0;
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       try {
-        window.speechSynthesis.resume();
         window.speechSynthesis.cancel();
       } catch {
         // Ignore browser quirk
@@ -355,7 +302,7 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
     setAudioError(null);
     setAudioLoadingMode(null);
     setNoorLoading(false);
-  }, [clearSpeechTimers, detachAndStopAudioElement]);
+  }, [detachAndStopAudioElement]);
 
   const stopContinuousReading = useCallback(() => {
     continuousTokenRef.current++;
@@ -547,263 +494,16 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
     }
   }, [currentPage?.id, currentPageIndex, activeSegments, hydrateSegmentSavedInfo]);
 
-  const splitArabicSpeechChunks = (text: string): string[] => {
-    const clean = text.replace(/\s+/g, ' ').trim();
-    if (!clean) return [];
-    const rawParts = clean
-      .split(/(?<=[،.؛؟\n])\s*/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const chunks: string[] = [];
-    let buffer = '';
-    for (const part of rawParts) {
-      if (!buffer) {
-        buffer = part;
-      } else if (buffer.length + part.length + 1 <= 115) {
-        buffer = `${buffer} ${part}`;
-      } else {
-        chunks.push(buffer);
-        buffer = part;
-      }
-    }
-    if (buffer) chunks.push(buffer);
-    return chunks.length > 0 ? chunks : [clean];
-  };
-
-  const playBrowserSpeech = useCallback(
-    (mode: AudioMode, text: string, startChunkIdx = 0, onComplete?: () => void) => {
-      const runToken = ++audioRunTokenRef.current;
-      detachAndStopAudioElement();
-      clearSpeechTimers();
-      setAudioError(null);
-
-      let completed = false;
-      const fireComplete = () => {
-        if (completed) return;
-        completed = true;
-        onComplete?.();
-      };
-
-      if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
-        setAudioPlaying(false);
-        setAudioError('متصفحك لا يدعم القراءة الصوتية التلقائية بدون خادم.');
-        fireComplete();
-        return;
-      }
-
-      try {
-        window.speechSynthesis.resume();
-        window.speechSynthesis.cancel();
-      } catch {
-        // Ignore browser cancel errors
-      }
-
-      const cleanText = text.trim();
-      if (!cleanText) {
-        fireComplete();
-        return;
-      }
-      const chunks = splitArabicSpeechChunks(cleanText);
-      const estimatedSeconds = Math.max(
-        1.4,
-        Math.round(
-          cleanText.split(/\s+/).filter(Boolean).length *
-            (mode === 'noor_albayan' ? 0.92 : 0.62) *
-            10
-        ) / 10
-      );
-
-      speechStateRef.current.active = true;
-      speechStateRef.current.text = cleanText;
-      speechStateRef.current.chunks = chunks;
-      speechStateRef.current.chunkIndex = Math.max(0, Math.min(chunks.length - 1, startChunkIdx));
-      speechStateRef.current.mode = mode;
-      speechStateRef.current.elapsedBeforePauseMs = 0;
-      speechStateRef.current.startedAtMs = Date.now();
-
-      setActiveAudioMode(mode);
-      setAudioDuration(estimatedSeconds);
-      setAudioCurrentTime(0);
-      setAudioPlaying(true);
-
-      const pickArabicVoice = (): SpeechSynthesisVoice | undefined => {
-        const voices = window.speechSynthesis.getVoices() || [];
-        return (
-          voices.find((v) => v.lang.toLowerCase() === 'ar-sa') ||
-          voices.find((v) => v.lang.toLowerCase().startsWith('ar-eg')) ||
-          voices.find((v) => v.lang.toLowerCase().startsWith('ar'))
-        );
-      };
-
-      const speakChunkAt = (idx: number) => {
-        if (audioRunTokenRef.current !== runToken || !speechStateRef.current.active) return;
-        if (speechStateRef.current.startWatchdogId !== null) {
-          window.clearTimeout(speechStateRef.current.startWatchdogId);
-          speechStateRef.current.startWatchdogId = null;
-        }
-        if (speechStateRef.current.maxDurationId !== null) {
-          window.clearTimeout(speechStateRef.current.maxDurationId);
-          speechStateRef.current.maxDurationId = null;
-        }
-
-        if (idx >= chunks.length) {
-          clearSpeechTimers();
-          speechStateRef.current.active = false;
-          setAudioPlaying(false);
-          setAudioCurrentTime(estimatedSeconds);
-          fireComplete();
-          return;
-        }
-
-        speechStateRef.current.chunkIndex = idx;
-        const chunkText = chunks[idx];
-        const utterance = new SpeechSynthesisUtterance(chunkText);
-        const arVoice = pickArabicVoice();
-        if (arVoice) {
-          utterance.voice = arVoice;
-        }
-        utterance.lang = arVoice?.lang || 'ar-SA';
-        utterance.rate = mode === 'noor_albayan' ? 0.78 : 0.95;
-        utterance.pitch = 1.0;
-
-        let utteranceStarted = false;
-        let chunkSettled = false;
-
-        const finishChunk = () => {
-          if (chunkSettled) return;
-          chunkSettled = true;
-          if (speechStateRef.current.startWatchdogId !== null) {
-            window.clearTimeout(speechStateRef.current.startWatchdogId);
-            speechStateRef.current.startWatchdogId = null;
-          }
-          if (speechStateRef.current.maxDurationId !== null) {
-            window.clearTimeout(speechStateRef.current.maxDurationId);
-            speechStateRef.current.maxDurationId = null;
-          }
-          if (audioRunTokenRef.current !== runToken || !speechStateRef.current.active) return;
-          speakChunkAt(idx + 1);
-        };
-
-        utterance.onstart = () => {
-          utteranceStarted = true;
-          if (speechStateRef.current.startWatchdogId !== null) {
-            window.clearTimeout(speechStateRef.current.startWatchdogId);
-            speechStateRef.current.startWatchdogId = null;
-          }
-        };
-
-        utterance.onend = () => {
-          finishChunk();
-        };
-
-        utterance.onerror = (ev) => {
-          if (audioRunTokenRef.current !== runToken) return;
-          if (ev.error === 'canceled' || ev.error === 'interrupted') return;
-          if (idx + 1 < chunks.length) {
-            finishChunk();
-            return;
-          }
-          clearSpeechTimers();
-          speechStateRef.current.active = false;
-          setAudioPlaying(false);
-          const hasAnyArabicVoice = (window.speechSynthesis.getVoices() || []).some((v) =>
-            v.lang.toLowerCase().startsWith('ar')
-          );
-          if (!hasAnyArabicVoice) {
-            setAudioError(
-              'لا توجد حزمة صوت عربي مفعّلة في هذا المتصفح حالياً، لكن التهجي البصري معروض بالأسفل.'
-            );
-          } else {
-            setAudioError('تعذّر تشغيل القارئ الصوتي في المتصفح مؤقتاً؛ اضغط أعد المحاولة.');
-          }
-          fireComplete();
-        };
-
-        speechStateRef.current.startWatchdogId = window.setTimeout(() => {
-          if (audioRunTokenRef.current !== runToken || !speechStateRef.current.active || chunkSettled) {
-            return;
-          }
-          if (!utteranceStarted && !window.speechSynthesis.speaking) {
-            try {
-              window.speechSynthesis.cancel();
-            } catch {
-              // Ignore
-            }
-            if (idx + 1 < chunks.length) {
-              finishChunk();
-            } else {
-              clearSpeechTimers();
-              speechStateRef.current.active = false;
-              setAudioPlaying(false);
-              const hasAnyArabicVoice = (window.speechSynthesis.getVoices() || []).some((v) =>
-                v.lang.toLowerCase().startsWith('ar')
-              );
-              if (!hasAnyArabicVoice) {
-                setAudioError(
-                  'المتصفح الحالي لا يحتوي على صوت عربي مثبّت للنطق التلقائي؛ يظهر التهجي البصري بالأسفل.'
-                );
-              }
-              fireComplete();
-            }
-          }
-        }, 2200);
-
-        speechStateRef.current.maxDurationId = window.setTimeout(
-          () => {
-            if (audioRunTokenRef.current !== runToken || !speechStateRef.current.active || chunkSettled) {
-              return;
-            }
-            try {
-              window.speechSynthesis.cancel();
-            } catch {
-              // Ignore
-            }
-            finishChunk();
-          },
-          Math.max(8500, chunkText.length * 165)
-        );
-
-        try {
-          window.speechSynthesis.speak(utterance);
-        } catch {
-          clearSpeechTimers();
-          speechStateRef.current.active = false;
-          setAudioPlaying(false);
-          fireComplete();
-        }
-      };
-
-      speechStateRef.current.startDelayId = window.setTimeout(() => {
-        if (audioRunTokenRef.current !== runToken || !speechStateRef.current.active) return;
-        speechStateRef.current.startedAtMs = Date.now();
-        speechStateRef.current.timerId = window.setInterval(() => {
-          if (audioRunTokenRef.current !== runToken) {
-            clearSpeechTimers();
-            return;
-          }
-          const totalMs =
-            speechStateRef.current.elapsedBeforePauseMs +
-            (Date.now() - speechStateRef.current.startedAtMs);
-          setAudioCurrentTime(Math.min(estimatedSeconds, totalMs / 1000));
-        }, 120);
-        speakChunkAt(speechStateRef.current.chunkIndex);
-      }, 45);
-    },
-    [clearSpeechTimers, detachAndStopAudioElement]
-  );
-
   const playAudioSource = useCallback(
     async (
       mode: AudioMode,
       url: string,
       isObjectUrl: boolean,
-      onFallback?: () => void,
+      onPlaybackError?: () => void,
       badCacheKey?: string,
       onEndedCallback?: () => void
     ) => {
       const runToken = ++audioRunTokenRef.current;
-      clearSpeechTimers();
-      speechStateRef.current.active = false;
       if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
         try {
           window.speechSynthesis.cancel();
@@ -821,7 +521,8 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
         activeObjectUrlRef.current = url;
       }
 
-      let fallbackHandled = false;
+      let errorHandled = false;
+      let endedHandled = false;
       let startedPlaying = false;
       const clearLoadWatchdog = () => {
         if (audioLoadWatchdogRef.current !== null) {
@@ -830,21 +531,17 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
         }
       };
 
-      const triggerFallback = () => {
-        if (fallbackHandled || audioRunTokenRef.current !== runToken) return;
-        fallbackHandled = true;
+      const triggerPlaybackError = () => {
+        if (errorHandled || endedHandled || audioRunTokenRef.current !== runToken) return;
+        errorHandled = true;
         clearLoadWatchdog();
         detachAndStopAudioElement();
         if (badCacheKey) {
           void deleteCachedAudioEntry(badCacheKey);
         }
-        if (onFallback) {
-          onFallback();
-        } else {
-          setAudioPlaying(false);
-          setAudioError('تعذّر تشغيل الملف الصوتي حالياً؛ تأكد من الاتصال وحاول مجدداً.');
-          onEndedCallback?.();
-        }
+        setAudioPlaying(false);
+        setAudioError('تعذّر تشغيل الملف الصوتي حالياً؛ يرجى الانتظار لحين استعادة الصوت تلقائياً.');
+        onPlaybackError?.();
       };
 
       audio.preload = 'auto';
@@ -874,31 +571,118 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
         setAudioPlaying(false);
       };
       audio.onended = () => {
-        if (audioRunTokenRef.current !== runToken) return;
+        if (endedHandled || audioRunTokenRef.current !== runToken) return;
+        endedHandled = true;
         clearLoadWatchdog();
         setAudioPlaying(false);
         setAudioCurrentTime(audio.duration || 0);
         onEndedCallback?.();
       };
       audio.onerror = () => {
-        triggerFallback();
+        triggerPlaybackError();
       };
 
+      // Load-start watchdog only if playback never even began within 8 seconds
       audioLoadWatchdogRef.current = window.setTimeout(() => {
         if (audioRunTokenRef.current === runToken && !startedPlaying && audio.paused) {
-          triggerFallback();
+          triggerPlaybackError();
         }
-      }, 3500);
+      }, 8000);
 
       setAudioError(null);
       setActiveAudioMode(mode);
       try {
         await audio.play();
       } catch {
-        triggerFallback();
+        triggerPlaybackError();
       }
     },
-    [clearSpeechTimers, detachAndStopAudioElement]
+    [detachAndStopAudioElement]
+  );
+
+  // Strictly waits until the HTMLAudioElement finishes reading the entire clip before returning
+  const playAudioStrict = useCallback(
+    (
+      mode: AudioMode,
+      url: string,
+      badCacheKey: string | undefined,
+      isCancelled: () => boolean
+    ): Promise<'ended' | 'error' | 'cancelled'> => {
+      return new Promise((resolve) => {
+        let settled = false;
+        let guardId: number | null = null;
+        const finish = (outcome: 'ended' | 'error' | 'cancelled') => {
+          if (settled) return;
+          settled = true;
+          if (guardId !== null) {
+            window.clearInterval(guardId);
+            guardId = null;
+          }
+          resolve(outcome);
+        };
+
+        void playAudioSource(
+          mode,
+          url,
+          true,
+          () => finish('error'),
+          badCacheKey,
+          () => finish('ended')
+        );
+
+        let lastTime = -1;
+        let stalledSince = 0;
+        guardId = window.setInterval(() => {
+          if (settled) return;
+          if (isCancelled()) {
+            finish('cancelled');
+            return;
+          }
+          const audio = audioRef.current;
+          if (!audio) {
+            finish('ended');
+            return;
+          }
+          if (audio.ended) {
+            finish('ended');
+            return;
+          }
+          const ct = audio.currentTime || 0;
+          if (!audio.paused || ct !== lastTime) {
+            lastTime = ct;
+            stalledSince = 0;
+            return;
+          }
+          if (!audio.src) {
+            finish('ended');
+            return;
+          }
+          if (stalledSince === 0) {
+            stalledSince = Date.now();
+          } else if (Date.now() - stalledSince > 18000) {
+            finish('error');
+          }
+        }, 450);
+      });
+    },
+    [playAudioSource]
+  );
+
+  const waitWithCancellation = useCallback(
+    async (
+      totalMs: number,
+      isCancelled: () => boolean,
+      onTick?: (remainingSeconds: number) => void
+    ): Promise<boolean> => {
+      const totalSeconds = Math.max(1, Math.ceil(totalMs / 1000));
+      for (let rem = totalSeconds; rem >= 1; rem--) {
+        if (isCancelled()) return false;
+        onTick?.(rem);
+        await new Promise<void>((r) => window.setTimeout(r, 1000));
+      }
+      return !isCancelled();
+    },
+    []
   );
 
   const resolveSegmentAudio = useCallback(
@@ -921,7 +705,7 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
         fullReading: string;
         sourceLabel?: string;
       }) => {
-        if (options?.callToken !== undefined && audioRunTokenRef.current !== options.callToken) {
+        if (options?.callToken !== undefined && audioRequestTokenRef.current !== options.callToken) {
           return;
         }
         if (mode === 'noor_albayan') {
@@ -977,9 +761,11 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
           steps: res.steps,
           fullReading: res.fullReading,
           sourceLabel:
-            res.source === 'generated'
-              ? 'تم التوليد والحفظ تلقائياً في قاعدة المكتبة النشطة'
-              : 'محفوظة مسبقاً',
+            res.audioBase64 && res.audioBase64.length > 120
+              ? res.source === 'generated'
+                ? 'تم التوليد والحفظ تلقائياً في قاعدة المكتبة النشطة'
+                : 'محفوظة مسبقاً'
+              : 'هناك ضغط مؤقت على محرك الصوت؛ يرجى الانتظار...',
         });
         return res;
       }
@@ -1035,26 +821,26 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
             fullReading,
             updatedAtMs: Date.now(),
           });
-        }
 
-        // Persist into library DB shard so next opens read directly from DB
-        void saveWordAudioToLibraryDb({
-          workspace,
-          mode,
-          wordText: seg.text,
-          diacritizedWord,
-          wasAutoDiacritized,
-          fullReading,
-          steps,
-          audioBase64,
-          mimeType,
-          createdBy: currentUserId,
-          contextSuffix,
-        }).then((savedRec) => {
-          if (savedRec) {
-            dbRecordSessionCacheRef.current.set(cacheKey, savedRec);
-          }
-        });
+          // Only persist completed audio into library DB shards so failed/busy attempts never store empty audio
+          void saveWordAudioToLibraryDb({
+            workspace,
+            mode,
+            wordText: seg.text,
+            diacritizedWord,
+            wasAutoDiacritized,
+            fullReading,
+            steps,
+            audioBase64,
+            mimeType,
+            createdBy: currentUserId,
+            contextSuffix,
+          }).then((savedRec) => {
+            if (savedRec) {
+              dbRecordSessionCacheRef.current.set(cacheKey, savedRec);
+            }
+          });
+        }
 
         return {
           cacheKey,
@@ -1065,6 +851,8 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
           wasAutoDiacritized,
           steps,
           fullReading: tts.text || fullReading,
+          ttsError: tts.engine === 'unavailable' ? tts.error : undefined,
+          ttsRetryAfterMs: tts.engine === 'unavailable' ? tts.retryAfterMs : undefined,
         };
       })();
 
@@ -1079,7 +867,7 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
           sourceLabel:
             result.audioBase64.length > 120
               ? 'تم إنشاء الصوت وحفظه تلقائياً في قاعدة المكتبة النشطة'
-              : 'تم تجهيز النطق وحفظ التفصيل في القاعدة النشطة',
+              : 'هناك ضغط مؤقت على محرك الصوت؛ يرجى الانتظار لحين الاستعادة تلقائياً...',
         });
         return result;
       } finally {
@@ -1099,61 +887,77 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
         setContinuousStatus('idle');
         setContinuousProgress(null);
       }
-      const callToken = ++audioRunTokenRef.current;
+      const callToken = ++audioRequestTokenRef.current;
+      detachAndStopAudioElement();
       setAudioError(null);
       setAudioLoadingMode('noor_albayan');
       setNoorLoading(true);
-      const safetyUnlockTimer = window.setTimeout(() => {
-        if (audioRunTokenRef.current === callToken) {
+
+      const isCancelled = () => audioRequestTokenRef.current !== callToken;
+
+      try {
+        const maxAttempts = 6;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          if (isCancelled()) return;
+          const resolved = await resolveSegmentAudio(targetSeg, 'noor_albayan', {
+            callToken,
+            showUi: true,
+          });
+          if (isCancelled()) return;
+
+          if (resolved.audioBase64 && resolved.audioBase64.length > 120) {
+            setAudioError(null);
+            setNoorLoading(false);
+            setAudioLoadingMode(null);
+            const url = base64AudioToObjectUrl(resolved.audioBase64, resolved.mimeType);
+            await playAudioSource(
+              'noor_albayan',
+              url,
+              true,
+              () => {
+                if (!isCancelled()) {
+                  setAudioError('تعذّر تشغيل الصوت حالياً؛ يرجى الانتظار لحظات والمحاولة مجدداً.');
+                }
+              },
+              resolved.cacheKey
+            );
+            return;
+          }
+
+          if (attempt >= maxAttempts) {
+            setAudioError(
+              resolved.ttsError ||
+                'لا يزال هناك ضغط مؤقت على محرك الصوت حالياً؛ يرجى الانتظار قليلاً ثم الضغط على «قراءة بالتهجي» مرة أخرى.'
+            );
+            return;
+          }
+
+          const waitMs = Math.max(4000, Math.min(20000, resolved.ttsRetryAfterMs || 8000));
+          const ok = await waitWithCancellation(waitMs, isCancelled, (remSec) => {
+            setAudioError(
+              `هناك ضغط مؤقت على محرك الصوت حالياً؛ يرجى الانتظار لحين استعادة القراءة تلقائياً (المحاولة ${toArabicIndicDigits(attempt)} — إعادة خلال ${toArabicIndicDigits(remSec)} ث)...`
+            );
+          });
+          if (!ok) return;
+        }
+      } catch {
+        if (!isCancelled()) {
+          setAudioError('هناك ضغط مؤقت على محرك الصوت حالياً؛ يرجى الانتظار ثم إعادة المحاولة.');
+        }
+      } finally {
+        if (audioRequestTokenRef.current === callToken) {
           setNoorLoading(false);
           setAudioLoadingMode(null);
         }
-      }, 12500);
-
-      try {
-        const resolved = await resolveSegmentAudio(targetSeg, 'noor_albayan', {
-          callToken,
-          showUi: true,
-        });
-        if (audioRunTokenRef.current !== callToken) return;
-
-        const script = resolved.fullReading || targetSeg.text;
-        if (resolved.audioBase64 && resolved.audioBase64.length > 120) {
-          const url = base64AudioToObjectUrl(resolved.audioBase64, resolved.mimeType);
-          await playAudioSource(
-            'noor_albayan',
-            url,
-            true,
-            () => playBrowserSpeech('noor_albayan', script),
-            resolved.cacheKey
-          );
-        } else {
-          playBrowserSpeech('noor_albayan', script);
-        }
-      } catch {
-        const ctx = getSegmentContext(targetSeg);
-        const fallback = generateNoorAlBayanClientFallback(targetSeg.text, {
-          nextWord: ctx.nextWord,
-          isEndOfAyah: ctx.isEndOfAyah,
-        });
-        setNoorDiacritizedWord(fallback.diacritizedWord);
-        setNoorAutoDiacritized(fallback.wasAutoDiacritized);
-        setNoorSteps(fallback.steps);
-        setNoorFullReading(fallback.fullReading);
-        playBrowserSpeech('noor_albayan', fallback.fullReading);
-      } finally {
-        window.clearTimeout(safetyUnlockTimer);
-        setNoorLoading(false);
-        setAudioLoadingMode(null);
       }
     },
     [
       continuousStatus,
-      getSegmentContext,
+      detachAndStopAudioElement,
       playAudioSource,
-      playBrowserSpeech,
       resolveSegmentAudio,
       selectedSegment,
+      waitWithCancellation,
     ]
   );
 
@@ -1167,43 +971,75 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
         setContinuousStatus('idle');
         setContinuousProgress(null);
       }
-      const callToken = ++audioRunTokenRef.current;
+      const callToken = ++audioRequestTokenRef.current;
+      detachAndStopAudioElement();
       setAudioError(null);
       setAudioLoadingMode('normal');
-      const safetyUnlockTimer = window.setTimeout(() => {
-        if (audioRunTokenRef.current === callToken) {
-          setAudioLoadingMode(null);
-        }
-      }, 12500);
+
+      const isCancelled = () => audioRequestTokenRef.current !== callToken;
 
       try {
-        const resolved = await resolveSegmentAudio(targetSeg, 'normal', {
-          callToken,
-          showUi: true,
-        });
-        if (audioRunTokenRef.current !== callToken) return;
+        const maxAttempts = 6;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          if (isCancelled()) return;
+          const resolved = await resolveSegmentAudio(targetSeg, 'normal', {
+            callToken,
+            showUi: true,
+          });
+          if (isCancelled()) return;
 
-        const script = resolved.fullReading || targetSeg.text;
-        if (resolved.audioBase64 && resolved.audioBase64.length > 120) {
-          const url = base64AudioToObjectUrl(resolved.audioBase64, resolved.mimeType);
-          await playAudioSource(
-            'normal',
-            url,
-            true,
-            () => playBrowserSpeech('normal', script),
-            resolved.cacheKey
-          );
-        } else {
-          playBrowserSpeech('normal', script);
+          if (resolved.audioBase64 && resolved.audioBase64.length > 120) {
+            setAudioError(null);
+            setAudioLoadingMode(null);
+            const url = base64AudioToObjectUrl(resolved.audioBase64, resolved.mimeType);
+            await playAudioSource(
+              'normal',
+              url,
+              true,
+              () => {
+                if (!isCancelled()) {
+                  setAudioError('تعذّر تشغيل الصوت حالياً؛ يرجى الانتظار لحظات والمحاولة مجدداً.');
+                }
+              },
+              resolved.cacheKey
+            );
+            return;
+          }
+
+          if (attempt >= maxAttempts) {
+            setAudioError(
+              resolved.ttsError ||
+                'لا يزال هناك ضغط مؤقت على محرك الصوت حالياً؛ يرجى الانتظار قليلاً ثم إعادة المحاولة.'
+            );
+            return;
+          }
+
+          const waitMs = Math.max(4000, Math.min(20000, resolved.ttsRetryAfterMs || 8000));
+          const ok = await waitWithCancellation(waitMs, isCancelled, (remSec) => {
+            setAudioError(
+              `هناك ضغط مؤقت على محرك الصوت حالياً؛ يرجى الانتظار لحين استعادة القراءة تلقائياً (المحاولة ${toArabicIndicDigits(attempt)} — إعادة خلال ${toArabicIndicDigits(remSec)} ث)...`
+            );
+          });
+          if (!ok) return;
         }
       } catch {
-        playBrowserSpeech('normal', targetSeg.text);
+        if (!isCancelled()) {
+          setAudioError('هناك ضغط مؤقت على محرك الصوت حالياً؛ يرجى الانتظار ثم إعادة المحاولة.');
+        }
       } finally {
-        window.clearTimeout(safetyUnlockTimer);
-        setAudioLoadingMode(null);
+        if (audioRequestTokenRef.current === callToken) {
+          setAudioLoadingMode(null);
+        }
       }
     },
-    [continuousStatus, playAudioSource, playBrowserSpeech, resolveSegmentAudio, selectedSegment]
+    [
+      continuousStatus,
+      detachAndStopAudioElement,
+      playAudioSource,
+      resolveSegmentAudio,
+      selectedSegment,
+      waitWithCancellation,
+    ]
   );
 
   const handlePlaySheikhAyah = useCallback(
@@ -1220,6 +1056,7 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
         setContinuousStatus('idle');
         setContinuousProgress(null);
       }
+      const callToken = ++audioRequestTokenRef.current;
       const reciterId = overrideReciterId || selectedReciterId;
       const reciter = QURAN_RECITERS.find((r) => r.id === reciterId) || QURAN_RECITERS[0];
       setAudioError(null);
@@ -1231,15 +1068,21 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
           targetSeg.ayahNumber
         );
         await playAudioSource('sheikh', url, false, () => {
-          playBrowserSpeech('normal', targetSeg.text);
+          if (audioRequestTokenRef.current === callToken) {
+            setAudioError('تعذّر تحميل تلاوة القارئ حالياً؛ يرجى التحقق من الاتصال والمحاولة مجدداً.');
+          }
         });
       } catch {
-        playBrowserSpeech('normal', targetSeg.text);
+        if (audioRequestTokenRef.current === callToken) {
+          setAudioError('تعذّر تشغيل تلاوة القارئ حالياً؛ يرجى الانتظار والمحاولة مجدداً.');
+        }
       } finally {
-        setAudioLoadingMode(null);
+        if (audioRequestTokenRef.current === callToken) {
+          setAudioLoadingMode(null);
+        }
       }
     },
-    [continuousStatus, playAudioSource, playBrowserSpeech, selectedReciterId, selectedSegment]
+    [continuousStatus, playAudioSource, selectedReciterId, selectedSegment]
   );
 
   const handleSelectSegment = (seg: BookTextSegment) => {
@@ -1310,9 +1153,17 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
   const resolveConnectedPhraseAudio = useCallback(
     async (
       phraseText: string
-    ): Promise<{ base64Wav: string; mimeType: string; cacheKey: string } | null> => {
+    ): Promise<{
+      base64Wav: string;
+      mimeType: string;
+      cacheKey: string;
+      error?: string;
+      retryAfterMs?: number;
+    }> => {
       const cleanPhrase = normalizeUthmaniForTts(phraseText) || phraseText.trim();
-      if (!cleanPhrase) return null;
+      if (!cleanPhrase) {
+        return { base64Wav: '', mimeType: 'audio/wav', cacheKey: 'phrase_empty' };
+      }
       const cacheKey = `phrase_v4_${cleanPhrase}`;
       const local = await getCachedAudioEntry(cacheKey);
       if (local?.base64Wav && local.base64Wav.length > 120) {
@@ -1346,10 +1197,22 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
               cacheKey,
             };
           }
+          return {
+            base64Wav: '',
+            mimeType: 'audio/wav',
+            cacheKey,
+            error: tts.error,
+            retryAfterMs: tts.retryAfterMs,
+          };
         } catch {
-          // Fall back cleanly in caller
+          return {
+            base64Wav: '',
+            mimeType: 'audio/wav',
+            cacheKey,
+            error: 'هناك ضغط مؤقت على محرك الصوت؛ يرجى الانتظار لحين استعادة القراءة تلقائياً.',
+            retryAfterMs: 8000,
+          };
         }
-        return null;
       })();
 
       phrasePrefetchMapRef.current.set(cacheKey, work);
@@ -1388,52 +1251,96 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
       const spokenStep = normalizeUthmaniForTts(rawLine) || rawLine.trim();
       if (!spokenStep) return;
 
-      const callToken = ++audioRunTokenRef.current;
+      const callToken = ++audioRequestTokenRef.current;
+      detachAndStopAudioElement();
       const stepCacheKey = `step_v4_${spokenStep}`;
       setAudioError(null);
       setAudioLoadingMode('noor_albayan');
 
+      const isCancelled = () => audioRequestTokenRef.current !== callToken;
+
       try {
         let wav = await getCachedAudioEntry(stepCacheKey);
+        let lastError: string | undefined;
+        let lastRetryAfterMs = 8000;
+
         if (!wav || !wav.base64Wav || wav.base64Wav.length <= 120) {
-          const tts = await synthesizeSpeechOnServer({
-            text: spokenStep,
-            mode: 'noor_albayan',
-          }).catch(() => null);
-          if (tts && tts.engine === 'server_wav' && tts.audioBase64.length > 120) {
-            wav = {
-              key: stepCacheKey,
-              base64Wav: tts.audioBase64,
-              mimeType: tts.mimeType || 'audio/wav',
-              diacritizedWord: spokenStep,
-              fullReading: spokenStep,
-              updatedAtMs: Date.now(),
-            };
-            void saveCachedAudioEntry(wav);
+          const maxAttempts = 6;
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            if (isCancelled()) return;
+            const tts = await synthesizeSpeechOnServer({
+              text: spokenStep,
+              mode: 'noor_albayan',
+            }).catch(() => null);
+            if (isCancelled()) return;
+
+            if (tts && tts.engine === 'server_wav' && tts.audioBase64.length > 120) {
+              wav = {
+                key: stepCacheKey,
+                base64Wav: tts.audioBase64,
+                mimeType: tts.mimeType || 'audio/wav',
+                diacritizedWord: spokenStep,
+                fullReading: spokenStep,
+                updatedAtMs: Date.now(),
+              };
+              void saveCachedAudioEntry(wav);
+              break;
+            }
+
+            lastError =
+              tts?.error ||
+              'هناك ضغط مؤقت على محرك الصوت؛ يرجى الانتظار لحين استعادة القراءة تلقائياً.';
+            lastRetryAfterMs = tts?.retryAfterMs || 8000;
+
+            if (attempt >= maxAttempts) {
+              setAudioError(lastError);
+              return;
+            }
+
+            const waitMs = Math.max(4000, Math.min(20000, lastRetryAfterMs));
+            const ok = await waitWithCancellation(waitMs, isCancelled, (remSec) => {
+              setAudioError(
+                `هناك ضغط مؤقت على محرك الصوت حالياً؛ يرجى الانتظار لحين عودة النطق تلقائياً (المحاولة ${toArabicIndicDigits(attempt)} — إعادة خلال ${toArabicIndicDigits(remSec)} ث)...`
+              );
+            });
+            if (!ok) return;
           }
         }
-        if (audioRunTokenRef.current !== callToken) return;
+
+        if (isCancelled()) return;
         if (wav?.base64Wav && wav.base64Wav.length > 120) {
+          setAudioError(null);
+          setAudioLoadingMode(null);
           const url = base64AudioToObjectUrl(wav.base64Wav, wav.mimeType || 'audio/wav');
           await playAudioSource(
             'noor_albayan',
             url,
             true,
-            () => playBrowserSpeech('noor_albayan', spokenStep),
+            () => {
+              if (!isCancelled()) {
+                setAudioError('تعذّر تشغيل مقطع التهجي حالياً؛ يرجى الانتظار ثم إعادة المحاولة.');
+              }
+            },
             stepCacheKey
           );
-        } else {
-          playBrowserSpeech('noor_albayan', spokenStep);
         }
       } catch {
-        playBrowserSpeech('noor_albayan', spokenStep);
+        if (!isCancelled()) {
+          setAudioError('هناك ضغط مؤقت على محرك الصوت حالياً؛ يرجى الانتظار ثم إعادة المحاولة.');
+        }
       } finally {
-        if (audioRunTokenRef.current === callToken) {
+        if (audioRequestTokenRef.current === callToken) {
           setAudioLoadingMode(null);
         }
       }
     },
-    [continuousStatus, playAudioSource, playBrowserSpeech, stopContinuousReading]
+    [
+      continuousStatus,
+      detachAndStopAudioElement,
+      playAudioSource,
+      stopContinuousReading,
+      waitWithCancellation,
+    ]
   );
 
   const getSegmentsForPage = (p?: BookPageRecord): BookTextSegment[] => {
@@ -1545,11 +1452,65 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
             (pIdx > anchorPageIdx || sIdx > anchorSegIdx) &&
             currentPhraseText.length > 0;
 
-          const resolved = await resolveSegmentAudio(seg, wordAudioMode, {
-            showUi: true,
-            segments: segs,
-          });
-          if (continuousTokenRef.current !== loopToken || continuousPausedRef.current) return;
+          const isLoopCancelled = () =>
+            continuousTokenRef.current !== loopToken || continuousPausedRef.current;
+
+          const pauseLoopWithErrorOnCurrentWord = (message: string) => {
+            continuousPausedRef.current = true;
+            continuousTokenRef.current++;
+            setContinuousStatus('paused');
+            stopAndResetAudio();
+            setAudioError(message);
+            setContinuousProgress({
+              currentIndex: sIdx + 1,
+              totalCount: segs.length,
+              wordText: seg.text,
+              pageNumber: page.pageNumber,
+              sourceLabel: message,
+            });
+          };
+
+          // Resolve current word audio with automatic wait-and-retry if Gemini TTS has temporary load
+          let resolved: ResolvedWordAudio | null = null;
+          const maxTtsRetries = 15;
+          for (let attempt = 1; attempt <= maxTtsRetries; attempt++) {
+            if (isLoopCancelled()) return;
+            const candidate = await resolveSegmentAudio(seg, wordAudioMode, {
+              showUi: true,
+              segments: segs,
+            });
+            if (isLoopCancelled()) return;
+
+            if (candidate.audioBase64 && candidate.audioBase64.length > 120) {
+              resolved = candidate;
+              setAudioError(null);
+              break;
+            }
+
+            if (attempt >= maxTtsRetries) {
+              pauseLoopWithErrorOnCurrentWord(
+                candidate.ttsError ||
+                  'لا يزال هناك ضغط على محرك الصوت حالياً؛ تم الإيقاف عند هذه الكلمة. يرجى الانتظار قليلاً ثم الضغط على «متابعة».'
+              );
+              return;
+            }
+
+            const waitMs = Math.max(4000, Math.min(20000, candidate.ttsRetryAfterMs || 8000));
+            const keptGoing = await waitWithCancellation(waitMs, isLoopCancelled, (remSec) => {
+              const waitMsg = `هناك ضغط مؤقت على محرك الصوت؛ يرجى الانتظار لحين استعادة القراءة تلقائياً (المحاولة ${toArabicIndicDigits(attempt)} — إعادة خلال ${toArabicIndicDigits(remSec)} ث)...`;
+              setAudioError(waitMsg);
+              setContinuousProgress({
+                currentIndex: sIdx + 1,
+                totalCount: segs.length,
+                wordText: seg.text,
+                pageNumber: page.pageNumber,
+                sourceLabel: waitMsg,
+              });
+            });
+            if (!keptGoing) return;
+          }
+
+          if (!resolved || isLoopCancelled()) return;
 
           setContinuousProgress({
             currentIndex: sIdx + 1,
@@ -1562,57 +1523,40 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
                 : 'محفوظ مسبقاً بالقاعدة (تشغيل فوري)',
           });
 
-          await new Promise<void>((resolve) => {
-            let settled = false;
-            const prefetchTimer = window.setTimeout(() => {
-              if (settled || continuousTokenRef.current !== loopToken || continuousPausedRef.current) {
-                return;
-              }
-              if (isCumulativeStep) {
-                void resolveConnectedPhraseAudio(currentPhraseText).catch(() => {});
-              } else if (nextSeg) {
-                void resolveSegmentAudio(nextSeg, wordAudioMode, {
-                  showUi: false,
-                  segments: nextSegOnSamePage ? segs : nextPageSegs,
-                }).catch(() => {});
-              }
-            }, 350);
-
-            const done = () => {
-              if (settled) return;
-              settled = true;
-              window.clearTimeout(prefetchTimer);
-              resolve();
-            };
-            const safetyMaxWait = wordAudioMode === 'noor_albayan' ? 28000 : 14000;
-            const safetyTimer = window.setTimeout(done, safetyMaxWait);
-            const finishWord = () => {
-              window.clearTimeout(safetyTimer);
-              done();
-            };
-
-            const script = resolved.fullReading || seg.text;
-            if (resolved.audioBase64 && resolved.audioBase64.length > 120) {
-              const url = base64AudioToObjectUrl(resolved.audioBase64, resolved.mimeType);
-              void playAudioSource(
-                wordAudioMode,
-                url,
-                true,
-                () => playBrowserSpeech(wordAudioMode, script, 0, finishWord),
-                resolved.cacheKey,
-                finishWord
-              );
-            } else {
-              playBrowserSpeech(wordAudioMode, script, 0, finishWord);
+          // Prefetch next item gently in background while playing current word cleanly
+          const prefetchTimer = window.setTimeout(() => {
+            if (isLoopCancelled()) return;
+            if (isCumulativeStep) {
+              void resolveConnectedPhraseAudio(currentPhraseText).catch(() => {});
+            } else if (nextSeg) {
+              void resolveSegmentAudio(nextSeg, wordAudioMode, {
+                showUi: false,
+                segments: nextSegOnSamePage ? segs : nextPageSegs,
+              }).catch(() => {});
             }
-          });
+          }, 400);
 
-          if (continuousTokenRef.current !== loopToken || continuousPausedRef.current) return;
+          const wordUrl = base64AudioToObjectUrl(resolved.audioBase64, resolved.mimeType);
+          const wordPlayOutcome = await playAudioStrict(
+            wordAudioMode,
+            wordUrl,
+            resolved.cacheKey,
+            isLoopCancelled
+          );
+          window.clearTimeout(prefetchTimer);
 
-          // If in Cumulative Tahajji mode and we have accumulated > 1 word, read the connected phrase!
+          if (wordPlayOutcome === 'cancelled' || isLoopCancelled()) return;
+          if (wordPlayOutcome === 'error') {
+            pauseLoopWithErrorOnCurrentWord(
+              'تعذّر تشغيل صوت هذه الكلمة حالياً؛ تم التوقف عند نفس الكلمة. اضغط «متابعة» لإعادة التشغيل.'
+            );
+            return;
+          }
+
+          // If in Cumulative Tahajji mode and we have accumulated > 1 word, read the connected phrase strictly to completion!
           if (isCumulativeStep) {
-            await new Promise((r) => window.setTimeout(r, 180));
-            if (continuousTokenRef.current !== loopToken || continuousPausedRef.current) return;
+            await new Promise((r) => window.setTimeout(r, 200));
+            if (isLoopCancelled()) return;
 
             setContinuousProgress({
               currentIndex: sIdx + 1,
@@ -1623,41 +1567,69 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
               cumulativePhrase: currentPhraseText,
             });
 
-            const phraseWav = await resolveConnectedPhraseAudio(currentPhraseText);
-            if (continuousTokenRef.current !== loopToken || continuousPausedRef.current) return;
+            let phraseWav: {
+              base64Wav: string;
+              mimeType: string;
+              cacheKey: string;
+              error?: string;
+              retryAfterMs?: number;
+            } | null = null;
 
-            await new Promise<void>((resolve) => {
-              let settled = false;
-              const done = () => {
-                if (settled) return;
-                settled = true;
-                resolve();
-              };
-              const safetyTimer = window.setTimeout(
-                done,
-                Math.min(45000, Math.max(12000, currentPhraseText.length * 140))
-              );
-              const finishPhrase = () => {
-                window.clearTimeout(safetyTimer);
-                done();
-              };
+            for (let attempt = 1; attempt <= maxTtsRetries; attempt++) {
+              if (isLoopCancelled()) return;
+              const candidatePhrase = await resolveConnectedPhraseAudio(currentPhraseText);
+              if (isLoopCancelled()) return;
 
-              if (phraseWav && phraseWav.base64Wav.length > 120) {
-                const url = base64AudioToObjectUrl(phraseWav.base64Wav, phraseWav.mimeType);
-                void playAudioSource(
-                  'normal',
-                  url,
-                  true,
-                  () => playBrowserSpeech('normal', currentPhraseText, 0, finishPhrase),
-                  phraseWav.cacheKey,
-                  finishPhrase
-                );
-              } else {
-                playBrowserSpeech('normal', currentPhraseText, 0, finishPhrase);
+              if (candidatePhrase.base64Wav && candidatePhrase.base64Wav.length > 120) {
+                phraseWav = candidatePhrase;
+                setAudioError(null);
+                break;
               }
-            });
 
-            if (continuousTokenRef.current !== loopToken || continuousPausedRef.current) return;
+              if (attempt >= maxTtsRetries) {
+                pauseLoopWithErrorOnCurrentWord(
+                  candidatePhrase.error ||
+                    'لا يزال هناك ضغط على محرك الصوت أثناء قراءة الربط التجميعي؛ تم التوقف عند هذه الكلمة. اضغط «متابعة» بعد قليل.'
+                );
+                return;
+              }
+
+              const waitMs = Math.max(
+                4000,
+                Math.min(20000, candidatePhrase.retryAfterMs || 8000)
+              );
+              const keptGoing = await waitWithCancellation(waitMs, isLoopCancelled, (remSec) => {
+                const waitMsg = `هناك ضغط مؤقت على محرك الصوت؛ يرجى الانتظار لاستكمال الربط التجميعي تلقائياً (المحاولة ${toArabicIndicDigits(attempt)} — إعادة خلال ${toArabicIndicDigits(remSec)} ث)...`;
+                setAudioError(waitMsg);
+                setContinuousProgress({
+                  currentIndex: sIdx + 1,
+                  totalCount: segs.length,
+                  wordText: seg.text,
+                  pageNumber: page.pageNumber,
+                  sourceLabel: waitMsg,
+                  cumulativePhrase: currentPhraseText,
+                });
+              });
+              if (!keptGoing) return;
+            }
+
+            if (!phraseWav || isLoopCancelled()) return;
+
+            const phraseUrl = base64AudioToObjectUrl(phraseWav.base64Wav, phraseWav.mimeType);
+            const phraseOutcome = await playAudioStrict(
+              'normal',
+              phraseUrl,
+              phraseWav.cacheKey,
+              isLoopCancelled
+            );
+
+            if (phraseOutcome === 'cancelled' || isLoopCancelled()) return;
+            if (phraseOutcome === 'error') {
+              pauseLoopWithErrorOnCurrentWord(
+                'تعذّر تشغيل صوت الربط التجميعي حالياً؛ اضغط «متابعة» لإعادة المحاولة.'
+              );
+              return;
+            }
           }
 
           if (endSegId && seg.id === endSegId) {
@@ -1683,10 +1655,11 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
       currentPageIndex,
       onChangePageIndex,
       pages,
-      playAudioSource,
-      playBrowserSpeech,
+      playAudioStrict,
       resolveConnectedPhraseAudio,
       resolveSegmentAudio,
+      stopAndResetAudio,
+      waitWithCancellation,
     ]
   );
 
@@ -1736,60 +1709,25 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
   };
 
   const handlePauseAudio = () => {
-    if (speechStateRef.current.active && typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.pause();
-      speechStateRef.current.elapsedBeforePauseMs +=
-        Date.now() - speechStateRef.current.startedAtMs;
-      clearSpeechTimers();
-      setAudioPlaying(false);
-      return;
-    }
     if (audioRef.current) {
       audioRef.current.pause();
     }
   };
 
   const handleResumeAudio = async () => {
-    if (speechStateRef.current.active && typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      if (window.speechSynthesis.paused) {
-        window.speechSynthesis.resume();
-        speechStateRef.current.startedAtMs = Date.now();
-        setAudioPlaying(true);
-      } else {
-        playBrowserSpeech(
-          speechStateRef.current.mode,
-          speechStateRef.current.text,
-          speechStateRef.current.chunkIndex
-        );
-      }
-      return;
-    }
     if (audioRef.current && audioRef.current.src) {
       await audioRef.current.play().catch(() => {
-        if (selectedSegment) {
-          playBrowserSpeech(activeAudioMode || 'normal', selectedSegment.text);
-        }
+        setAudioError('تعذّر استئناف الصوت حالياً؛ يرجى إعادة التشغيل.');
       });
     }
   };
 
   const handleRestartAudio = async () => {
-    if (speechStateRef.current.active || speechStateRef.current.text) {
-      if (!audioRef.current?.src) {
-        playBrowserSpeech(
-          speechStateRef.current.mode,
-          speechStateRef.current.text || selectedSegment?.text || ''
-        );
-        return;
-      }
-    }
     if (audioRef.current && audioRef.current.src) {
       audioRef.current.currentTime = 0;
       setAudioCurrentTime(0);
       await audioRef.current.play().catch(() => {
-        if (selectedSegment) {
-          playBrowserSpeech(activeAudioMode || 'normal', selectedSegment.text);
-        }
+        setAudioError('تعذّر إعادة تشغيل الصوت حالياً؛ يرجى المحاولة مجدداً.');
       });
     }
   };
@@ -2066,10 +2004,22 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
           )}
 
           {continuousProgress && (
-            <div className="bg-[#FDF6EE] border border-[#58CC02]/40 rounded-2xl px-4 py-2.5 space-y-1.5 text-xs font-bold">
+            <div
+              className={`rounded-2xl px-4 py-2.5 space-y-1.5 text-xs font-bold border ${
+                continuousProgress.sourceLabel.includes('ضغط')
+                  ? 'bg-[#FFF5EE] border-[#F56900]/50'
+                  : 'bg-[#FDF6EE] border-[#58CC02]/40'
+              }`}
+            >
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2 text-[#4A220D]">
-                  <Volume2 className="w-4 h-4 text-[#46A302] shrink-0" />
+                  <Volume2
+                    className={`w-4 h-4 shrink-0 ${
+                      continuousProgress.sourceLabel.includes('ضغط')
+                        ? 'text-[#F56900]'
+                        : 'text-[#46A302]'
+                    }`}
+                  />
                   <span>
                     صفحة {toArabicIndicDigits(continuousProgress.pageNumber)} · كلمة{' '}
                     {toArabicIndicDigits(continuousProgress.currentIndex)} من{' '}
@@ -2079,8 +2029,18 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
                     {continuousProgress.wordText}
                   </span>
                 </div>
-                <span className="text-[11px] font-bold text-[#46A302] inline-flex items-center gap-1">
-                  <Database className="w-3.5 h-3.5" />
+                <span
+                  className={`text-[11px] font-bold inline-flex items-center gap-1 ${
+                    continuousProgress.sourceLabel.includes('ضغط')
+                      ? 'text-[#D95338]'
+                      : 'text-[#46A302]'
+                  }`}
+                >
+                  {continuousProgress.sourceLabel.includes('ضغط') ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                  ) : (
+                    <Database className="w-3.5 h-3.5 shrink-0" />
+                  )}
                   <span>{continuousProgress.sourceLabel}</span>
                 </span>
               </div>
@@ -2090,6 +2050,16 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
                   <span>{continuousProgress.cumulativePhrase}</span>
                 </div>
               )}
+            </div>
+          )}
+
+          {continuousStatus !== 'idle' && audioError && (
+            <div
+              role="alert"
+              className="rounded-2xl bg-[#FFF5EE] border-2 border-[#F56900]/40 px-4 py-2.5 text-xs font-bold text-[#B54708] flex items-center gap-2"
+            >
+              <AlertCircle className="w-4 h-4 text-[#F56900] shrink-0" />
+              <span>{audioError}</span>
             </div>
           )}
         </div>
