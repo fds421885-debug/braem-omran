@@ -2,8 +2,13 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
+  BookOpen,
   Building2,
+  Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  Copy,
   Cpu,
   KeyRound,
   RefreshCw,
@@ -107,6 +112,16 @@ export const AdminAiSection: React.FC<AdminAiSectionProps> = ({ complexes }) => 
   const [saveFeedback, setSaveFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(
     null
   );
+  const [showDetailedGuide, setShowDetailedGuide] = useState(true);
+  const [copiedEnvVar, setCopiedEnvVar] = useState<string | null>(null);
+
+  const handleCopyEnvVar = (envName: string) => {
+    navigator.clipboard?.writeText(envName).catch(() => {});
+    setCopiedEnvVar(envName);
+    setTimeout(() => {
+      setCopiedEnvVar((prev) => (prev === envName ? null : prev));
+    }, 1800);
+  };
 
   const syncDraftsFromStore = useCallback(
     (store: AiPolicyConfigStore, cpxList: DiscoveredComplex[], accList: PlatformAccountDirectoryEntry[]) => {
@@ -397,6 +412,236 @@ export const AdminAiSection: React.FC<AdminAiSectionProps> = ({ complexes }) => 
           </button>
         </div>
       )}
+
+      {/* 0. Exhaustive Step-by-Step Guide for Per-Complex & Per-Account Dedicated AI */}
+      <section className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 sm:p-6 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="space-y-1">
+            <h2 className="font-display text-lg sm:text-xl font-extrabold text-[#4A220D] flex items-center gap-2">
+              <BookOpen className="w-5 h-5 text-[#F56900]" />
+              <span>الدليل التفصيلي الشامل: كيف تشغّل ذكاءً اصطناعياً خاصاً لكل مجمع ولكل حساب؟</span>
+            </h2>
+            <p className="text-xs sm:text-sm text-[#7D4E35]">
+              شرح خطوة بخطوة من لحظة إنشاء المفتاح في Google إلى إضافته على الخادم وربطه بالمجمع أو الحساب واختباره وحل أي خطأ.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowDetailedGuide((prev) => !prev)}
+            className="duo-btn-cream min-h-[40px] px-3.5 py-2 rounded-xl font-display font-extrabold text-xs inline-flex items-center gap-1.5 cursor-pointer shrink-0"
+          >
+            {showDetailedGuide ? (
+              <>
+                <ChevronUp className="w-4 h-4 text-[#F56900]" />
+                <span>طيّ الشرح</span>
+              </>
+            ) : (
+              <>
+                <ChevronDown className="w-4 h-4 text-[#F56900]" />
+                <span>فتح الشرح التفصيلي</span>
+              </>
+            )}
+          </button>
+        </div>
+
+        {showDetailedGuide && (
+          <div className="space-y-4 pt-2 border-t border-[#EADBC8]">
+            {/* Core Architecture Note */}
+            <div className="rounded-2xl border-2 border-[#F56900]/30 bg-[#FDF6EE] p-4 space-y-2">
+              <p className="font-display font-extrabold text-sm text-[#C95200]">
+                أولاً: كيف يعمل النظام ولماذا لا نكتب مفاتيح AIza... داخل المتصفح؟
+              </p>
+              <p className="text-xs sm:text-sm text-[#4A220D] leading-relaxed">
+                أي مفتاح يوضع داخل متصفح المستخدم أو في قاعدة البيانات العامة يمكن لأي شخص استخراجه خلال ثوانٍ واستخدامه على حسابك. لذلك تعمل المنصة بنظام <strong className="text-[#C95200]">«المسارات المحمية على الخادم» (Server Key Slots)</strong>:
+                المفاتيح السرية الحقيقية تبقى محفوظة بأمان داخل السيرفر فقط، بينما يتيح لك هذا التبويب ربط كل مجمع أو كل حساب بـ <strong className="text-[#4A220D]">رقم المسار (default أو slot_1 إلى slot_5)</strong> بضغطة زر.
+              </p>
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                {[
+                  'GEMINI_API_KEY',
+                  'GEMINI_API_KEY_1',
+                  'GEMINI_API_KEY_2',
+                  'GEMINI_API_KEY_3',
+                  'GEMINI_API_KEY_4',
+                  'GEMINI_API_KEY_5',
+                ].map((envName) => (
+                  <button
+                    key={envName}
+                    type="button"
+                    onClick={() => handleCopyEnvVar(envName)}
+                    className="px-2.5 py-1.5 rounded-xl bg-white border border-[#EADBC8] hover:border-[#F56900] text-[11px] font-mono font-bold text-[#4A220D] inline-flex items-center gap-1.5 cursor-pointer"
+                    title="نسخ اسم المتغير"
+                  >
+                    <span>{envName}</span>
+                    {copiedEnvVar === envName ? (
+                      <Check className="w-3.5 h-3.5 text-[#46A302]" />
+                    ) : (
+                      <Copy className="w-3.5 h-3.5 text-[#7D4E35]" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* 6 Detailed Steps */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
+              {/* Step 1 */}
+              <div className="rounded-2xl border-2 border-[#EADBC8] bg-white p-4 space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="px-2.5 py-0.5 rounded-lg bg-[#F56900] text-white font-display font-extrabold text-xs">
+                    الخطوة 1
+                  </span>
+                  <h3 className="font-display font-extrabold text-sm text-[#4A220D]">
+                    استخراج مفتاح مستقل لكل مجمع أو حساب (أهم نقطة!)
+                  </h3>
+                </div>
+                <ol className="text-xs text-[#4A220D] space-y-1.5 list-decimal pr-4 leading-relaxed">
+                  <li>
+                    افتح موقع <strong dir="ltr">aistudio.google.com</strong> وسجّل الدخول بحساب Google.
+                  </li>
+                  <li>
+                    اضغط <strong>Get API key</strong> ثم <strong>Create API key</strong>.
+                  </li>
+                  <li>
+                    <strong>سرّ مهم جداً لفصل الاستهلاك:</strong> عند إنشاء مفتاح جديد، اختر <strong>Create API key in new project</strong> (مشروع Google Cloud جديد ومستقل لكل مجمع مشترك)، مثلاً مشروع باسم <code className="px-1 bg-[#FDF6EE] rounded">Complex-AlNoor</code> وآخر باسم <code className="px-1 bg-[#FDF6EE] rounded">Complex-AlFath</code>.
+                  </li>
+                  <li>
+                    <strong>لماذا مشروع مستقل؟</strong> لأن Google تحسب حد الطلبات المجاني وحد الفوترة على مستوى <em>المشروع</em> وليس المفتاح؛ فلو أنشأت 5 مفاتيح داخل نفس المشروع ستتقاسم نفس الرصيد والحدود وتتعطل معاً، أما المشروع المستقل فيمنح كل مجمع رصيداً وحدوداً مستقلة 100%.
+                  </li>
+                  <li>
+                    إذا أردت باقة مدفوعة بلا انقطاع لمجمع معين، فعّل الفوترة (Billing) على مشروع ذلك المجمع فقط.
+                  </li>
+                </ol>
+              </div>
+
+              {/* Step 2 */}
+              <div className="rounded-2xl border-2 border-[#EADBC8] bg-white p-4 space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="px-2.5 py-0.5 rounded-lg bg-[#F56900] text-white font-display font-extrabold text-xs">
+                    الخطوة 2
+                  </span>
+                  <h3 className="font-display font-extrabold text-sm text-[#4A220D]">
+                    وضع المفاتيح على السيرفر (Render أو AI Studio)
+                  </h3>
+                </div>
+                <div className="text-xs text-[#4A220D] space-y-2 leading-relaxed">
+                  <div>
+                    <p className="font-bold text-[#C95200]">أ) على استضافة Render (الموقع المنشور):</p>
+                    <ol className="list-decimal pr-4 space-y-1 mt-1">
+                      <li>ادخل لوحة تحكم خدمة الموقع على <strong>Render.com</strong>.</li>
+                      <li>من القائمة اليسرى افتح <strong>Environment</strong> واضغط <strong>Add Environment Variable</strong>.</li>
+                      <li>في خانة <strong>Key</strong> اكتب <code className="px-1 bg-[#FDF6EE] rounded">GEMINI_API_KEY_1</code> (اضغط الزر بالأعلى لنسخ الاسم) وفي خانة <strong>Value</strong> الصق المفتاح السري للمجمع الأول.</li>
+                      <li>كرّر نفس الأمر للمجمع الثاني باسم <code className="px-1 bg-[#FDF6EE] rounded">GEMINI_API_KEY_2</code> وهكذا حتى <code className="px-1 bg-[#FDF6EE] rounded">GEMINI_API_KEY_5</code>.</li>
+                      <li>اضغط <strong>Save, rebuild, and deploy</strong> حتى يُعاد تشغيل السيرفر ويقرأ المفاتيح الجديدة.</li>
+                    </ol>
+                  </div>
+                  <div className="pt-1 border-t border-[#EADBC8]/70">
+                    <p className="font-bold text-[#2F6F02]">ب) أثناء التجربة داخل AI Studio:</p>
+                    <p className="mt-0.5">
+                      افتح <strong>Settings &gt; Secrets</strong> وأضف نفس أسماء المتغيرات (<code className="px-1 bg-[#FDF6EE] rounded">GEMINI_API_KEY_1..5</code>) ثم ارجع هنا واضغط <strong>«تحديث شامل»</strong>.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Step 3 */}
+              <div className="rounded-2xl border-2 border-[#EADBC8] bg-white p-4 space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="px-2.5 py-0.5 rounded-lg bg-[#58CC02] text-white font-display font-extrabold text-xs">
+                    الخطوة 3
+                  </span>
+                  <h3 className="font-display font-extrabold text-sm text-[#4A220D]">
+                    التأكد من جاهزية المفتاح واختبار النماذج قبل التوزيع
+                  </h3>
+                </div>
+                <ol className="text-xs text-[#4A220D] space-y-1.5 list-decimal pr-4 leading-relaxed">
+                  <li>انظر لبطاقات <strong>«حالة مفاتيح الخادم»</strong> بالأسفل مباشرة؛ أي متغير أضفته في السيرفر ستتحول بطاقته تلقائياً إلى اللون الأخضر وتُكتب عليه كلمة <strong>«مضبوط»</strong>.</li>
+                  <li>من القائمة المنسدلة بجانب زر الاختبار البرتقالي، اختر المسار الذي أضفته (مثل <code className="px-1 bg-[#FDF6EE] rounded">slot_1</code>).</li>
+                  <li>اضغط <strong>«فحص اتصال النماذج الآن»</strong>.</li>
+                  <li>ستظهر لك بطاقة لكل نموذج مع الزمن بالملي ثانية؛ إذا ظهر <strong dir="ltr" className="text-[#2F6F02]">OK 200</strong> فالمفتاح سليم ومفعّل، وإذا ظهر <strong dir="ltr" className="text-[#B92B14]">ERR 403 / 429</strong> فستقرأ السبب الدقيق فوراً (مفتاح خاطئ أو رصيد منتهٍ).</li>
+                </ol>
+              </div>
+
+              {/* Step 4 */}
+              <div className="rounded-2xl border-2 border-[#EADBC8] bg-white p-4 space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="px-2.5 py-0.5 rounded-lg bg-[#58CC02] text-white font-display font-extrabold text-xs">
+                    الخطوة 4
+                  </span>
+                  <h3 className="font-display font-extrabold text-sm text-[#4A220D]">
+                    ربط كل مجمع باشتراكه ومفتاحه والأدوات المسموحة له
+                  </h3>
+                </div>
+                <ol className="text-xs text-[#4A220D] space-y-1.5 list-decimal pr-4 leading-relaxed">
+                  <li>اذهب إلى قسم <strong>«تعيين اشتراك ومسار الذكاء الاصطناعي لكل مجمع»</strong> بالأسفل.</li>
+                  <li><strong>مثال لمجمع مشترك بباقة خاصة:</strong> اجعل حالته <strong>«مشترك (مفعّل)»</strong>، واختر من خانة <strong>مسار مفتاح الخادم</strong> الخيار <code className="px-1 bg-[#FDF6EE] rounded">مفتاح الخادم 1 (GEMINI_API_KEY_1)</code>، وفعّل له الأدوات الأربع (تحليل الكتب، تهجي الفتح، الصوت TTS، العروض AI) ثم اضغط <strong>«حفظ المجمع»</strong>.</li>
+                  <li><strong>مثال لمجمع غير مشترك:</strong> اجعل حالته <strong>«غير مشترك / موقوف»</strong> أو اضغط زر <strong>«AI موقوف»</strong> ثم اضغط <strong>«حفظ المجمع»</strong>؛ فوراً لن يتمكن أي معلم أو طالب في هذا المجمع من استهلاك رصيد الـ AI.</li>
+                  <li><strong>مثال لمجمع باقة محدودة:</strong> افتح له فقط <em>«تهجي الفتح»</em> و<em>«الصوت TTS»</em> وأغلق عنه <em>«العروض AI»</em> و<em>«تحليل الكتب»</em>.</li>
+                </ol>
+              </div>
+
+              {/* Step 5 */}
+              <div className="rounded-2xl border-2 border-[#EADBC8] bg-white p-4 space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="px-2.5 py-0.5 rounded-lg bg-[#4A220D] text-white font-display font-extrabold text-xs">
+                    الخطوة 5
+                  </span>
+                  <h3 className="font-display font-extrabold text-sm text-[#4A220D]">
+                    تعيين AI ومفتاح خاص لحساب معين (معلم / مشرف / طالب)
+                  </h3>
+                </div>
+                <ol className="text-xs text-[#4A220D] space-y-1.5 list-decimal pr-4 leading-relaxed">
+                  <li>انزل إلى قسم <strong>«تعيين صلاحية ومسار الـ AI لكل حساب»</strong> وابحث بالاسم أو البريد أو اختر المجمع.</li>
+                  <li>
+                    <strong>حالة الحساب</strong> لها 3 خيارات:
+                    <ul className="list-disc pr-4 mt-1 space-y-0.5">
+                      <li><strong>يرث إعداد المجمع:</strong> يلتزم بما ضبطته لمجمعه (هذا هو الافتراضي).</li>
+                      <li><strong>مفعّل مخصص:</strong> يفتح الـ AI لهذا الشخص حتى لو مجمعه موقوف أو لم ينضم لمجمع أصلاً.</li>
+                      <li><strong>موقوف لهذا الحساب:</strong> يوقف الـ AI عن هذا الشخص وحده مع بقاء باقي مجمعه يعمل عادي.</li>
+                    </ul>
+                  </li>
+                  <li>
+                    <strong>مسار المفتاح للحساب:</strong> اتركه <em>«يرث مسار المجمع»</em>، أو اختر له مساراً مستقلاً (مثلاً <code className="px-1 bg-[#FDF6EE] rounded">GEMINI_API_KEY_2</code> لمعلم مميز أو مشرف خاص) ثم اضغط <strong>«حفظ»</strong>.
+                  </li>
+                </ol>
+              </div>
+
+              {/* Step 6 */}
+              <div className="rounded-2xl border-2 border-[#EADBC8] bg-white p-4 space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="px-2.5 py-0.5 rounded-lg bg-[#D95338] text-white font-display font-extrabold text-xs">
+                    الخطوة 6
+                  </span>
+                  <h3 className="font-display font-extrabold text-sm text-[#4A220D]">
+                    كيف تقرر المنصة المفتاح + معنى أشهر رسائل الأخطاء
+                  </h3>
+                </div>
+                <div className="text-xs text-[#4A220D] space-y-1.5 leading-relaxed">
+                  <p>
+                    <strong>قاعدة الأولوية:</strong> إعداد <strong className="text-[#C95200]">الحساب الفردي</strong> يغلب دائماً إعداد <strong className="text-[#4A220D]">المجمع</strong>، وإذا لم يُحدّد شيء يأخذ <code className="px-1 bg-[#FDF6EE] rounded">default</code>.
+                  </p>
+                  <ul className="list-disc pr-4 space-y-1">
+                    <li>
+                      <strong dir="ltr" className="text-[#B92B14]">MISSING_SLOT_KEY (500):</strong> ربطت المجمع/الحساب بمسار مثل <code className="px-1 bg-[#FDF6EE] rounded">slot_1</code> قبل أن تضيف <code className="px-1 bg-[#FDF6EE] rounded">GEMINI_API_KEY_1</code> في Render أو Secrets.
+                    </li>
+                    <li>
+                      <strong dir="ltr" className="text-[#B92B14]">403 / API_KEY_INVALID:</strong> المفتاح المنسوخ فيه فراغ أو تم إلغاؤه أو مقيّد بـ IP/موقع خطأ في Google Cloud.
+                    </li>
+                    <li>
+                      <strong dir="ltr" className="text-[#B92B14]">429 RESOURCE_EXHAUSTED:</strong> مفتاح هذا المجمع استنفد الحد المجاني للدقيقة/اليوم؛ فعّل له الفوترة أو انقله لمسار آخر.
+                    </li>
+                    <li>
+                      <strong dir="ltr" className="text-[#B92B14]">503 UNAVAILABLE:</strong> ضغط لحظي على خوادم Google؛ وتنتقل المنصة تلقائياً للنموذج البديل (<code className="px-1 bg-[#FDF6EE] rounded">gemini-3.5-flash-lite</code>).
+                    </li>
+                  </ul>
+                  <p className="pt-1 text-[11px] font-bold text-[#7D4E35]">
+                    ملاحظة للتوسع: إذا احتجت مستقبلاً أكثر من 5 مفاتيح مستقلة (مثلاً 15 أو 30 مجمعاً مشتركاً)، نوسّع لك المسارات من 5 إلى أي عدد تريده فوراً.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
 
       {/* 1. Live Server Key Slots & Connectivity Test */}
       <section className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 sm:p-6 space-y-5">
