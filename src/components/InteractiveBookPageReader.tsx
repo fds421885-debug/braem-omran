@@ -22,7 +22,11 @@ import {
   saveCachedAudioEntry,
   synthesizeSpeechOnServer,
 } from '../services/bookStorage';
-import { generateNoorAlBayanClientFallback } from '../services/clientArabicEngine';
+import {
+  computeSegmentTahajjiContext,
+  generateNoorAlBayanClientFallback,
+  isWordStartingWithHamzatWasl,
+} from '../services/clientArabicEngine';
 import { getReciterAyahAudioUrl } from '../services/multiDb';
 import {
   getSavedTeacherReciterId,
@@ -353,17 +357,49 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
     };
   }, [stopAndResetAudio]);
 
+  const getSegmentContext = useCallback(
+    (seg: BookTextSegment, overrideSegments?: BookTextSegment[]) => {
+      const list =
+        overrideSegments && overrideSegments.length > 0 ? overrideSegments : activeSegments;
+      const idx = list.findIndex((s) => s.id === seg.id);
+      if (idx < 0) {
+        return {
+          nextWord: undefined as string | undefined,
+          isEndOfAyah: seg.kind === 'ayah',
+          contextSuffix: seg.kind === 'ayah' ? '_waqf' : '',
+        };
+      }
+      const { nextWord, isEndOfAyah } = computeSegmentTahajjiContext(list, idx);
+      const contextSuffix = isEndOfAyah
+        ? '_waqf'
+        : isWordStartingWithHamzatWasl(nextWord)
+        ? '_wasl'
+        : '';
+      return { nextWord, isEndOfAyah, contextSuffix };
+    },
+    [activeSegments]
+  );
+
   // Helper to check DB + local cache for saved word readings cleanly (without generating)
   const lookupSavedWordRecord = useCallback(
     async (
       mode: 'noor_albayan' | 'normal',
-      wordText: string
+      wordText: string,
+      ctx?: { nextWord?: string; isEndOfAyah?: boolean; contextSuffix?: string }
     ): Promise<ResolvedWordAudio | null> => {
       const normalizedText = wordText.trim().replace(/\s+/g, ' ');
       if (!normalizedText) return null;
-      const cacheKey = `${mode === 'noor_albayan' ? 'noor_v2' : 'normal_v2'}_${normalizedText}`;
+      const contextSuffix = mode === 'noor_albayan' ? ctx?.contextSuffix || '' : '';
+      const cacheKey = `${
+        mode === 'noor_albayan' ? `fath_v3${contextSuffix}` : 'normal_v2'
+      }_${normalizedText}`;
       const instantLocal =
-        mode === 'noor_albayan' ? generateNoorAlBayanClientFallback(wordText) : null;
+        mode === 'noor_albayan'
+          ? generateNoorAlBayanClientFallback(wordText, {
+              nextWord: ctx?.nextWord,
+              isEndOfAyah: ctx?.isEndOfAyah,
+            })
+          : null;
 
       // 1. Local IndexedDB check
       const localCached = await getCachedAudioEntry(cacheKey);
@@ -392,7 +428,7 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
       if (dbRecordSessionCacheRef.current.has(cacheKey)) {
         dbHit = dbRecordSessionCacheRef.current.get(cacheKey) || null;
       } else {
-        dbHit = await lookupWordAudioAcrossLibrary(workspace, mode, wordText);
+        dbHit = await lookupWordAudioAcrossLibrary(workspace, mode, wordText, contextSuffix);
         dbRecordSessionCacheRef.current.set(cacheKey, dbHit);
       }
 
@@ -440,8 +476,9 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
   const hydrateSegmentSavedInfo = useCallback(
     async (seg: BookTextSegment) => {
       const targetId = seg.id;
+      const ctx = getSegmentContext(seg);
       const [noorSaved, normalSaved] = await Promise.all([
-        lookupSavedWordRecord('noor_albayan', seg.text).catch(() => null),
+        lookupSavedWordRecord('noor_albayan', seg.text, ctx).catch(() => null),
         lookupSavedWordRecord('normal', seg.text).catch(() => null),
       ]);
 
@@ -458,7 +495,7 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
         setWordAudioStatus('القراءة العادية محفوظة في القاعدة — جاهزة للتشغيل المباشر');
       }
     },
-    [lookupSavedWordRecord]
+    [getSegmentContext, lookupSavedWordRecord]
   );
 
   // Stop continuous reading if parent performed a manual navigation (header/footer/swipe)
@@ -849,10 +886,14 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
     async (
       seg: BookTextSegment,
       mode: 'noor_albayan' | 'normal',
-      options?: { callToken?: number; showUi?: boolean }
+      options?: { callToken?: number; showUi?: boolean; segments?: BookTextSegment[] }
     ): Promise<ResolvedWordAudio> => {
       const normalizedText = seg.text.trim().replace(/\s+/g, ' ');
-      const cacheKey = `${mode === 'noor_albayan' ? 'noor_v2' : 'normal_v2'}_${normalizedText}`;
+      const ctx = getSegmentContext(seg, options?.segments);
+      const contextSuffix = mode === 'noor_albayan' ? ctx.contextSuffix : '';
+      const cacheKey = `${
+        mode === 'noor_albayan' ? `fath_v3${contextSuffix}` : 'normal_v2'
+      }_${normalizedText}`;
 
       const applyBreakdownUi = (data: {
         diacritizedWord: string;
@@ -876,7 +917,12 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
       };
 
       const instantLocal =
-        mode === 'noor_albayan' ? generateNoorAlBayanClientFallback(seg.text) : null;
+        mode === 'noor_albayan'
+          ? generateNoorAlBayanClientFallback(seg.text, {
+              nextWord: ctx.nextWord,
+              isEndOfAyah: ctx.isEndOfAyah,
+            })
+          : null;
       if (instantLocal && options?.showUi) {
         applyBreakdownUi({
           diacritizedWord: instantLocal.diacritizedWord,
@@ -887,7 +933,7 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
       }
 
       // 1 & 2. Check Local Cache and ALL Library DB Shards (`wordAudio`)
-      const saved = await lookupSavedWordRecord(mode, seg.text);
+      const saved = await lookupSavedWordRecord(mode, seg.text, ctx);
       if (saved) {
         applyBreakdownUi({
           diacritizedWord: saved.diacritizedWord,
@@ -929,6 +975,8 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
           const breakdown = await generateNoorAlBayanOnServer({
             text: seg.text,
             surahName: seg.surahName,
+            nextWord: ctx.nextWord,
+            isEndOfAyah: ctx.isEndOfAyah,
           }).catch(() => null);
           if (breakdown) {
             diacritizedWord = breakdown.diacritizedWord;
@@ -936,7 +984,8 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
             steps = breakdown.steps;
             fullReading =
               breakdown.fullReading ||
-              `${breakdown.steps.map((s) => s.reading).join(' ، ')} ، ${breakdown.diacritizedWord}`;
+              breakdown.steps.map((s) => s.reading).join(' ، ') ||
+              breakdown.diacritizedWord;
           }
           if (options?.showUi) {
             applyBreakdownUi({
@@ -981,6 +1030,7 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
           audioBase64,
           mimeType,
           createdBy: currentUserId,
+          contextSuffix,
         }).then((savedRec) => {
           if (savedRec) {
             dbRecordSessionCacheRef.current.set(cacheKey, savedRec);
@@ -1017,7 +1067,7 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
         prefetchMapRef.current.delete(cacheKey);
       }
     },
-    [currentUserId, lookupSavedWordRecord, workspace]
+    [currentUserId, getSegmentContext, lookupSavedWordRecord, workspace]
   );
 
   const handlePlayNoorAlBayan = useCallback(
@@ -1062,7 +1112,11 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
           playBrowserSpeech('noor_albayan', script);
         }
       } catch {
-        const fallback = generateNoorAlBayanClientFallback(targetSeg.text);
+        const ctx = getSegmentContext(targetSeg);
+        const fallback = generateNoorAlBayanClientFallback(targetSeg.text, {
+          nextWord: ctx.nextWord,
+          isEndOfAyah: ctx.isEndOfAyah,
+        });
         setNoorDiacritizedWord(fallback.diacritizedWord);
         setNoorAutoDiacritized(fallback.wasAutoDiacritized);
         setNoorSteps(fallback.steps);
@@ -1074,7 +1128,14 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
         setAudioLoadingMode(null);
       }
     },
-    [continuousStatus, playAudioSource, playBrowserSpeech, resolveSegmentAudio, selectedSegment]
+    [
+      continuousStatus,
+      getSegmentContext,
+      playAudioSource,
+      playBrowserSpeech,
+      resolveSegmentAudio,
+      selectedSegment,
+    ]
   );
 
   const handlePlayNormalReading = useCallback(
@@ -1201,7 +1262,11 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
     if (continuousStatus !== 'idle') {
       stopContinuousReading();
     }
-    const line = `${step.ruleLabel}، ${step.reading}`;
+    const bareShortVowelLabels = new Set(['فتحة', 'ضمة', 'كسرة', 'حرف متحرك']);
+    const line =
+      bareShortVowelLabels.has(step.ruleLabel) || !step.ruleLabel
+        ? step.reading
+        : `${step.ruleLabel}، ${step.reading}`;
     playBrowserSpeech('noor_albayan', line);
   };
 
@@ -1267,14 +1332,20 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
             sourceLabel: 'جاري البحث في قاعدة المكتبة وتجهيز الصوت...',
           });
 
-          const nextSeg =
-            segs[sIdx + 1] ||
-            (continuousAutoNextPage ? getSegmentsForPage(pages[pIdx + 1])[0] : undefined);
+          const nextSegOnSamePage = segs[sIdx + 1];
+          const nextPageSegs = continuousAutoNextPage ? getSegmentsForPage(pages[pIdx + 1]) : [];
+          const nextSeg = nextSegOnSamePage || nextPageSegs[0];
           if (nextSeg) {
-            void resolveSegmentAudio(nextSeg, mode, { showUi: false }).catch(() => {});
+            void resolveSegmentAudio(nextSeg, mode, {
+              showUi: false,
+              segments: nextSegOnSamePage ? segs : nextPageSegs,
+            }).catch(() => {});
           }
 
-          const resolved = await resolveSegmentAudio(seg, mode, { showUi: true });
+          const resolved = await resolveSegmentAudio(seg, mode, {
+            showUi: true,
+            segments: segs,
+          });
           if (continuousTokenRef.current !== loopToken || continuousPausedRef.current) return;
 
           setContinuousProgress({
@@ -1473,7 +1544,7 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
                       : 'text-[#4A220D] hover:bg-white'
                   }`}
                 >
-                  بالتهجي (نور البيان)
+                  بالتهجي (الفتح الرباني)
                 </button>
                 <button
                   type="button"
@@ -1899,7 +1970,7 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
                   <div className="flex items-center justify-between gap-2 text-xs font-bold text-[#4A220D]">
                     <span>
                       {activeAudioMode === 'noor_albayan'
-                        ? 'جاري التشغيل: تهجي نور البيان'
+                        ? 'جاري التشغيل: تهجي الفتح الرباني'
                         : activeAudioMode === 'sheikh'
                         ? `تلاوة: ${activeReciter.name}`
                         : 'جاري التشغيل: قراءة عادية'}
@@ -1959,18 +2030,18 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
                 </div>
               )}
 
-              {/* Noor Al-Bayan Spelling Breakdown Steps */}
+              {/* Al-Fath Al-Rabbani Spelling Breakdown Steps */}
               {noorLoading ? (
                 <div className="bg-[#FDF6EE] border border-[#EADBC8] rounded-2xl p-4 text-center text-xs font-bold text-[#7D4E35] flex items-center justify-center gap-2">
                   <Loader2 className="w-4 h-4 animate-spin text-[#F56900]" />
-                  <span>جاري إعداد التهجي بطريقة نور البيان...</span>
+                  <span>جاري إعداد التهجي بطريقة الفتح الرباني...</span>
                 </div>
               ) : (
                 noorSteps.length > 0 && (
                   <div className="bg-[#FDF6EE] border-2 border-[#EADBC8] rounded-2xl p-4 space-y-3">
                     <div className="flex items-center justify-between gap-2">
                       <p className="font-display text-xs sm:text-sm font-extrabold text-[#4A220D]">
-                        تفصيل التهجي (نور البيان):
+                        تفصيل التهجي (الفتح الرباني):
                       </p>
                       <span className="text-[11px] text-[#7D4E35]">
                         اضغط على أي خطوة لسماعها

@@ -79,10 +79,10 @@ export function stripArabicDiacriticsForMatch(input: string): string {
 function getArabicLetterName(ch: string): string {
   const names: Record<string, string> = {
     ا: 'أَلِفْ',
-    أ: 'أَلِفْ هَمْزَة',
-    إ: 'أَلِفْ هَمْزَة',
+    أ: 'هَمْزَة',
+    إ: 'هَمْزَة',
     آ: 'أَلِفْ مَدّ',
-    ٱ: 'أَلِفْ وَصْل',
+    ٱ: 'هَمْزَةُ وَصْلٍ',
     ب: 'بَاءْ',
     ت: 'تَاءْ',
     ث: 'ثَاءْ',
@@ -113,10 +113,52 @@ function getArabicLetterName(ch: string): string {
     ي: 'يَاءْ',
     ى: 'أَلِفْ مَقْصُورَة',
     ء: 'هَمْزَة',
-    ؤ: 'هَمْزَة عَلَى وَاو',
-    ئ: 'هَمْزَة عَلَى يَاء',
+    ؤ: 'هَمْزَة',
+    ئ: 'هَمْزَة',
   };
   return names[ch] || ch;
+}
+
+function getDefiniteGenitiveLetterName(ch: string): string {
+  const map: Record<string, string> = {
+    ا: 'الْأَلِفِ',
+    أ: 'الْهَمْزَةِ',
+    إ: 'الْهَمْزَةِ',
+    آ: 'الْهَمْزَةِ',
+    ء: 'الْهَمْزَةِ',
+    ؤ: 'الْهَمْزَةِ',
+    ئ: 'الْهَمْزَةِ',
+    ب: 'الْبَاءِ',
+    ت: 'التَّاءِ',
+    ث: 'الثَّاءِ',
+    ج: 'الْجِيمِ',
+    ح: 'الْحَاءِ',
+    خ: 'الْخَاءِ',
+    د: 'الدَّالِ',
+    ذ: 'الذَّالِ',
+    ر: 'الرَّاءِ',
+    ز: 'الزَّايِ',
+    س: 'السِّينِ',
+    ش: 'الشِّينِ',
+    ص: 'الصَّادِ',
+    ض: 'الضَّادِ',
+    ط: 'الطَّاءِ',
+    ظ: 'الظَّاءِ',
+    ع: 'الْعَيْنِ',
+    غ: 'الْغَيْنِ',
+    ف: 'الْفَاءِ',
+    ق: 'الْقَافِ',
+    ك: 'الْكَافِ',
+    ل: 'اللَّامِ',
+    م: 'الْمِيمِ',
+    ن: 'النُّونِ',
+    ه: 'الْهَاءِ',
+    ة: 'التَّاءِ الْمَرْبُوطَةِ',
+    و: 'الْوَاوِ',
+    ي: 'الْيَاءِ',
+    ى: 'الْأَلِفِ الْمَقْصُورَةِ',
+  };
+  return map[ch] || getArabicLetterName(ch);
 }
 
 const FATHA = '\u064E';
@@ -127,8 +169,11 @@ const DAMMATAN = '\u064C';
 const KASRATAN = '\u064D';
 const SHADDA = '\u0651';
 const SUKOON = '\u0652';
+const SUKOON_UTHMANI = '\u06E1';
 const DAGGER_ALIF = '\u0670';
 const MADDAH = '\u0653';
+const SILENT_ZERO_ROUND = '\u06DF';
+const SILENT_ZERO_UPRIGHT = '\u06E0';
 
 const SUN_LETTERS = new Set([
   'ت',
@@ -147,6 +192,27 @@ const SUN_LETTERS = new Set([
   'ن',
 ]);
 
+const THROAT_LETTERS = new Set(['أ', 'إ', 'آ', 'ء', 'ؤ', 'ئ', 'ه', 'ع', 'ح', 'غ', 'خ']);
+const QALQALAH_LETTERS = new Set(['ق', 'ط', 'ب', 'ج', 'د']);
+const HAMZA_LETTERS = new Set(['أ', 'إ', 'آ', 'ء', 'ؤ', 'ئ']);
+const IKHFA_LETTERS = new Set([
+  'ت',
+  'ث',
+  'ج',
+  'د',
+  'ذ',
+  'ز',
+  'س',
+  'ش',
+  'ص',
+  'ض',
+  'ط',
+  'ظ',
+  'ف',
+  'ق',
+  'ك',
+]);
+
 // Curated high-frequency Arabic/Islamic/Noor Al-Bayan lexicon for instant accurate vocalization of undiacritized text
 const COMMON_ARABIC_VOCALIZED_DICT: Record<string, string> = {
   بسم: 'بِسْمِ',
@@ -160,11 +226,23 @@ const COMMON_ARABIC_VOCALIZED_DICT: Record<string, string> = {
   مالك: 'مَالِكِ',
   يوم: 'يَوْمِ',
   الدين: 'الدِّينِ',
+  اياك: 'إِيَّاكَ',
+  واياك: 'وَإِيَّاكَ',
   نعبد: 'نَعْبُدُ',
   نستعين: 'نَسْتَعِينُ',
   اهدنا: 'اهْدِنَا',
   الصراط: 'الصِّرَاطَ',
   المستقيم: 'الْمُسْتَقِيمَ',
+  انعمت: 'أَنْعَمْتَ',
+  عليهم: 'عَلَيْهِمْ',
+  غير: 'غَيْرِ',
+  المغضوب: 'الْمَغْضُوبِ',
+  ولا: 'وَلَا',
+  الضالين: 'الضَّالِّينَ',
+  امين: 'آمِينْ',
+  احد: 'أَحَدٌ',
+  الصمد: 'الصَّمَدُ',
+  العصر: 'الْعَصْرِ',
   السلام: 'السَّلَامُ',
   عليكم: 'عَلَيْكُمْ',
   ورحمة: 'وَرَحْمَةُ',
@@ -345,6 +423,7 @@ interface ParsedUnit {
   hasSukoon: boolean;
   hasDaggerAlif: boolean;
   hasMaddah: boolean;
+  hasSilentZero: boolean;
 }
 
 function parseArabicWordUnits(word: string): ParsedUnit[] {
@@ -365,9 +444,12 @@ function parseArabicWordUnits(word: string): ParsedUnit[] {
         if (ch === DAMMATAN) prev.hasDammatan = true;
         if (ch === KASRATAN) prev.hasKasratan = true;
         if (ch === SHADDA) prev.hasShadda = true;
-        if (ch === SUKOON) prev.hasSukoon = true;
+        if (ch === SUKOON || ch === SUKOON_UTHMANI) prev.hasSukoon = true;
         if (ch === DAGGER_ALIF) prev.hasDaggerAlif = true;
         if (ch === MADDAH) prev.hasMaddah = true;
+        if (ch === SILENT_ZERO_ROUND || ch === SILENT_ZERO_UPRIGHT) {
+          prev.hasSilentZero = true;
+        }
       }
       continue;
     }
@@ -386,6 +468,7 @@ function parseArabicWordUnits(word: string): ParsedUnit[] {
         hasSukoon: false,
         hasDaggerAlif: false,
         hasMaddah: false,
+        hasSilentZero: false,
       });
     }
   }
@@ -651,71 +734,241 @@ export function inferArabicDiacriticsForWord(rawWord: string): {
   };
 }
 
-function describeUnitRule(unit: ParsedUnit): {
-  ruleLabel: string;
-  spokenRule: string;
-} {
-  if (unit.hasShadda) {
-    if (unit.hasFathatan) {
-      return {
-        ruleLabel: 'شدة وتنوين بالفتح',
-        spokenRule: 'شَدَّةٌ وَتَنْوِينٌ بِالْفَتْحِ',
-      };
-    }
-    if (unit.hasDammatan) {
-      return {
-        ruleLabel: 'شدة وتنوين بالضم',
-        spokenRule: 'شَدَّةٌ وَتَنْوِينٌ بِالضَّمِّ',
-      };
-    }
-    if (unit.hasKasratan) {
-      return {
-        ruleLabel: 'شدة وتنوين بالكسر',
-        spokenRule: 'شَدَّةٌ وَتَنْوِينٌ بِالْكَسْرِ',
-      };
-    }
-    if (unit.hasFatha) {
-      return { ruleLabel: 'شدة وفتحة', spokenRule: 'شَدَّةٌ وَفَتْحَة' };
-    }
-    if (unit.hasDamma) {
-      return { ruleLabel: 'شدة وضمة', spokenRule: 'شَدَّةٌ وَضَمَّة' };
-    }
-    if (unit.hasKasra) {
-      return { ruleLabel: 'شدة وكسرة', spokenRule: 'شَدَّةٌ وَكَسْرَة' };
-    }
-    return { ruleLabel: 'شدة', spokenRule: 'شَدَّةٌ' };
-  }
+function getHarakaAdjective(unit: ParsedUnit): string {
+  if (unit.hasFathatan) return 'الْمُنَوَّنَةِ بِالْفَتْحِ';
+  if (unit.hasDammatan) return 'الْمُنَوَّنَةِ بِالضَّمِّ';
+  if (unit.hasKasratan) return 'الْمُنَوَّنَةِ بِالْكَسْرِ';
+  if (unit.hasDamma) return 'الْمَضْمُومَةِ';
+  if (unit.hasKasra) return 'الْمَكْسُورَةِ';
+  if (unit.hasSukoon) return 'السَّاكِنَةِ';
+  return 'الْمَفْتُوحَةِ';
+}
 
+function getShortVowelName(unit: ParsedUnit): string {
+  if (unit.hasDamma) return 'ضمة';
+  if (unit.hasKasra) return 'كسرة';
+  if (unit.hasFatha) return 'فتحة';
+  return 'حرف متحرك';
+}
+
+function getTanweenSpokenRule(unit: ParsedUnit): { ruleLabel: string; spokenRule: string } | null {
   if (unit.hasFathatan) {
-    return { ruleLabel: 'تنوين بالفتح', spokenRule: 'تَنْوِينٌ بِالْفَتْحِ' };
+    return {
+      ruleLabel: unit.hasShadda ? 'شدة وتنوين بالفتح' : 'تنوين بالفتح',
+      spokenRule: unit.hasShadda ? 'شَدَّة وَتَنْوِينْ بِالْفَتْحِ' : 'تَنْوِينْ بِالْفَتْحِ',
+    };
   }
   if (unit.hasDammatan) {
-    return { ruleLabel: 'تنوين بالضم', spokenRule: 'تَنْوِينٌ بِالضَّمِّ' };
+    return {
+      ruleLabel: unit.hasShadda ? 'شدة وتنوين بالضم' : 'تنوين بالضم',
+      spokenRule: unit.hasShadda ? 'شَدَّة وَتَنْوِينْ بِالضَّمِّ' : 'تَنْوِينْ بِالضَّمِّ',
+    };
   }
   if (unit.hasKasratan) {
-    return { ruleLabel: 'تنوين بالكسر', spokenRule: 'تَنْوِينٌ بِالْكَسْرِ' };
+    return {
+      ruleLabel: unit.hasShadda ? 'شدة وتنوين بالكسر' : 'تنوين بالكسر',
+      spokenRule: unit.hasShadda ? 'شَدَّة وَتَنْوِينْ بِالْكَسْرِ' : 'تَنْوِينْ بِالْكَسْرِ',
+    };
   }
-  if (unit.hasSukoon) {
-    return { ruleLabel: 'سكون', spokenRule: 'سُكُونْ' };
+  return null;
+}
+
+function getShaddaVowelLabel(unit: ParsedUnit): { ruleLabel: string; spokenRule: string } {
+  const tanween = getTanweenSpokenRule(unit);
+  if (tanween) return tanween;
+  if (unit.hasDamma) return { ruleLabel: 'شدة وضمة', spokenRule: 'شَدَّة وَضَمَّة' };
+  if (unit.hasKasra) return { ruleLabel: 'شدة وكسرة', spokenRule: 'شَدَّة وَكَسْرَة' };
+  if (unit.hasFatha || unit.hasDaggerAlif) {
+    return { ruleLabel: 'شدة وفتحة', spokenRule: 'شَدَّة وَفَتْحَة' };
   }
-  if (unit.hasFatha) {
-    return { ruleLabel: 'فتحة', spokenRule: 'فَتْحَة' };
+  return { ruleLabel: 'شدة', spokenRule: 'شَدَّة' };
+}
+
+function isSimpleMarksEmpty(unit: ParsedUnit): boolean {
+  const stripped = unit.marks.replace(/[\u0653\u06E1\u0652\u06DF\u06E0]/g, '');
+  return stripped.length === 0;
+}
+
+export function isWordStartingWithHamzatWasl(rawWord?: string): boolean {
+  if (!rawWord) return false;
+  const units = parseArabicWordUnits(rawWord);
+  if (units.length < 2) return false;
+  const u0 = units[0];
+  if (u0.letter === 'ٱ') return true;
+  if (u0.letter !== 'ا') return false;
+  // Definite article "ال" or unmarked initial Alif (not أ/إ/آ)
+  if (units[1].letter === 'ل' && units.length >= 3) return true;
+  return !u0.hasMaddah && !u0.hasFatha && !u0.hasKasra && !u0.hasDamma;
+}
+
+function detectAllahWord(units: ParsedUnit[]): {
+  isAllah: boolean;
+  prefixCount: number;
+} {
+  const plain = units.map((u) => u.letter).join('');
+  const cleanMatch = plain.match(/^([وفبتك]|ول|فل)?(ا|ٱ)?(ل{1,2})ه$/);
+  if (!cleanMatch) return { isAllah: false, prefixCount: 0 };
+
+  const prefixStr = cleanMatch[1] || '';
+  const hasAlif = Boolean(cleanMatch[2]);
+  const lamCount = cleanMatch[3].length;
+  const pLen = prefixStr.length;
+
+  // When Alif is omitted ("لِلَّهِ", "وَلِلَّهِ", "فَلِلَّهِ"), the first lam IS the preposition "لِ"
+  if (!hasAlif) {
+    if (lamCount !== 2) return { isAllah: false, prefixCount: 0 };
+    const lam2 = units[pLen + 1];
+    if (!lam2?.hasShadda && plain !== 'لله' && plain !== 'ولله' && plain !== 'فلله') {
+      return { isAllah: false, prefixCount: 0 };
+    }
+    return { isAllah: true, prefixCount: pLen + 1 };
   }
-  if (unit.hasDamma) {
-    return { ruleLabel: 'ضمة', spokenRule: 'ضَمَّة' };
+
+  // With Alif: must have 2 lams ("الله", "بِاللَّهِ", "وَاللَّهِ", "فَاللَّهُ", "تَاللَّهِ")
+  if (lamCount !== 2) return { isAllah: false, prefixCount: 0 };
+  return { isAllah: true, prefixCount: pLen };
+}
+
+function getHamzatWaslStartVowel(units: ParsedUnit[]): 'أَ' | 'إِ' | 'أُ' {
+  const u0 = units[0];
+  const u1 = units[1];
+  if (u1 && u1.letter === 'ل' && units.length >= 3) return 'أَ';
+  if (u0.hasDamma) return 'أُ';
+  if (u0.hasKasra) return 'إِ';
+  if (u0.hasFatha) return 'أَ';
+
+  const third = units[2];
+  const plain = units.map((u) => u.letter).join('');
+  if (
+    plain.startsWith('اسم') ||
+    plain.startsWith('ابن') ||
+    plain.startsWith('امر') ||
+    plain.startsWith('اثن') ||
+    plain.startsWith('ايم')
+  ) {
+    return 'إِ';
   }
-  if (unit.hasKasra) {
-    return { ruleLabel: 'كسرة', spokenRule: 'كَسْرَة' };
+  if (third?.hasDamma && !third.hasShadda) return 'أُ';
+  return 'إِ';
+}
+
+function isMaddLetterUnit(
+  units: ParsedUnit[],
+  idx: number
+): 'alif' | 'waw' | 'ya' | null {
+  const curr = units[idx];
+  const prev = idx > 0 ? units[idx - 1] : null;
+  if (!curr || !prev) return null;
+  if (curr.hasSilentZero) return null;
+
+  const noCoreVowel =
+    !curr.hasFatha &&
+    !curr.hasDamma &&
+    !curr.hasKasra &&
+    !curr.hasFathatan &&
+    !curr.hasDammatan &&
+    !curr.hasKasratan &&
+    !curr.hasShadda &&
+    !curr.hasSukoon;
+
+  if (!noCoreVowel) return null;
+
+  // Trailing Alif after Tanween Fath ("عَلِيمًا") or plural Waw ("قَالُوا") is NOT Madd Tabi'i
+  if (curr.letter === 'ا') {
+    if (prev.hasFathatan) return null;
+    if (idx === units.length - 1 && prev.letter === 'و' && !prev.hasFatha) return null;
+    if (prev.hasFatha || !prev.marks) return 'alif';
+    return null;
   }
-  return { ruleLabel: 'حرف', spokenRule: 'حَرْفٌ' };
+  if (curr.letter === 'ى') {
+    if (prev.hasFathatan) return null;
+    return prev.hasFatha || !prev.marks ? 'alif' : null;
+  }
+  if (curr.letter === 'و') {
+    return prev.hasDamma ? 'waw' : null;
+  }
+  if (curr.letter === 'ي') {
+    return prev.hasKasra ? 'ya' : null;
+  }
+  return null;
+}
+
+function getMaddBaseName(kind: 'alif' | 'waw' | 'ya', letterChar?: string): string {
+  if (kind === 'alif') {
+    return letterChar === 'ى' ? 'أَلِفْ مَقْصُورَة مَدّ' : 'أَلِفْ مَدّ';
+  }
+  return kind === 'waw' ? 'وَاوْ مَدّ' : 'يَاءْ مَدّ';
+}
+
+function shouldApplyAridStopOnSingleWord(
+  units: ParsedUnit[],
+  explicitIsEnd?: boolean
+): boolean {
+  if (explicitIsEnd === false) return false;
+  if (explicitIsEnd === true) return true;
+  if (units.length < 4) return false;
+  const last = units[units.length - 1];
+  const penultKind = isMaddLetterUnit(units, units.length - 2);
+  if (!penultKind) return false;
+  // Standalone Quranic Fasila patterns ending in يم/ين/ون/وب/يد/ير/ين + optional Al- prefix
+  const hasAl =
+    (units[0].letter === 'ا' || units[0].letter === 'ٱ') && units[1].letter === 'ل';
+  if (penultKind === 'ya' || penultKind === 'waw') {
+    if (hasAl || units.length >= 6 || last.letter === 'ن' || last.letter === 'م') {
+      return true;
+    }
+  }
+  return false;
+}
+
+function buildFinalWaqfForm(units: ParsedUnit[]): string {
+  const lastIdx = units.length - 1;
+  return units
+    .map((u, idx) => {
+      if (idx !== lastIdx) return `${u.letter}${u.marks}`;
+      const keptMarks = u.hasShadda ? SHADDA : '';
+      return `${u.letter}${keptMarks}${SUKOON}`;
+    })
+    .join('');
+}
+
+export function computeSegmentTahajjiContext(
+  segments: BookTextSegment[],
+  segIndex: number
+): { nextWord?: string; isEndOfAyah: boolean } {
+  const curr = segments[segIndex];
+  if (!curr) return { isEndOfAyah: false };
+  const next = segments[segIndex + 1];
+  if (!next) {
+    return {
+      isEndOfAyah: curr.kind === 'ayah',
+    };
+  }
+  const sameAyah =
+    curr.kind === 'ayah' &&
+    next.kind === 'ayah' &&
+    curr.surahNumber === next.surahNumber &&
+    curr.ayahNumber === next.ayahNumber;
+
+  return {
+    nextWord: next.text,
+    isEndOfAyah: curr.kind === 'ayah' && !sameAyah,
+  };
+}
+
+export interface NoorAlBayanBreakdownOptions {
+  nextWord?: string;
+  isEndOfAyah?: boolean;
 }
 
 /**
- * Generates authentic, crystal-clear Noor Al-Bayan spelling breakdown purely in the browser
- * — including automatic morphological vocalization for UNDIACRITIZED words & all Arabic script fonts!
- * Works 100% offline / static hosts / zero limits.
+ * Generates authentic Al-Fath Al-Rabbani (أكاديمية الفتح / عرب القرآن) Tajweed-integrated
+ * Tahajji spelling breakdown purely in the browser — generalized for ALL Arabic & Quranic words.
  */
-export function generateNoorAlBayanClientFallback(text: string): {
+export function generateNoorAlBayanClientFallback(
+  text: string,
+  options?: NoorAlBayanBreakdownOptions
+): {
   diacritizedWord: string;
   wasAutoDiacritized: boolean;
   steps: NoorAlBayanStep[];
@@ -725,14 +978,15 @@ export function generateNoorAlBayanClientFallback(text: string): {
   const rawWords = normalizedInput
     .split(/\s+/)
     .filter(Boolean)
-    .slice(0, 6);
+    .slice(0, 12);
 
   const steps: NoorAlBayanStep[] = [];
   const spokenParts: string[] = [];
   const resolvedWords: string[] = [];
   let anyAutoDiacritized = false;
 
-  for (const rawWord of rawWords) {
+  for (let wIdx = 0; wIdx < rawWords.length; wIdx++) {
+    const rawWord = rawWords[wIdx];
     const inferred = inferArabicDiacriticsForWord(rawWord);
     const word = inferred.vocalized;
     if (inferred.wasAutoDiacritized) {
@@ -743,8 +997,50 @@ export function generateNoorAlBayanClientFallback(text: string): {
     const units = parseArabicWordUnits(word);
     if (units.length === 0) continue;
 
-    if (inferred.wasAutoDiacritized && rawWords.length <= 2) {
-      spokenParts.push(`الكَلِمَةُ بِتَشْكِيلِ القِرَاءَةِ: ${word}`);
+    const isLastWordInInput = wIdx === rawWords.length - 1;
+    const nextWordInPhrase = !isLastWordInInput
+      ? rawWords[wIdx + 1]
+      : options?.nextWord;
+    const nextStartsWithWasl = isWordStartingWithHamzatWasl(nextWordInPhrase);
+    const nextStartsWithHamza = (() => {
+      if (!nextWordInPhrase) return false;
+      const nu = parseArabicWordUnits(nextWordInPhrase)[0];
+      return Boolean(nu && HAMZA_LETTERS.has(nu.letter));
+    })();
+
+    const allowAridSukoon =
+      rawWords.length > 1
+        ? isLastWordInInput && options?.isEndOfAyah !== false
+        : shouldApplyAridStopOnSingleWord(units, options?.isEndOfAyah);
+
+    // 1. Special Reverence Rule for اسم الجلالة (الله / لِلَّهِ / بِاللَّهِ / وَاللَّهِ...)
+    const allahInfo = detectAllahWord(units);
+    if (allahInfo.isAllah) {
+      let allahCum = '';
+      for (let p = 0; p < allahInfo.prefixCount; p++) {
+        const pu = units[p];
+        const defaultMark = pu.letter === 'ب' || pu.letter === 'ل' ? KASRA : FATHA;
+        const pGlyph = `${pu.letter}${pu.marks || defaultMark}`;
+        allahCum += pGlyph;
+        steps.push({
+          part: pGlyph,
+          ruleLabel: getShortVowelName(pu),
+          reading: allahCum,
+        });
+        spokenParts.push(pGlyph);
+      }
+      const restText = units
+        .slice(allahInfo.prefixCount)
+        .map((u) => `${u.letter}${u.marks}`)
+        .join('');
+      const finalAllahForm = `${allahCum}${restText}`;
+      steps.push({
+        part: restText,
+        ruleLabel: 'اسم الجلالة',
+        reading: finalAllahForm,
+      });
+      spokenParts.push(`اسْمُ الْجَلَالَةِ: ${finalAllahForm}`);
+      continue;
     }
 
     let cumulative = '';
@@ -753,157 +1049,595 @@ export function generateNoorAlBayanClientFallback(text: string): {
       const curr = units[i];
       const prev = i > 0 ? units[i - 1] : null;
       const next = i + 1 < units.length ? units[i + 1] : null;
+      const unitGlyph = `${curr.letter}${curr.marks}`;
 
-      // 1. Alif Maddah (آ)
-      if (curr.letter === 'آ' || (curr.letter === 'ا' && curr.hasMaddah)) {
-        cumulative += 'آ';
+      // 2. Silent Zero-Marked Letter (الصفر المستدير ۟) or Plural Trailing Alif (ألف التفريق)
+      if (
+        curr.hasSilentZero ||
+        (curr.letter === 'ا' &&
+          i === units.length - 1 &&
+          prev?.letter === 'و' &&
+          !prev.hasFatha)
+      ) {
+        cumulative += unitGlyph;
         steps.push({
-          part: 'آ',
-          ruleLabel: 'همزة ممدودة بالألف حركتان',
+          part: unitGlyph,
+          ruleLabel: 'ألف زائدة لا تُنطق',
           reading: cumulative,
         });
-        spokenParts.push(`هَمْزَةٌ مَمْدُودَةٌ بِالْأَلِفِ حَرَكَتَانْ: آ، ${cumulative}`);
+        spokenParts.push(
+          `${getArabicLetterName(curr.letter)} صِفْرٌ مُسْتَدِيرٌ لا يُنْطَقْ`
+        );
         continue;
       }
 
-      // 2. Definite Article "ال" (Al-Qamariya vs Al-Shamsiya)
+      // 3. Trailing Alif after Tanween Fath ("عَلِيمًا" -> مد عوض وقفاً)
+      if (curr.letter === 'ا' && prev?.hasFathatan && isSimpleMarksEmpty(curr)) {
+        cumulative += unitGlyph;
+        const iwadWord = cumulative;
+        steps.push({
+          part: unitGlyph,
+          ruleLabel: 'ألف تنوين الفتح (مد عوض حركتان وقفاً)',
+          reading: iwadWord,
+        });
+        spokenParts.push(
+          `أَلِفْ مَدّ عِوَض عِنْدَ الْوَقْفِ حَرَكَتَانْ: ${iwadWord}`
+        );
+        continue;
+      }
+
+      // 4. Alif Maddah (آ)
+      if (curr.letter === 'آ' || (curr.letter === 'ا' && curr.hasMaddah)) {
+        cumulative += unitGlyph;
+        const isLazim = Boolean(next?.hasShadda);
+        const isMuttasil = Boolean(next && HAMZA_LETTERS.has(next.letter));
+        const label = isLazim
+          ? 'همزة ممدودة مد لازم ٦ حركات'
+          : isMuttasil
+          ? 'همزة ممدودة مد متصل ٤ أو ٥ حركات'
+          : 'همزة ممدودة مد بدل حركتان';
+        const spoken = isLazim
+          ? `أَلِفْ مَدّ لَازِمْ سِتّ حَرَكَاتْ: ${cumulative}`
+          : isMuttasil
+          ? `أَلِفْ مَدّ وَاجِب مُتَّصِل أَرْبَعْ أَوْ خَمْس حَرَكَاتْ: ${cumulative}`
+          : `أَلِفْ مَدّ بَدَلْ حَرَكَتَانْ: ${cumulative}`;
+        steps.push({
+          part: unitGlyph,
+          ruleLabel: label,
+          reading: cumulative,
+        });
+        spokenParts.push(spoken);
+        continue;
+      }
+
+      // 5. Initial Hamzat Wasl + Definite Article "ال" OR Standalone Initial Hamzat Wasl
       if (
         i === 0 &&
+        (curr.letter === 'ٱ' ||
+          (curr.letter === 'ا' &&
+            ((next?.letter === 'ل' && i + 2 < units.length) ||
+              (!curr.hasFatha && !curr.hasKasra && !curr.hasDamma && !curr.hasMaddah))))
+      ) {
+        const startVowel = getHamzatWaslStartVowel(units);
+        const waslAlifDisplay = `${curr.letter}${curr.marks || ''}`;
+        cumulative += waslAlifDisplay;
+
+        if (wIdx > 0) {
+          steps.push({
+            part: waslAlifDisplay,
+            ruleLabel: 'همزة وصل تسقط وصلاً',
+            reading: cumulative,
+          });
+          spokenParts.push('هَمْزَةُ وَصْلٍ تَسْقُطُ وَصْلًا');
+        } else {
+          steps.push({
+            part: waslAlifDisplay,
+            ruleLabel: `همزة وصل تسقط وصلاً نبدأ بها ${startVowel}`,
+            reading: startVowel,
+          });
+          spokenParts.push(
+            `هَمْزَةُ وَصْلٍ تَسْقُطُ وَصْلًا نَبْدَأُ بِهَا ${startVowel}`
+          );
+        }
+
+        // Check Definite Article "ال" immediately following initial Hamzat Wasl
+        if (next && next.letter === 'ل' && i + 2 < units.length) {
+          const afterLam = units[i + 2];
+          // Special case: double lam like الَّذِي / الَّذِينَ
+          if (next.hasShadda) {
+            const doubledLamGlyph = `${next.letter}${next.marks}`;
+            cumulative += doubledLamGlyph;
+            const shaddaInfo = getShaddaVowelLabel(next);
+            steps.push({
+              part: doubledLamGlyph,
+              ruleLabel: `لام ${shaddaInfo.ruleLabel}`,
+              reading: cumulative,
+            });
+            spokenParts.push(`لَامْ ${shaddaInfo.spokenRule}: ${cumulative}`);
+            i++; // consume next (لَّ)
+            continue;
+          }
+
+          const isShamsiya =
+            afterLam.hasShadda || (SUN_LETTERS.has(afterLam.letter) && !next.hasSukoon);
+
+          if (isShamsiya) {
+            const afterMarks = afterLam.hasShadda
+              ? afterLam.marks
+              : `${SHADDA}${afterLam.marks || FATHA}`;
+            const mergedShamsiGlyph = `${next.letter}${afterLam.letter}${afterMarks}`;
+            // Handle Dagger Alif separately if present on the solar letter
+            const solarWithoutDagger = afterLam.hasDaggerAlif
+              ? `${afterLam.letter}${afterMarks.replace(DAGGER_ALIF, '')}`
+              : `${afterLam.letter}${afterMarks}`;
+            cumulative += `${next.letter}${solarWithoutDagger}`;
+
+            const targetDesc = `${getDefiniteGenitiveLetterName(
+              afterLam.letter
+            )} ${getHarakaAdjective(afterLam)}`;
+            const ghunnahSuffix =
+              afterLam.letter === 'ن' || afterLam.letter === 'م'
+                ? ' مَعَ الْغُنَّةِ حَرَكَتَانْ'
+                : '';
+
+            steps.push({
+              part: mergedShamsiGlyph,
+              ruleLabel: `لام شمسية مدغمة في ${targetDesc}`,
+              reading: cumulative,
+            });
+            spokenParts.push(
+              `لَامْ شَمْسِيَّةٌ مُدْغَمَةٌ فِي ${targetDesc}${ghunnahSuffix}: ${cumulative}`
+            );
+
+            if (afterLam.hasDaggerAlif) {
+              cumulative += DAGGER_ALIF;
+              steps.push({
+                part: DAGGER_ALIF,
+                ruleLabel: 'ألف خنجرية مد طبيعي حركتان',
+                reading: cumulative,
+              });
+              spokenParts.push(
+                `أَلِفْ خَنْجَرِيَّة مَدّ طَبِيعِي حَرَكَتَانْ: ${cumulative}`
+              );
+            }
+
+            i += 2; // consumed ل and solar letter
+            continue;
+          } else {
+            cumulative += `${next.letter}${next.marks || SUKOON}`;
+            steps.push({
+              part: `${next.letter}${SUKOON}`,
+              ruleLabel: 'لام قمرية مظهرة',
+              reading: cumulative,
+            });
+            spokenParts.push(`لَامْ قَمَرِيَّةٌ مُظْهَرَةٌ: أَلْ`);
+            i++; // consumed ل
+            continue;
+          }
+        }
+        continue;
+      }
+
+      // 6. Attached Preposition + Definite Article ("وَالضَّالِّينَ", "وَالْعَصْرِ", "بِالْحَقِّ", "لِلْعَالَمِينَ")
+      if (
+        i === 1 &&
+        prev &&
+        (prev.letter === 'و' || prev.letter === 'ف' || prev.letter === 'ب' || prev.letter === 'ك') &&
         (curr.letter === 'ا' || curr.letter === 'ٱ') &&
-        next &&
-        next.letter === 'ل' &&
+        next?.letter === 'ل' &&
         i + 2 < units.length
       ) {
         const afterLam = units[i + 2];
-        const isShamsiya = afterLam.hasShadda || (SUN_LETTERS.has(afterLam.letter) && !next.hasSukoon);
+        cumulative += curr.letter;
+        steps.push({
+          part: curr.letter,
+          ruleLabel: 'همزة وصل تسقط وصلاً',
+          reading: cumulative,
+        });
+        spokenParts.push(`هَمْزَةُ وَصْلٍ تَسْقُطُ وَصْلًا`);
+
+        const isShamsiya =
+          afterLam.hasShadda || (SUN_LETTERS.has(afterLam.letter) && !next.hasSukoon);
         if (isShamsiya) {
-          cumulative += `${curr.letter}${curr.marks}ل`;
+          const afterMarks = afterLam.hasShadda
+            ? afterLam.marks
+            : `${SHADDA}${afterLam.marks || FATHA}`;
+          const solarWithoutDagger = afterLam.hasDaggerAlif
+            ? `${afterLam.letter}${afterMarks.replace(DAGGER_ALIF, '')}`
+            : `${afterLam.letter}${afterMarks}`;
+          cumulative += `${next.letter}${solarWithoutDagger}`;
+          const targetDesc = `${getDefiniteGenitiveLetterName(
+            afterLam.letter
+          )} ${getHarakaAdjective(afterLam)}`;
           steps.push({
-            part: `${curr.letter}ل`,
-            ruleLabel: 'همزة وصل تسقط ولام شمسية مُدغمة لا تُنطق',
-            reading: `${cumulative}${afterLam.letter}ْ`,
-          });
-          spokenParts.push(
-            `هَمْزَةُ وَصْلٍ وَلاَمٌ شَمْسِيَّةٌ مُدْغَمَةٌ تَسْقُطُ فِي النُّطْقِ`
-          );
-          i++; // skip لام because it assimilates directly with the next Shadda letter
-          continue;
-        } else {
-          cumulative += `${curr.letter}${curr.marks}لْ`;
-          steps.push({
-            part: `${curr.letter}لْ`,
-            ruleLabel: 'همزة وصل ولام قمرية مُظهرة (أَلْ)',
+            part: `${next.letter}${solarWithoutDagger}`,
+            ruleLabel: `لام شمسية مدغمة في ${targetDesc}`,
             reading: cumulative,
           });
-          spokenParts.push(`أَلِفُ وَصْلٍ وَلاَمٌ قَمَرِيَّةٌ مُظْهَرَة: أَلْ`);
-          i++; // skip لام since we read أَلْ together!
+          spokenParts.push(
+            `لَامْ شَمْسِيَّةٌ مُدْغَمَةٌ فِي ${targetDesc}: ${cumulative}`
+          );
+          if (afterLam.hasDaggerAlif) {
+            cumulative += DAGGER_ALIF;
+            steps.push({
+              part: DAGGER_ALIF,
+              ruleLabel: 'ألف خنجرية مد طبيعي حركتان',
+              reading: cumulative,
+            });
+            spokenParts.push(`أَلِفْ خَنْجَرِيَّة مَدّ طَبِيعِي حَرَكَتَانْ: ${cumulative}`);
+          }
+          i += 2;
+          continue;
+        } else {
+          cumulative += `${next.letter}${next.marks || SUKOON}`;
+          steps.push({
+            part: `${next.letter}${SUKOON}`,
+            ruleLabel: 'لام قمرية مظهرة',
+            reading: cumulative,
+          });
+          spokenParts.push(`لَامْ قَمَرِيَّةٌ مُظْهَرَةٌ: ${cumulative}`);
+          i++;
           continue;
         }
       }
 
-      // 3. Natural Madd letters (Alif after Fatha, Waw after Damma, Ya/Maqsura after Kasra/Fatha)
-      const hasAnyMarks = Boolean(curr.marks.replace(MADDAH, ''));
-      const isAlifMadd =
-        (curr.letter === 'ا' || curr.letter === 'ى') &&
-        !hasAnyMarks &&
-        prev &&
-        (prev.hasFatha || prev.hasFathatan);
-      const isWawMadd =
-        curr.letter === 'و' && !hasAnyMarks && prev && prev.hasDamma;
-      const isYaMadd =
-        curr.letter === 'ي' && !hasAnyMarks && prev && prev.hasKasra;
+      // 6b. Prefix "لِ" + definite "ل" (written "لِلْ..." or "لِلنَّ...")
+      if (
+        i === 1 &&
+        prev?.letter === 'ل' &&
+        prev.hasKasra &&
+        curr.letter === 'ل' &&
+        next &&
+        units.length >= 4
+      ) {
+        const isShamsiya =
+          next.hasShadda || (SUN_LETTERS.has(next.letter) && !curr.hasSukoon);
+        if (isShamsiya) {
+          const nextMarks = next.hasShadda ? next.marks : `${SHADDA}${next.marks || FATHA}`;
+          const solarBody = next.hasDaggerAlif
+            ? `${next.letter}${nextMarks.replace(DAGGER_ALIF, '')}`
+            : `${next.letter}${nextMarks}`;
+          cumulative += `${curr.letter}${solarBody}`;
+          const targetDesc = `${getDefiniteGenitiveLetterName(
+            next.letter
+          )} ${getHarakaAdjective(next)}`;
+          steps.push({
+            part: `${curr.letter}${solarBody}`,
+            ruleLabel: `لام شمسية مدغمة في ${targetDesc}`,
+            reading: cumulative,
+          });
+          spokenParts.push(
+            `لَامْ شَمْسِيَّةٌ مُدْغَمَةٌ فِي ${targetDesc}: ${cumulative}`
+          );
+          if (next.hasDaggerAlif) {
+            cumulative += DAGGER_ALIF;
+            steps.push({
+              part: DAGGER_ALIF,
+              ruleLabel: 'ألف خنجرية مد طبيعي حركتان',
+              reading: cumulative,
+            });
+            spokenParts.push(`أَلِفْ خَنْجَرِيَّة مَدّ طَبِيعِي حَرَكَتَانْ: ${cumulative}`);
+          }
+          i++; // skip next (solar consonant)
+          continue;
+        } else if (curr.hasSukoon) {
+          cumulative += `${curr.letter}${curr.marks}`;
+          steps.push({
+            part: `${curr.letter}${curr.marks}`,
+            ruleLabel: 'لام قمرية مظهرة',
+            reading: cumulative,
+          });
+          spokenParts.push(`لَامْ قَمَرِيَّةٌ مُظْهَرَةٌ: ${cumulative}`);
+          continue;
+        }
+      }
 
-      if (isAlifMadd || isWawMadd || isYaMadd) {
-        const maddLabel = isAlifMadd
-          ? curr.letter === 'ى'
-            ? 'أَلِفٌ مَقْصُورَةٌ مَدٌّ طَبِيعِيٌّ حَرَكَتَانْ'
-            : 'أَلِفٌ مَدٌّ طَبِيعِيٌّ حَرَكَتَانْ'
-          : isWawMadd
-          ? 'وَاوٌ مَدٌّ طَبِيعِيٌّ حَرَكَتَانْ'
-          : 'يَاءٌ مَدٌّ طَبِيعِيٌّ حَرَكَتَانْ';
-        const maddRule = isAlifMadd
-          ? curr.letter === 'ى'
-            ? 'ألف مقصورة مد حركتان'
-            : 'مد بالألف حركتان'
-          : isWawMadd
-          ? 'مد بالواو حركتان'
-          : 'مد بالياء حركتان';
+      // 7. Madd Letters (المدود بأنواعها: لازم، عارض للسكون، متصل، منفصل، ساقط وصلاً، طبيعي)
+      const maddKind = isMaddLetterUnit(units, i);
+      if (maddKind) {
+        const maddName = getMaddBaseName(maddKind, curr.letter);
+
+        // 7a. Madd 'Arid lil-Sukoon when followed immediately by final consonant at stop
+        if (allowAridSukoon && i === units.length - 2 && next && !next.hasSilentZero) {
+          cumulative += curr.letter;
+          const waqfForm = buildFinalWaqfForm(units);
+          const finalLetterName = getArabicLetterName(next.letter);
+          steps.push({
+            part: `${curr.letter}${next.letter}`,
+            ruleLabel: `مد عارض للسكون ٢ أو ٤ أو ٦ حركات، ${finalLetterName} ساكنة عند الوقف`,
+            reading: waqfForm,
+          });
+          spokenParts.push(
+            `${maddName} عَارِض لِلسُّكُونْ اثْنَانْ أَوْ أَرْبَعْ أَوْ سِتّ حَرَكَاتْ، ${finalLetterName} سَاكِنَة عِنْدَ الْوَقْفْ: ${waqfForm}`
+          );
+          break;
+        }
+
+        // 7b. Madd Lazim (6 Harakat) before a Shadda letter
+        if (next && next.hasShadda) {
+          cumulative += curr.letter;
+          steps.push({
+            part: curr.letter,
+            ruleLabel: 'مد لازم ٦ حركات',
+            reading: cumulative,
+          });
+          spokenParts.push(`${maddName} لَازِمْ سِتّ حَرَكَاتْ: ${cumulative}`);
+          continue;
+        }
+
+        // 7c. Madd Wajib Muttasil before Hamza inside the same word
+        if (next && HAMZA_LETTERS.has(next.letter)) {
+          cumulative += curr.letter;
+          steps.push({
+            part: curr.letter,
+            ruleLabel: 'مد واجب متصل ٤ أو ٥ حركات',
+            reading: cumulative,
+          });
+          spokenParts.push(
+            `${maddName} وَاجِب مُتَّصِل أَرْبَعْ أَوْ خَمْس حَرَكَاتْ: ${cumulative}`
+          );
+          continue;
+        }
+
+        // 7d. Madd Dropped in Wasl (مد يسقط وصلاً) before next word's Hamzat Wasl
+        if (i === units.length - 1 && nextStartsWithWasl) {
+          cumulative += curr.letter;
+          steps.push({
+            part: curr.letter,
+            ruleLabel: 'مد طبيعي حركتان يسقط وصلاً',
+            reading: cumulative,
+          });
+          spokenParts.push(`${maddName} طَبِيعِي حَرَكَتَانْ يَسْقُطُ وَصْلًا: ${cumulative}`);
+          continue;
+        }
+
+        // 7e. Madd Ja'iz Munfasil before next word starting with Hamza
+        if (i === units.length - 1 && nextStartsWithHamza) {
+          cumulative += curr.letter;
+          steps.push({
+            part: curr.letter,
+            ruleLabel: 'مد جائز منفصل ٤ أو ٥ حركات',
+            reading: cumulative,
+          });
+          spokenParts.push(
+            `${maddName} جَائِز مُنْفَصِل أَرْبَعْ أَوْ خَمْس حَرَكَاتْ: ${cumulative}`
+          );
+          continue;
+        }
+
+        // 7f. Standard Madd Tabi'i (2 Harakat)
         cumulative += curr.letter;
         steps.push({
           part: curr.letter,
-          ruleLabel: maddRule,
+          ruleLabel: 'مد طبيعي حركتان',
           reading: cumulative,
         });
-        spokenParts.push(`${maddLabel}: ${cumulative}`);
+        spokenParts.push(`${maddName} طَبِيعِي حَرَكَتَانْ: ${cumulative}`);
         continue;
       }
 
-      // 4. Standalone Hamza Wasl at start (non-AL)
-      if (i === 0 && (curr.letter === 'ٱ' || (curr.letter === 'ا' && !hasAnyMarks))) {
-        cumulative += curr.letter;
-        steps.push({
-          part: curr.letter,
-          ruleLabel: 'همزة وصل يُبتدأ بها مفتوحة أو مكسورة حسب الفعل',
-          reading: cumulative,
-        });
-        spokenParts.push(`هَمْزَةُ وَصْلٍ: ${cumulative}`);
-        continue;
-      }
-
-      const unitGlyph = `${curr.letter}${curr.marks}`;
-      cumulative += unitGlyph;
-
-      // 5. Dagger Alif (الألف الخنجرية مثل: الرَّحْمَٰنِ، هَٰذَا)
+      // 8. Dagger Alif on Consonant (مثل الرَّحْمَٰنِ، هَٰذَا، ذَٰلِكَ)
       if (curr.hasDaggerAlif) {
-        const letterName = getArabicLetterName(curr.letter);
+        const baseMarks = curr.marks.replace(DAGGER_ALIF, '') || FATHA;
+        const baseGlyph = `${curr.letter}${baseMarks}`;
+        cumulative += baseGlyph;
+
+        if (curr.hasShadda) {
+          const shaddaInfo = getShaddaVowelLabel(curr);
+          const lName = getArabicLetterName(curr.letter);
+          steps.push({
+            part: baseGlyph,
+            ruleLabel: shaddaInfo.ruleLabel,
+            reading: cumulative,
+          });
+          spokenParts.push(`${lName} ${shaddaInfo.spokenRule}: ${cumulative}`);
+        } else if (cumulative === baseGlyph) {
+          steps.push({
+            part: baseGlyph,
+            ruleLabel: 'فتحة',
+            reading: cumulative,
+          });
+          spokenParts.push(baseGlyph);
+        } else {
+          steps.push({
+            part: baseGlyph,
+            ruleLabel: 'فتحة',
+            reading: cumulative,
+          });
+          spokenParts.push(`${baseGlyph}: ${cumulative}`);
+        }
+
+        cumulative += DAGGER_ALIF;
+        if (allowAridSukoon && i === units.length - 2 && next) {
+          const waqfForm = buildFinalWaqfForm(units);
+          const finalLetterName = getArabicLetterName(next.letter);
+          steps.push({
+            part: `${DAGGER_ALIF}${next.letter}`,
+            ruleLabel: `مد عارض للسكون، ${finalLetterName} ساكنة عند الوقف`,
+            reading: waqfForm,
+          });
+          spokenParts.push(
+            `أَلِفْ مَدّ عَارِض لِلسُّكُونْ اثْنَانْ أَوْ أَرْبَعْ أَوْ سِتّ حَرَكَاتْ، ${finalLetterName} سَاكِنَة عِنْدَ الْوَقْفْ: ${waqfForm}`
+          );
+          break;
+        } else if (next?.hasShadda) {
+          steps.push({
+            part: DAGGER_ALIF,
+            ruleLabel: 'ألف خنجرية مد لازم ٦ حركات',
+            reading: cumulative,
+          });
+          spokenParts.push(`أَلِفْ خَنْجَرِيَّة مَدّ لَازِمْ سِتّ حَرَكَاتْ: ${cumulative}`);
+        } else if (next && HAMZA_LETTERS.has(next.letter)) {
+          steps.push({
+            part: DAGGER_ALIF,
+            ruleLabel: 'ألف خنجرية مد متصل ٤ أو ٥ حركات',
+            reading: cumulative,
+          });
+          spokenParts.push(
+            `أَلِفْ خَنْجَرِيَّة مَدّ وَاجِب مُتَّصِل أَرْبَعْ أَوْ خَمْس حَرَكَاتْ: ${cumulative}`
+          );
+        } else {
+          steps.push({
+            part: DAGGER_ALIF,
+            ruleLabel: 'ألف خنجرية مد طبيعي حركتان',
+            reading: cumulative,
+          });
+          spokenParts.push(`أَلِفْ مَدّ طَبِيعِي حَرَكَتَانْ: ${cumulative}`);
+        }
+        continue;
+      }
+
+      // 9. Shadda (الشّدة)
+      if (curr.hasShadda) {
+        cumulative += unitGlyph;
+        const shaddaInfo = getShaddaVowelLabel(curr);
+        const lName = getArabicLetterName(curr.letter);
+        const ghunnah =
+          curr.letter === 'ن' || curr.letter === 'م' ? ' مَعَ الْغُنَّةِ حَرَكَتَانْ' : '';
         steps.push({
           part: unitGlyph,
-          ruleLabel: 'فتحة وألف صغيرة مد طبيعي حركتان',
+          ruleLabel: ghunnah ? `${shaddaInfo.ruleLabel} بغنة حركتان` : shaddaInfo.ruleLabel,
           reading: cumulative,
         });
-        spokenParts.push(
-          `${letterName} فَتْحَة وَأَلِفٌ مَدٌّ طَبِيعِيٌّ حَرَكَتَانْ: ${cumulative}`
-        );
+        spokenParts.push(`${lName} ${shaddaInfo.spokenRule}${ghunnah}: ${cumulative}`);
         continue;
       }
 
-      // 6. Standard Unit / Shadda / Sukoon / Tanween / Teh Marbuta
-      const { ruleLabel, spokenRule } = describeUnitRule(curr);
-      const letterName = getArabicLetterName(curr.letter);
-      const syllable =
-        (curr.hasSukoon || curr.hasShadda) && prev
-          ? `${prev.letter}${prev.marks}${unitGlyph}`
-          : unitGlyph;
+      // 10. Sukoon & Noon/Meem Tajweed Rules (السكون والإظهار والقلقلة)
+      if (curr.hasSukoon) {
+        cumulative += unitGlyph;
+        const lName = getArabicLetterName(curr.letter);
 
-      const extraStopHint =
+        // Noon Sakinah rules
+        if (curr.letter === 'ن') {
+          if (next && THROAT_LETTERS.has(next.letter)) {
+            const nextGlyph = `${next.letter}${next.marks}`;
+            cumulative += nextGlyph;
+            const targetDesc = `${getDefiniteGenitiveLetterName(
+              next.letter
+            )} ${getHarakaAdjective(next)}`;
+            steps.push({
+              part: `${unitGlyph}${nextGlyph}`,
+              ruleLabel: `نون ساكنة مظهرة قبل ${targetDesc}`,
+              reading: cumulative,
+            });
+            spokenParts.push(
+              `نُونْ سَاكِنَة مُظْهَرَة قَبْلَ ${targetDesc}: ${cumulative}`
+            );
+            i++; // consumed next throat letter together
+            continue;
+          }
+          if (next && next.letter === 'ب') {
+            steps.push({
+              part: unitGlyph,
+              ruleLabel: 'نون ساكنة مقلبة ميماً بغنة حركتان',
+              reading: cumulative,
+            });
+            spokenParts.push(
+              `نُونْ سَاكِنَة مُقْلَبَة مِيمًا مُخْفَاة غُنَّة حَرَكَتَانْ: ${cumulative}`
+            );
+            continue;
+          }
+          if (next && IKHFA_LETTERS.has(next.letter)) {
+            steps.push({
+              part: unitGlyph,
+              ruleLabel: 'نون ساكنة مخفاة بغنة حركتان',
+              reading: cumulative,
+            });
+            spokenParts.push(
+              `نُونْ سَاكِنَة مُخْفَاة غُنَّة حَرَكَتَانْ: ${cumulative}`
+            );
+            continue;
+          }
+          steps.push({
+            part: unitGlyph,
+            ruleLabel: 'نون ساكنة مظهرة',
+            reading: cumulative,
+          });
+          spokenParts.push(`نُونْ سَاكِنَة مُظْهَرَة: ${cumulative}`);
+          continue;
+        }
+
+        // Meem Sakinah rules
+        if (curr.letter === 'م') {
+          if (next && next.letter === 'ب') {
+            steps.push({
+              part: unitGlyph,
+              ruleLabel: 'ميم ساكنة مخفاة بغنة حركتان',
+              reading: cumulative,
+            });
+            spokenParts.push(
+              `مِيمْ سَاكِنَة مُخْفَاة غُنَّة حَرَكَتَانْ: ${cumulative}`
+            );
+            continue;
+          }
+          steps.push({
+            part: unitGlyph,
+            ruleLabel: 'ميم ساكنة مظهرة',
+            reading: cumulative,
+          });
+          spokenParts.push(`مِيمْ سَاكِنَة مُظْهَرَة: ${cumulative}`);
+          continue;
+        }
+
+        // Qalqalah Sakinah (ق ط ب ج د)
+        if (QALQALAH_LETTERS.has(curr.letter)) {
+          steps.push({
+            part: unitGlyph,
+            ruleLabel: 'سكون (قلقلة)',
+            reading: cumulative,
+          });
+          spokenParts.push(`${lName} سَاكِنَة مُقَلْقَلَة: ${cumulative}`);
+          continue;
+        }
+
+        // General Sakinah consonant
+        steps.push({
+          part: unitGlyph,
+          ruleLabel: `${lName} ساكنة`,
+          reading: cumulative,
+        });
+        spokenParts.push(`${lName} سَاكِنَة: ${cumulative}`);
+        continue;
+      }
+
+      // 11. Tanween (التنوين)
+      const tanweenInfo = getTanweenSpokenRule(curr);
+      if (tanweenInfo) {
+        cumulative += unitGlyph;
+        const lName = getArabicLetterName(curr.letter);
+        const taMarbutaStop =
+          curr.letter === 'ة' && i === units.length - 1
+            ? ' (تاء مربوطة تُنطق هاءً وقفاً)'
+            : '';
+        steps.push({
+          part: unitGlyph,
+          ruleLabel: `${tanweenInfo.ruleLabel}${taMarbutaStop}`,
+          reading: cumulative,
+        });
+        spokenParts.push(`${lName} ${tanweenInfo.spokenRule}: ${cumulative}`);
+        continue;
+      }
+
+      // 12. Standard Short-Voweled Letter (حركة قصيرة: يُنطق الصوت مباشرةً ثم يُجمع)
+      cumulative += unitGlyph;
+      const shortRule = getShortVowelName(curr);
+      const taMarbutaNote =
         curr.letter === 'ة' && i === units.length - 1
-          ? ' (وَتُقْرَأُ هَاءً عِنْدَ الْوَقْفِ)'
+          ? ' (تاء مربوطة تُنطق هاءً وقفاً)'
           : '';
-
       steps.push({
         part: unitGlyph,
-        ruleLabel:
-          curr.letter === 'ة' && i === units.length - 1
-            ? `${ruleLabel} (تاء مربوطة تُنطق هاءً وقفاً)`
-            : ruleLabel,
+        ruleLabel: `${shortRule}${taMarbutaNote}`,
         reading: cumulative,
       });
 
-      if (curr.hasSukoon) {
-        spokenParts.push(`${letterName} ${spokenRule}: ${syllable}، ${cumulative}`);
-      } else if (curr.hasShadda) {
-        spokenParts.push(
-          `${letterName} ${spokenRule}: ${syllable}، ${cumulative}`
-        );
+      if (cumulative === unitGlyph) {
+        spokenParts.push(unitGlyph);
       } else {
-        spokenParts.push(`${letterName} ${spokenRule}: ${syllable}${extraStopHint}`);
-        if (i > 0 && i < units.length - 1) {
-          spokenParts.push(cumulative);
-        }
+        spokenParts.push(`${unitGlyph}: ${cumulative}`);
       }
     }
-
-    spokenParts.push(`الْكَلِمَةُ كَامِلَةً: ${word}`);
   }
 
   const finalDisplayWord = resolvedWords.join(' ').trim() || normalizedInput;

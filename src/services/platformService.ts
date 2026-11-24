@@ -3987,11 +3987,16 @@ function fnv1aHex(input: string, seedOffset: number): string {
 export function buildWordAudioDocId(
   complexId: string,
   mode: 'noor_albayan' | 'normal',
-  wordText: string
+  wordText: string,
+  contextSuffix = ''
 ): string {
   const normalized = wordText.trim().replace(/\s+/g, ' ');
   const cleanComplex = complexId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24) || 'cpx';
-  const modeTag = mode === 'noor_albayan' ? 'nb' : 'nm';
+  const cleanCtx =
+    mode === 'noor_albayan'
+      ? contextSuffix.replace(/[^a-zA-Z0-9_]/g, '').slice(0, 12)
+      : '';
+  const modeTag = mode === 'noor_albayan' ? `fr3${cleanCtx}` : 'nm';
   const h1 = fnv1aHex(normalized, 0);
   const h2 = fnv1aHex(normalized.split('').reverse().join(''), 0x9e3779b9);
   return `wa_${cleanComplex}_${modeTag}_${h1}${h2}`.slice(0, 128);
@@ -4004,11 +4009,12 @@ export function buildWordAudioDocId(
 export async function lookupWordAudioAcrossLibrary(
   workspace: ComplexWorkspaceData,
   mode: 'noor_albayan' | 'normal',
-  wordText: string
+  wordText: string,
+  contextSuffix = ''
 ): Promise<BookWordAudioRecord | null> {
   const cleanText = wordText.trim().replace(/\s+/g, ' ');
   if (!cleanText) return null;
-  const docId = buildWordAudioDocId(workspace.complex.id, mode, cleanText);
+  const docId = buildWordAudioDocId(workspace.complex.id, mode, cleanText, contextSuffix);
 
   try {
     const readDbs = getReadDbsForComplexTab(workspace, 'library');
@@ -4050,13 +4056,19 @@ export async function saveWordAudioToLibraryDb(params: {
   audioBase64: string;
   mimeType: string;
   createdBy?: string;
+  contextSuffix?: string;
 }): Promise<BookWordAudioRecord | null> {
   const { workspace, mode, wordText, diacritizedWord, wasAutoDiacritized, fullReading, steps } =
     params;
   const cleanText = wordText.trim().replace(/\s+/g, ' ').slice(0, 1200);
   if (!cleanText) return null;
 
-  const docId = buildWordAudioDocId(workspace.complex.id, mode, cleanText);
+  const docId = buildWordAudioDocId(
+    workspace.complex.id,
+    mode,
+    cleanText,
+    params.contextSuffix || ''
+  );
   const shrunk = shrinkWavBase64ForDb(params.audioBase64 || '', params.mimeType || 'audio/wav');
   const cleanSteps = (Array.isArray(steps) ? steps : []).slice(0, 60).map((s) => ({
     part: String(s.part || '').slice(0, 80),

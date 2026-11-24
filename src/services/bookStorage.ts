@@ -670,6 +670,8 @@ export async function analyzeBookPageOnServer(params: {
 export async function generateNoorAlBayanOnServer(params: {
   text: string;
   surahName?: string;
+  nextWord?: string;
+  isEndOfAyah?: boolean;
 }): Promise<{
   diacritizedWord: string;
   wasAutoDiacritized: boolean;
@@ -709,11 +711,14 @@ export async function generateNoorAlBayanOnServer(params: {
         staticHostWithoutApi = true;
       }
     } catch {
-      // Fall back cleanly to deterministic in-browser Noor Al-Bayan engine
+      // Fall back cleanly to deterministic in-browser Al-Fath Al-Rabbani engine
     }
   }
 
-  return generateNoorAlBayanClientFallback(params.text);
+  return generateNoorAlBayanClientFallback(params.text, {
+    nextWord: params.nextWord,
+    isEndOfAyah: params.isEndOfAyah,
+  });
 }
 
 export async function synthesizeSpeechOnServer(params: {

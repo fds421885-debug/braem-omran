@@ -42,7 +42,11 @@ import {
   type BookLocalPage,
   type PageOcrProgress,
 } from '../services/bookStorage';
-import { generateNoorAlBayanClientFallback } from '../services/clientArabicEngine';
+import {
+  computeSegmentTahajjiContext,
+  generateNoorAlBayanClientFallback,
+  isWordStartingWithHamzatWasl,
+} from '../services/clientArabicEngine';
 import { generateValidId, getReciterAyahAudioUrl } from '../services/multiDb';
 import {
   deleteBookFromWorkspace,
@@ -1132,14 +1136,43 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
     fullReading: string;
   }
 
+  const getSegmentContext = useCallback(
+    (seg: BookTextSegment, overrideSegments?: BookTextSegment[]) => {
+      const list =
+        overrideSegments && overrideSegments.length > 0
+          ? overrideSegments
+          : readerPages[currentPageIndex]?.segments || [];
+      const idx = list.findIndex((s) => s.id === seg.id);
+      if (idx < 0) {
+        return {
+          nextWord: undefined as string | undefined,
+          isEndOfAyah: seg.kind === 'ayah',
+          contextSuffix: seg.kind === 'ayah' ? '_waqf' : '',
+        };
+      }
+      const { nextWord, isEndOfAyah } = computeSegmentTahajjiContext(list, idx);
+      const contextSuffix = isEndOfAyah
+        ? '_waqf'
+        : isWordStartingWithHamzatWasl(nextWord)
+        ? '_wasl'
+        : '';
+      return { nextWord, isEndOfAyah, contextSuffix };
+    },
+    [currentPageIndex, readerPages]
+  );
+
   const resolveSegmentAudio = useCallback(
     async (
       seg: BookTextSegment,
       mode: 'noor_albayan' | 'normal',
-      options?: { callToken?: number; showUi?: boolean }
+      options?: { callToken?: number; showUi?: boolean; segments?: BookTextSegment[] }
     ): Promise<ResolvedWordAudio> => {
       const normalizedText = seg.text.trim().replace(/\s+/g, ' ');
-      const cacheKey = `${mode === 'noor_albayan' ? 'noor_v2' : 'normal_v2'}_${normalizedText}`;
+      const ctx = getSegmentContext(seg, options?.segments);
+      const contextSuffix = mode === 'noor_albayan' ? ctx.contextSuffix : '';
+      const cacheKey = `${
+        mode === 'noor_albayan' ? `fath_v3${contextSuffix}` : 'normal_v2'
+      }_${normalizedText}`;
 
       const applyBreakdownUi = (data: {
         diacritizedWord: string;
@@ -1162,9 +1195,14 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
         }
       };
 
-      // Instant local breakdown on Noor Al-Bayan click so UI never freezes on spinner
+      // Instant local breakdown on Tahajji click so UI never freezes on spinner
       const instantLocal =
-        mode === 'noor_albayan' ? generateNoorAlBayanClientFallback(seg.text) : null;
+        mode === 'noor_albayan'
+          ? generateNoorAlBayanClientFallback(seg.text, {
+              nextWord: ctx.nextWord,
+              isEndOfAyah: ctx.isEndOfAyah,
+            })
+          : null;
       if (instantLocal && options?.showUi) {
         applyBreakdownUi({
           diacritizedWord: instantLocal.diacritizedWord,
@@ -1205,7 +1243,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
       }
 
       // 2. Search across ALL shards of `library` DB (active + older filled shards)
-      const dbHit = await lookupWordAudioAcrossLibrary(workspace, mode, seg.text);
+      const dbHit = await lookupWordAudioAcrossLibrary(workspace, mode, seg.text, contextSuffix);
       if (dbHit) {
         const diacritizedWord =
           dbHit.diacritizedWord || instantLocal?.diacritizedWord || seg.text;
@@ -1248,7 +1286,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
         }
       }
 
-      // 3. Deduplicate concurrent resolution / prefetch for identical (mode + word)
+      // 3. Deduplicate concurrent resolution / prefetch for identical (mode + word + context)
       const existingInFlight = prefetchMapRef.current.get(cacheKey) as
         | Promise<ResolvedWordAudio>
         | undefined;
@@ -1277,6 +1315,8 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
           const breakdown = await generateNoorAlBayanOnServer({
             text: seg.text,
             surahName: seg.surahName,
+            nextWord: ctx.nextWord,
+            isEndOfAyah: ctx.isEndOfAyah,
           }).catch(() => null);
           if (breakdown) {
             diacritizedWord = breakdown.diacritizedWord;
@@ -1284,7 +1324,8 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
             steps = breakdown.steps;
             fullReading =
               breakdown.fullReading ||
-              `${breakdown.steps.map((s) => s.reading).join(' ، ')} ، ${breakdown.diacritizedWord}`;
+              breakdown.steps.map((s) => s.reading).join(' ، ') ||
+              breakdown.diacritizedWord;
           }
           if (options?.showUi) {
             applyBreakdownUi({
@@ -1329,6 +1370,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
           audioBase64,
           mimeType,
           createdBy: currentUserId,
+          contextSuffix,
         });
 
         return {
@@ -1361,7 +1403,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
         prefetchMapRef.current.delete(cacheKey);
       }
     },
-    [currentUserId, workspace]
+    [currentUserId, getSegmentContext, workspace]
   );
 
   const handlePlayNoorAlBayan = async (overrideSegment?: BookTextSegment) => {
@@ -1405,7 +1447,11 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
         playBrowserSpeech('noor_albayan', script);
       }
     } catch {
-      const fallback = generateNoorAlBayanClientFallback(targetSeg.text);
+      const ctx = getSegmentContext(targetSeg);
+      const fallback = generateNoorAlBayanClientFallback(targetSeg.text, {
+        nextWord: ctx.nextWord,
+        isEndOfAyah: ctx.isEndOfAyah,
+      });
       setNoorDiacritizedWord(fallback.diacritizedWord);
       setNoorAutoDiacritized(fallback.wasAutoDiacritized);
       setNoorSteps(fallback.steps);
@@ -1422,7 +1468,11 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
     if (continuousStatus !== 'idle') {
       stopContinuousReading();
     }
-    const line = `${step.ruleLabel}، ${step.reading}`;
+    const bareShortVowelLabels = new Set(['فتحة', 'ضمة', 'كسرة', 'حرف متحرك']);
+    const line =
+      bareShortVowelLabels.has(step.ruleLabel) || !step.ruleLabel
+        ? step.reading
+        : `${step.ruleLabel}، ${step.reading}`;
     playBrowserSpeech('noor_albayan', line);
   };
 
@@ -1516,14 +1566,22 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
           });
 
           // Background prefetch next segment on this page or next page for instant flow
-          const nextSeg =
-            segs[sIdx + 1] ||
-            (continuousAutoNextPage ? readerPages[pIdx + 1]?.segments?.[0] : undefined);
+          const nextSegOnSamePage = segs[sIdx + 1];
+          const nextPageSegs = continuousAutoNextPage
+            ? readerPages[pIdx + 1]?.segments || []
+            : [];
+          const nextSeg = nextSegOnSamePage || nextPageSegs[0];
           if (nextSeg) {
-            void resolveSegmentAudio(nextSeg, mode, { showUi: false }).catch(() => {});
+            void resolveSegmentAudio(nextSeg, mode, {
+              showUi: false,
+              segments: nextSegOnSamePage ? segs : nextPageSegs,
+            }).catch(() => {});
           }
 
-          const resolved = await resolveSegmentAudio(seg, mode, { showUi: true });
+          const resolved = await resolveSegmentAudio(seg, mode, {
+            showUi: true,
+            segments: segs,
+          });
           if (continuousTokenRef.current !== loopToken || continuousPausedRef.current) return;
 
           setContinuousProgress({
@@ -1962,7 +2020,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
                       : 'text-[#4A220D] hover:bg-white'
                   }`}
                 >
-                  بالتهجي (نور البيان)
+                  بالتهجي (الفتح الرباني)
                 </button>
                 <button
                   type="button"
@@ -2417,7 +2475,7 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
                       <div className="flex items-center justify-between gap-2 text-xs font-bold text-[#4A220D]">
                         <span>
                           {activeAudioMode === 'noor_albayan'
-                            ? 'جاري التشغيل: تهجي نور البيان'
+                            ? 'جاري التشغيل: تهجي الفتح الرباني'
                             : activeAudioMode === 'sheikh'
                             ? `تلاوة: ${activeReciter.name}`
                             : 'جاري التشغيل: قراءة عادية'}
@@ -2477,18 +2535,18 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
                     </div>
                   )}
 
-                  {/* Noor Al-Bayan Spelling Steps Breakdown Card */}
+                  {/* Al-Fath Al-Rabbani Spelling Steps Breakdown Card */}
                   {noorLoading ? (
                     <div className="bg-[#FDF6EE] border border-[#EADBC8] rounded-2xl p-4 text-center text-xs font-bold text-[#7D4E35] flex items-center justify-center gap-2">
                       <Loader2 className="w-4 h-4 animate-spin text-[#F56900]" />
-                      <span>جاري إعداد التهجي بطريقة نور البيان...</span>
+                      <span>جاري إعداد التهجي بطريقة الفتح الرباني...</span>
                     </div>
                   ) : (
                     noorSteps.length > 0 && (
                       <div className="bg-[#FDF6EE] border-2 border-[#EADBC8] rounded-2xl p-4 space-y-3">
                         <div className="flex items-center justify-between gap-2">
                           <p className="font-display text-xs sm:text-sm font-extrabold text-[#4A220D]">
-                            تفصيل التهجي (نور البيان):
+                            تفصيل التهجي (الفتح الرباني):
                           </p>
                           <span className="text-[11px] text-[#7D4E35]">
                             اضغط على أي خطوة لسماعها
