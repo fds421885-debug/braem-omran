@@ -33,6 +33,7 @@ import {
   type AttendanceEntry,
   type AttendanceRecord,
   type AttendanceStatus,
+  type AudioStorageQuotaSummary,
   type BookHomeworkStatus,
   type BookHomeworkType,
   type BookPageRecord,
@@ -6157,6 +6158,7 @@ export async function inspectAllDatabasesUsage(params: {
     pMeta.roleTags.add('قاعدة المنصة الرئيسية (Primary)');
   }
 
+  const libraryHostDbKeys = new Set<string>();
   const targetComplexes =
     selectedComplexId === 'all'
       ? complexes
@@ -6167,8 +6169,9 @@ export async function inspectAllDatabasesUsage(params: {
   for (const comp of targetComplexes) {
     const ownerProject = comp.ownerConfig?.projectId || primaryProjectId;
     const ownerDbId = comp.ownerConfig?.firestoreDatabaseId || '(default)';
+    const ownerKey = comp.isExternal ? comp.ownerDbKey : 'primary';
     const ownerMeta = ensureEntry({
-      dbKey: comp.isExternal ? comp.ownerDbKey : 'primary',
+      dbKey: ownerKey,
       dbLabel: comp.isExternal ? comp.ownerDbLabel : 'القاعدة الأساسية للموقع',
       projectId: ownerProject,
       firestoreDatabaseId: ownerDbId,
@@ -6205,6 +6208,9 @@ export async function inspectAllDatabasesUsage(params: {
         const shards = ws.tabPools?.[tabKey] || [];
         shards.forEach((sh, idx) => {
           const sKey = dbKeyFromConfig(sh.config);
+          if (tabKey === 'library') {
+            libraryHostDbKeys.add(sKey);
+          }
           const entry = ensureEntry({
             dbKey: sKey,
             dbLabel: `قاعدة منفصلة (${getDbDisplayLabel(sh.config)})`,
@@ -6223,6 +6229,16 @@ export async function inspectAllDatabasesUsage(params: {
           entry.complexNames.add(comp.name);
         });
       }
+
+      if ((ws.tabPools?.library || []).length === 0) {
+        if (ws.tabConfigMap?.library) {
+          libraryHostDbKeys.add(dbKeyFromConfig(ws.tabConfigMap.library));
+        } else {
+          libraryHostDbKeys.add(ownerKey);
+        }
+      }
+    } else {
+      libraryHostDbKeys.add(ownerKey);
     }
   }
 
@@ -6261,6 +6277,15 @@ export async function inspectAllDatabasesUsage(params: {
   const scopeSpecificComplex =
     selectedComplexId !== 'all' && selectedComplexId !== 'primary';
 
+  let totalAudioDocs = 0;
+  let audioWithWavDocs = 0;
+  let audioWithWavBytes = 0;
+  let tahajjiOnlyDocs = 0;
+  let noorAlBayanDocs = 0;
+  let normalDocs = 0;
+  let totalAudioBytes = 0;
+  const dbKeysWithAudioDocs = new Set<string>();
+
   const databaseSummaries: PhysicalDatabaseUsageSummary[] = await Promise.all(
     Array.from(dbMap.values()).map(async (meta) => {
       const colsToRead = ALL_TRACKED_COLLECTIONS.filter(
@@ -6291,8 +6316,28 @@ export async function inspectAllDatabasesUsage(params: {
             let colBytes = 0;
             let colDocs = 0;
             snap.forEach((d) => {
+              const rawData = d.data();
+              const docBytes = estimateRecordBytes(rawData);
               colDocs++;
-              colBytes += estimateRecordBytes(d.data());
+              colBytes += docBytes;
+
+              if (cMeta.col === 'wordAudio') {
+                dbKeysWithAudioDocs.add(meta.dbKey);
+                totalAudioDocs++;
+                totalAudioBytes += docBytes;
+                const audioRec = rawData as { audioBase64?: unknown; mode?: unknown };
+                if (typeof audioRec.audioBase64 === 'string' && audioRec.audioBase64.length > 120) {
+                  audioWithWavDocs++;
+                  audioWithWavBytes += docBytes;
+                } else {
+                  tahajjiOnlyDocs++;
+                }
+                if (audioRec.mode === 'noor_albayan') {
+                  noorAlBayanDocs++;
+                } else if (audioRec.mode === 'normal') {
+                  normalDocs++;
+                }
+              }
             });
             totalDocs += colDocs;
             usedBytes += colBytes;
@@ -6347,6 +6392,51 @@ export async function inspectAllDatabasesUsage(params: {
     return b.usedBytes - a.usedBytes;
   });
 
+  const resolvedAudioHostKeys = new Set<string>([
+    ...Array.from(libraryHostDbKeys),
+    ...Array.from(dbKeysWithAudioDocs),
+  ]);
+  let libraryHosts = databaseSummaries.filter((d) => resolvedAudioHostKeys.has(d.dbKey));
+  if (libraryHosts.length === 0 && databaseSummaries.length > 0) {
+    libraryHosts = [databaseSummaries[0]];
+  }
+
+  const isAvgEstimated = audioWithWavDocs === 0;
+  const avgAudioClipBytes =
+    audioWithWavDocs > 0
+      ? Math.max(1024, Math.round(audioWithWavBytes / audioWithWavDocs))
+      : 150 * 1024; // ~150 KB realistic WAV baseline before clips accumulate
+  const librarySparkTotalLimitBytes =
+    Math.max(1, libraryHosts.length) * SPARK_FREE_TIER_BYTES;
+  const librarySparkTotalUsedBytes = libraryHosts.reduce((acc, d) => acc + d.usedBytes, 0);
+  const librarySparkRemainingBytes = Math.max(
+    0,
+    librarySparkTotalLimitBytes - librarySparkTotalUsedBytes
+  );
+  const librarySparkUsagePercent = Math.min(
+    100,
+    Number(((librarySparkTotalUsedBytes / librarySparkTotalLimitBytes) * 100).toFixed(4))
+  );
+
+  const audioStorageSummary: AudioStorageQuotaSummary = {
+    totalAudioDocs,
+    audioWithWavDocs,
+    tahajjiOnlyDocs,
+    noorAlBayanDocs,
+    normalDocs,
+    totalAudioBytes,
+    avgAudioClipBytes,
+    isAvgEstimated,
+    libraryHostDbCount: libraryHosts.length,
+    libraryHostDbLabels: libraryHosts.map((d) => d.dbLabel),
+    sparkFreeLimitPerDbBytes: SPARK_FREE_TIER_BYTES,
+    librarySparkTotalLimitBytes,
+    librarySparkTotalUsedBytes,
+    librarySparkRemainingBytes,
+    librarySparkUsagePercent,
+    estimatedRemainingAudioClips: Math.floor(librarySparkRemainingBytes / avgAudioClipBytes),
+  };
+
   const totalDocsCount = databaseSummaries.reduce((acc, d) => acc + d.totalDocs, 0);
   const totalUsedBytes = databaseSummaries.reduce((acc, d) => acc + d.usedBytes, 0);
   const totalLimitBytes = databaseSummaries.reduce((acc, d) => acc + d.limitBytes, 0);
@@ -6367,6 +6457,7 @@ export async function inspectAllDatabasesUsage(params: {
       usedBytes: val.usedBytes,
       docsCount: val.docsCount,
     })),
+    audioStorageSummary,
   };
 }
 
@@ -7444,6 +7535,8 @@ export async function gatherProgrammerAiPlatformSnapshot(params: {
     weaknessesCount: number;
     totalDocsCount: number;
     totalUsedBytes: number;
+    audioDocsCount: number;
+    estimatedRemainingAudioClips: number;
   };
 }> {
   const { complexes, connectedDbs, rulesAuditReport } = params;
@@ -7485,6 +7578,13 @@ export async function gatherProgrammerAiPlatformSnapshot(params: {
           )} من ${formatBytesHuman(dbItem.limitBytes)})`
         );
       }
+    }
+    if (usageReport.audioStorageSummary.librarySparkUsagePercent >= 75) {
+      weaknesses.push(
+        `قواعد تخزين الصوتيات والمكتبة اقتربت من حد Firebase المجاني (Spark 1 GiB/قاعدة): استُهلك ${usageReport.audioStorageSummary.librarySparkUsagePercent}%، والمتبقي ${formatBytesHuman(
+          usageReport.audioStorageSummary.librarySparkRemainingBytes
+        )} (يكفي تقريباً ${usageReport.audioStorageSummary.estimatedRemainingAudioClips.toLocaleString('en-US')} مقطع صوتي).`
+      );
     }
   }
 
@@ -7595,6 +7695,55 @@ export async function gatherProgrammerAiPlatformSnapshot(params: {
         ],
       },
     },
+    freeLimitsReference: {
+      firebaseSparkFreeTierPerProject: {
+        storageCapBytes: SPARK_FREE_TIER_BYTES,
+        storageCapHuman: '1 GiB (1,024 MiB لكل قاعدة/مشروع مجاني في خطة Spark)',
+        maxDocumentSize: '1 MiB لكل وثيقة (يضغط النظام ملفات الصوت WAV في wordAudio تلقائياً لتبقى <= 640 KB)',
+        dailyReadsLimit: '50,000 عملية قراءة يومياً لكل مشروع (يتجدد يومياً)',
+        dailyWritesLimit: '20,000 عملية كتابة يومياً لكل مشروع',
+        dailyDeletesLimit: '20,000 عملية حذف يومياً لكل مشروع',
+        monthlyNetworkEgressLimit: '10 GiB نقل بيانات خارجي شهرياً',
+        shardRolloverNote:
+          'عند إنشاء شريحة تبويب بمشروع مجاني جديد (Spark) فحدها المجاني الفعلي 1 GiB حتى تتم الترقية إلى خطة Blaze (حيث يمتد حد الشريحة البرمجي حتى 4 GB تلقائياً).',
+      },
+      geminiAndAudioLimits: {
+        cachingBehavior:
+          'أي كلمة/آية تُولَّد صوتياً تُحفظ في Firestore (wordAudio) وفي IndexedDB بالمتصفح فلا تستهلك طلبات Gemini API عند إعادة التشغيل.',
+        freeKeyQuotas:
+          'مفاتيح Gemini المجانية تخضع لحدود في الدقيقة (RPM/TPM) وحد يومي (RPD). عند الضغط المؤقت يرد الخادم 429 ويتحول القارئ تلقائياً لصوت المتصفح المحلي حتى انتهاء مهلة التهدئة.',
+      },
+    },
+    audioStorageAndRemainingCapacity: usageReport
+      ? {
+          totalAudioDocs: usageReport.audioStorageSummary.totalAudioDocs,
+          audioWithWavDocs: usageReport.audioStorageSummary.audioWithWavDocs,
+          tahajjiOnlyDocs: usageReport.audioStorageSummary.tahajjiOnlyDocs,
+          noorAlBayanDocs: usageReport.audioStorageSummary.noorAlBayanDocs,
+          normalDocs: usageReport.audioStorageSummary.normalDocs,
+          totalAudioBytesHuman: formatBytesHuman(usageReport.audioStorageSummary.totalAudioBytes),
+          avgAudioClipHuman: `${formatBytesHuman(usageReport.audioStorageSummary.avgAudioClipBytes)}${
+            usageReport.audioStorageSummary.isAvgEstimated ? ' (تقدير مبدئي قبل حفظ مقاطع WAV)' : ' (متوسط فعلي من المقاطع المحفوظة)'
+          }`,
+          libraryHostDbCount: usageReport.audioStorageSummary.libraryHostDbCount,
+          libraryHostDbLabels: usageReport.audioStorageSummary.libraryHostDbLabels,
+          sparkFreeLimitPerDbHuman: formatBytesHuman(
+            usageReport.audioStorageSummary.sparkFreeLimitPerDbBytes
+          ),
+          librarySparkTotalLimitHuman: formatBytesHuman(
+            usageReport.audioStorageSummary.librarySparkTotalLimitBytes
+          ),
+          librarySparkTotalUsedHuman: formatBytesHuman(
+            usageReport.audioStorageSummary.librarySparkTotalUsedBytes
+          ),
+          librarySparkRemainingHuman: formatBytesHuman(
+            usageReport.audioStorageSummary.librarySparkRemainingBytes
+          ),
+          librarySparkUsagePercent: usageReport.audioStorageSummary.librarySparkUsagePercent,
+          estimatedRemainingAudioClipsBeforeSparkLimit:
+            usageReport.audioStorageSummary.estimatedRemainingAudioClips,
+        }
+      : null,
     platformStats: statsRes
       ? {
           totalComplexes: statsRes.totalComplexes,
@@ -7671,6 +7820,9 @@ export async function gatherProgrammerAiPlatformSnapshot(params: {
       weaknessesCount: weaknesses.length,
       totalDocsCount: usageReport?.totalDocsCount ?? 0,
       totalUsedBytes: usageReport?.totalUsedBytes ?? 0,
+      audioDocsCount: usageReport?.audioStorageSummary.audioWithWavDocs ?? 0,
+      estimatedRemainingAudioClips:
+        usageReport?.audioStorageSummary.estimatedRemainingAudioClips ?? 0,
     },
   };
 }

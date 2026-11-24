@@ -722,6 +722,17 @@ export async function generateNoorAlBayanOnServer(params: {
   });
 }
 
+const inFlightTtsRequests = new Map<
+  string,
+  Promise<{
+    engine: 'server_wav' | 'browser_speech';
+    audioBase64: string;
+    mimeType: string;
+    text: string;
+  }>
+>();
+let ttsServerCooldownUntilMs = 0;
+
 export async function synthesizeSpeechOnServer(params: {
   text: string;
   mode: 'noor_albayan' | 'normal';
@@ -742,7 +753,24 @@ export async function synthesizeSpeechOnServer(params: {
       : params.text;
   const preparedText = normalizeUthmaniForTts(rawPrepared) || rawPrepared;
 
-  if (staticHostWithoutApi !== true) {
+  const fallbackResult = {
+    engine: 'browser_speech' as const,
+    audioBase64: '',
+    mimeType: 'text/speech',
+    text: preparedText,
+  };
+
+  if (staticHostWithoutApi === true || Date.now() < ttsServerCooldownUntilMs) {
+    return fallbackResult;
+  }
+
+  const dedupeKey = `${params.mode}:${preparedText}`;
+  const existing = inFlightTtsRequests.get(dedupeKey);
+  if (existing) {
+    return existing;
+  }
+
+  const requestPromise = (async () => {
     try {
       const res = await fetchWithTimeout(
         '/api/tts/speak',
@@ -757,6 +785,13 @@ export async function synthesizeSpeechOnServer(params: {
         9500
       );
 
+      if (res.status === 429) {
+        const retryAfterSec = Number(res.headers.get('Retry-After')) || 18;
+        const clampedSec = Math.max(5, Math.min(30, retryAfterSec));
+        ttsServerCooldownUntilMs = Date.now() + clampedSec * 1000;
+        return fallbackResult;
+      }
+
       if (!isStaticMissingApi(res)) {
         const data = (await res.json().catch(() => ({}))) as {
           audioBase64?: string;
@@ -766,7 +801,7 @@ export async function synthesizeSpeechOnServer(params: {
         if (res.ok && data.audioBase64 && data.audioBase64.length > 120) {
           staticHostWithoutApi = false;
           return {
-            engine: 'server_wav',
+            engine: 'server_wav' as const,
             audioBase64: data.audioBase64,
             mimeType: data.mimeType || 'audio/wav',
             text: preparedText,
@@ -778,14 +813,14 @@ export async function synthesizeSpeechOnServer(params: {
     } catch {
       // Static host, timeout, rate limit, or offline API — fall through to chunked browser SpeechSynthesis
     }
-  }
 
-  return {
-    engine: 'browser_speech',
-    audioBase64: '',
-    mimeType: 'text/speech',
-    text: preparedText,
-  };
+    return fallbackResult;
+  })().finally(() => {
+    inFlightTtsRequests.delete(dedupeKey);
+  });
+
+  inFlightTtsRequests.set(dedupeKey, requestPromise);
+  return requestPromise;
 }
 
 function buildWavWithRiffHeader(pcmBytes: Uint8Array, sampleRate = 24000): Uint8Array {

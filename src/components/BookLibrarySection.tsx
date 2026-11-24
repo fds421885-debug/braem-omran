@@ -1760,7 +1760,6 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
             sourceLabel: 'جاري البحث في قاعدة المكتبة وتجهيز الصوت...',
           });
 
-          // Background prefetch next segment on this page or next page for instant flow
           const nextSegOnSamePage =
             endSegId && seg.id === endSegId ? undefined : segs[sIdx + 1];
           const nextPageSegs =
@@ -1768,12 +1767,6 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
               ? readerPages[pIdx + 1]?.segments || []
               : [];
           const nextSeg = nextSegOnSamePage || nextPageSegs[0];
-          if (nextSeg) {
-            void resolveSegmentAudio(nextSeg, wordAudioMode, {
-              showUi: false,
-              segments: nextSegOnSamePage ? segs : nextPageSegs,
-            }).catch(() => {});
-          }
 
           const currentPhraseText =
             mode === 'cumulative_tahajji'
@@ -1783,9 +1776,6 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
             mode === 'cumulative_tahajji' &&
             (pIdx > anchorPageIdx || sIdx > anchorSegIdx) &&
             currentPhraseText.length > 0;
-          if (isCumulativeStep) {
-            void resolveConnectedPhraseAudio(currentPhraseText).catch(() => {});
-          }
 
           const resolved = await resolveSegmentAudio(seg, wordAudioMode, {
             showUi: true,
@@ -1806,9 +1796,24 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
 
           await new Promise<void>((resolve) => {
             let settled = false;
+            const prefetchTimer = window.setTimeout(() => {
+              if (settled || continuousTokenRef.current !== loopToken || continuousPausedRef.current) {
+                return;
+              }
+              if (isCumulativeStep) {
+                void resolveConnectedPhraseAudio(currentPhraseText).catch(() => {});
+              } else if (nextSeg) {
+                void resolveSegmentAudio(nextSeg, wordAudioMode, {
+                  showUi: false,
+                  segments: nextSegOnSamePage ? segs : nextPageSegs,
+                }).catch(() => {});
+              }
+            }, 350);
+
             const done = () => {
               if (settled) return;
               settled = true;
+              window.clearTimeout(prefetchTimer);
               resolve();
             };
             const safetyMaxWait = wordAudioMode === 'noor_albayan' ? 28000 : 14000;

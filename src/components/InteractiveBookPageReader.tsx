@@ -1535,14 +1535,7 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
               ? getSegmentsForPage(pages[pIdx + 1])
               : [];
           const nextSeg = nextSegOnSamePage || nextPageSegs[0];
-          if (nextSeg) {
-            void resolveSegmentAudio(nextSeg, wordAudioMode, {
-              showUi: false,
-              segments: nextSegOnSamePage ? segs : nextPageSegs,
-            }).catch(() => {});
-          }
 
-          // Prefetch cumulative connected phrase while current word's Tahajji plays
           const currentPhraseText =
             mode === 'cumulative_tahajji'
               ? buildCumulativePhraseText(pIdx, sIdx)
@@ -1551,9 +1544,6 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
             mode === 'cumulative_tahajji' &&
             (pIdx > anchorPageIdx || sIdx > anchorSegIdx) &&
             currentPhraseText.length > 0;
-          if (isCumulativeStep) {
-            void resolveConnectedPhraseAudio(currentPhraseText).catch(() => {});
-          }
 
           const resolved = await resolveSegmentAudio(seg, wordAudioMode, {
             showUi: true,
@@ -1574,9 +1564,24 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
 
           await new Promise<void>((resolve) => {
             let settled = false;
+            const prefetchTimer = window.setTimeout(() => {
+              if (settled || continuousTokenRef.current !== loopToken || continuousPausedRef.current) {
+                return;
+              }
+              if (isCumulativeStep) {
+                void resolveConnectedPhraseAudio(currentPhraseText).catch(() => {});
+              } else if (nextSeg) {
+                void resolveSegmentAudio(nextSeg, wordAudioMode, {
+                  showUi: false,
+                  segments: nextSegOnSamePage ? segs : nextPageSegs,
+                }).catch(() => {});
+              }
+            }, 350);
+
             const done = () => {
               if (settled) return;
               settled = true;
+              window.clearTimeout(prefetchTimer);
               resolve();
             };
             const safetyMaxWait = wordAudioMode === 'noor_albayan' ? 28000 : 14000;

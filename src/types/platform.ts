@@ -511,6 +511,25 @@ export interface PhysicalDatabaseUsageSummary {
   checkedAtMs: number;
 }
 
+export interface AudioStorageQuotaSummary {
+  totalAudioDocs: number;
+  audioWithWavDocs: number;
+  tahajjiOnlyDocs: number;
+  noorAlBayanDocs: number;
+  normalDocs: number;
+  totalAudioBytes: number;
+  avgAudioClipBytes: number;
+  isAvgEstimated: boolean;
+  libraryHostDbCount: number;
+  libraryHostDbLabels: string[];
+  sparkFreeLimitPerDbBytes: number;
+  librarySparkTotalLimitBytes: number;
+  librarySparkTotalUsedBytes: number;
+  librarySparkRemainingBytes: number;
+  librarySparkUsagePercent: number;
+  estimatedRemainingAudioClips: number;
+}
+
 export interface DatabaseUsageDashboardReport {
   checkedAtMs: number;
   selectedComplexId: string;
@@ -526,6 +545,7 @@ export interface DatabaseUsageDashboardReport {
     usedBytes: number;
     docsCount: number;
   }[];
+  audioStorageSummary: AudioStorageQuotaSummary;
 }
 
 export type BookHomeworkType =

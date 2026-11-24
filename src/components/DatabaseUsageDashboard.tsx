@@ -6,8 +6,10 @@ import {
   CheckCircle2,
   Database,
   HardDrive,
+  Info,
   Layers,
   RefreshCw,
+  Volume2,
 } from 'lucide-react';
 import { toArabicIndicDigits } from '../services/mushafService';
 import {
@@ -276,6 +278,170 @@ export const DatabaseUsageDashboard: React.FC<DatabaseUsageDashboardProps> = ({
               </div>
               <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl bg-[#58CC02]/15 text-[#46A302] flex items-center justify-center shrink-0">
                 <CheckCircle2 className="w-5 h-5 sm:w-6 sm:h-6" />
+              </div>
+            </div>
+          </section>
+
+          {/* Dedicated Audio Storage Counter & Free Tier Limits Explainer */}
+          <section
+            aria-label="عداد تخزين الصوتيات والحدود المجانية"
+            className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 sm:p-6 space-y-5"
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="inline-flex items-center gap-1.5 text-xs font-display font-extrabold text-[#2B8A3E]">
+                  <Volume2 className="w-4 h-4" />
+                  <span>عداد تخزين الصوتيات والتهجي (wordAudio)</span>
+                </div>
+                <h2 className="font-display text-lg sm:text-xl font-extrabold text-[#4A220D] mt-0.5">
+                  استهلاك الصوتيات المتبقي قبل نفاد الحدود المجانية
+                </h2>
+                <p className="text-xs text-[#7D4E35] mt-1">
+                  القواعد المستضيفة للصوتيات والمكتبة حالياً:{' '}
+                  <strong className="text-[#4A220D]">
+                    {report.audioStorageSummary.libraryHostDbLabels.join(' ، ') || 'القاعدة الأساسية للموقع'}
+                  </strong>
+                </p>
+              </div>
+
+              <div className="px-3.5 py-2 rounded-2xl bg-[#58CC02]/10 border border-[#58CC02]/40 text-right">
+                <span className="block text-[11px] font-bold text-[#357A02]">
+                  السعة التقديرية المتبقية للصوتيات
+                </span>
+                <span className="font-display text-lg sm:text-xl font-extrabold text-[#357A02] tabular-nums">
+                  ~{report.audioStorageSummary.estimatedRemainingAudioClips.toLocaleString('en-US')} مقطع/كلمة
+                </span>
+              </div>
+            </div>
+
+            {/* 4 Audio KPI Counters */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="rounded-2xl bg-[#FDF6EE] border border-[#EADBC8] p-3.5 space-y-1">
+                <p className="text-[11px] font-bold text-[#7D4E35]">ملفات الصوت المحفوظة</p>
+                <p className="font-display text-xl sm:text-2xl font-extrabold text-[#4A220D] tabular-nums">
+                  {report.audioStorageSummary.audioWithWavDocs.toLocaleString('en-US')}
+                </p>
+                <p className="text-[11px] font-semibold text-[#7D4E35] tabular-nums">
+                  تهجي: {report.audioStorageSummary.noorAlBayanDocs.toLocaleString('en-US')} · عادية:{' '}
+                  {report.audioStorageSummary.normalDocs.toLocaleString('en-US')}
+                  {report.audioStorageSummary.tahajjiOnlyDocs > 0
+                    ? ` · نصي فقط: ${report.audioStorageSummary.tahajjiOnlyDocs.toLocaleString('en-US')}`
+                    : ''}
+                </p>
+              </div>
+
+              <div className="rounded-2xl bg-[#FDF6EE] border border-[#EADBC8] p-3.5 space-y-1">
+                <p className="text-[11px] font-bold text-[#7D4E35]">مساحة الصوتيات الفعلية</p>
+                <p className="font-display text-xl sm:text-2xl font-extrabold text-[#F56900] tabular-nums">
+                  {formatBytesReadable(report.audioStorageSummary.totalAudioBytes)}
+                </p>
+                <p className="text-[11px] font-semibold text-[#7D4E35] tabular-nums">
+                  متوسط المقطع: {formatBytesReadable(report.audioStorageSummary.avgAudioClipBytes)}
+                  {report.audioStorageSummary.isAvgEstimated ? ' (تقديري)' : ''}
+                </p>
+              </div>
+
+              <div className="rounded-2xl bg-[#FDF6EE] border border-[#EADBC8] p-3.5 space-y-1">
+                <p className="text-[11px] font-bold text-[#7D4E35]">إشغال حد Spark المجاني</p>
+                <p className="font-display text-xl sm:text-2xl font-extrabold text-[#4A220D] tabular-nums">
+                  {report.audioStorageSummary.librarySparkUsagePercent.toFixed(3)}%
+                </p>
+                <p className="text-[11px] font-semibold text-[#7D4E35] tabular-nums">
+                  المستخدم الكلي بالقاعدة:{' '}
+                  {formatBytesReadable(report.audioStorageSummary.librarySparkTotalUsedBytes)}
+                </p>
+              </div>
+
+              <div className="rounded-2xl bg-[#58CC02]/10 border border-[#58CC02]/40 p-3.5 space-y-1">
+                <p className="text-[11px] font-bold text-[#357A02]">باقي قبل نهاية المجاني</p>
+                <p className="font-display text-xl sm:text-2xl font-extrabold text-[#357A02] tabular-nums">
+                  {formatBytesReadable(report.audioStorageSummary.librarySparkRemainingBytes)}
+                </p>
+                <p className="text-[11px] font-semibold text-[#357A02] tabular-nums">
+                  من أصل {formatLimitGbLabel(report.audioStorageSummary.librarySparkTotalLimitBytes)}
+                </p>
+              </div>
+            </div>
+
+            {/* Spark Free Limit Progress Bar */}
+            <div className="bg-[#FDF6EE] border border-[#EADBC8] rounded-2xl p-4 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-bold">
+                <span className="text-[#4A220D]">
+                  مقياس استهلاك الخطة المجانية (Firebase Spark · 1 GiB لكل قاعدة مضيفة للصوتيات):
+                </span>
+                <span className="text-[#357A02] tabular-nums">
+                  متاح {formatBytesReadable(report.audioStorageSummary.librarySparkRemainingBytes)} (
+                  {(100 - report.audioStorageSummary.librarySparkUsagePercent).toFixed(3)}%)
+                </span>
+              </div>
+              <div className="w-full h-3.5 rounded-full bg-white border border-[#EADBC8] overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all duration-500"
+                  style={{
+                    width: `${Math.max(
+                      report.audioStorageSummary.librarySparkTotalUsedBytes > 0 ? 1.5 : 0,
+                      report.audioStorageSummary.librarySparkUsagePercent
+                    )}%`,
+                    backgroundColor:
+                      report.audioStorageSummary.librarySparkUsagePercent >= 80
+                        ? '#D95338'
+                        : report.audioStorageSummary.librarySparkUsagePercent >= 50
+                        ? '#FFA900'
+                        : '#2B8A3E',
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Clear Breakdown of All Free Tier Limits */}
+            <div className="rounded-2xl border border-[#EADBC8] bg-[#FFFDF9] p-4 space-y-3">
+              <div className="flex items-center gap-2 text-xs sm:text-sm font-display font-extrabold text-[#4A220D]">
+                <Info className="w-4 h-4 text-[#F56900] shrink-0" />
+                <span>شرح الحدود المجانية الفعلية للمنصة (Firebase Spark + محرك الصوت Gemini):</span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-[#4A220D] leading-relaxed">
+                <div className="rounded-xl bg-[#FDF6EE] border border-[#EADBC8] p-3 space-y-1">
+                  <p className="font-display font-extrabold text-[#F56900]">
+                    1. مساحة التخزين المجانية (1 GiB لكل قاعدة)
+                  </p>
+                  <p className="text-[#7D4E35]">
+                    كل مشروع مجاني على خطة <strong className="text-[#4A220D]">Firebase Spark</strong> يمنحك{' '}
+                    <strong className="text-[#4A220D]">1 GiB</strong> (حوالي 1,024 MB) مجاناً شاملة الكتب والصفحات والصوتيات. يتسع هذا تقريباً لـ{' '}
+                    <strong className="text-[#4A220D]">5,500 إلى 7,000 مقطع صوتي</strong> بمتوسط 150 KB للمقطع. وعند ربط قاعدة خارجية إضافية للمكتبة تحصل على 1 GiB جديدة.
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-[#FDF6EE] border border-[#EADBC8] p-3 space-y-1">
+                  <p className="font-display font-extrabold text-[#F56900]">
+                    2. الحدود اليومية والشهرية لـ Firestore (تتجدد يومياً)
+                  </p>
+                  <p className="text-[#7D4E35]">
+                    الخطة المجانية لكل قاعدة تسمح بـ{' '}
+                    <strong className="text-[#4A220D]">50,000 قراءة يومياً</strong> و
+                    <strong className="text-[#4A220D]">20,000 كتابة يومياً</strong> و
+                    <strong className="text-[#4A220D]">20,000 حذف يومياً</strong> و
+                    <strong className="text-[#4A220D]">10 GiB نقل شبكة شهرياً</strong>. الكاش المحلي بالمتصفح (IndexedDB) يقلل استهلاك القراءات والنقل بشكل كبير.
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-[#FDF6EE] border border-[#EADBC8] p-3 space-y-1">
+                  <p className="font-display font-extrabold text-[#2B8A3E]">
+                    3. حد الوثيقة الواحدة وضغط الصوت التلقائي
+                  </p>
+                  <p className="text-[#7D4E35]">
+                    أقصى حجم لوثيقة Firestore الواحدة هو <strong className="text-[#4A220D]">1 MiB</strong>؛ لذلك يضغط النظام أي مقطع WAV يتجاوز <strong className="text-[#4A220D]">640 KB</strong> تلقائياً (من 24kHz إلى 12kHz) لحفظه بأمان، بينما تمتد شرائح المكتبة حتى 4 GB عند الترقية لخطة Blaze.
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-[#FDF6EE] border border-[#EADBC8] p-3 space-y-1">
+                  <p className="font-display font-extrabold text-[#2B8A3E]">
+                    4. حدود التوليد الصوتي (Gemini API / TTS)
+                  </p>
+                  <p className="text-[#7D4E35]">
+                    الكلمات المحفوظة في <code className="font-mono">wordAudio</code> تُشغَّل مجاناً دون استهلاك Gemini. أما الكلمات الجديدة فتخضع لحصص المفتاح المجاني في الدقيقة واليوم (RPM/RPD)، وعند الوصول للحد المؤقت يتحول القارئ تلقائياً لنطق المتصفح دون توقف.
+                  </p>
+                </div>
               </div>
             </div>
           </section>

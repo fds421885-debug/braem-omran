@@ -47,6 +47,8 @@ interface SnapshotSummary {
   weaknessesCount: number;
   totalDocsCount: number;
   totalUsedBytes: number;
+  audioDocsCount: number;
+  estimatedRemainingAudioClips: number;
 }
 
 const SESSION_KEY_STORAGE = 'braem_admin_ai_custom_key';
@@ -106,6 +108,7 @@ function renderFormattedMessage(text: string): React.ReactNode {
 }
 
 const QUICK_PROMPTS: string[] = [
+  'كم بقي في تخزين الصوتيات ومتى تخلص الحدود المجانية وما هي حدود Spark و Gemini؟',
   'أين تُخزَّن كل بيانات المجمعات والتبويبات حالياً؟',
   'ما نقاط الضعف والمشاكل أو الأخطاء المكتشفة في القواعد الآن؟',
   'أي قاعدة بيانات اقتربت من الامتلاء وكم تبقى على حدودها؟',
@@ -606,6 +609,10 @@ export const ProgrammerAiAssistant: React.FC<ProgrammerAiAssistantProps> = ({
                     <span className="px-2 py-0.5 rounded-lg bg-white border border-[#EADBC8] text-[#4A220D] tabular-nums">
                       وثائق: {snapshotSummary.totalDocsCount} (
                       {formatCompactBytes(snapshotSummary.totalUsedBytes)})
+                    </span>
+                    <span className="px-2 py-0.5 rounded-lg bg-[#58CC02]/10 border border-[#58CC02]/40 text-[#357A02] tabular-nums">
+                      صوتيات: {snapshotSummary.audioDocsCount} (باقي ~
+                      {snapshotSummary.estimatedRemainingAudioClips.toLocaleString('en-US')})
                     </span>
                     {(snapshotSummary.issuesCount > 0 || snapshotSummary.weaknessesCount > 0) && (
                       <span className="px-2 py-0.5 rounded-lg bg-[#D95338]/10 border border-[#D95338]/40 text-[#D95338] inline-flex items-center gap-1 tabular-nums">

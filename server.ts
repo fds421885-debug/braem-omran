@@ -134,13 +134,42 @@ function normalizeUthmaniForTts(input: string): string {
   return out.replace(/\s+/g, ' ').trim();
 }
 
+function isTransientRateOrLoadError(err: unknown): boolean {
+  const errObj = err as { status?: number; code?: number; message?: string };
+  const statusCode = Number(errObj?.status || errObj?.code || 0);
+  const lower = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    statusCode === 429 ||
+    statusCode === 503 ||
+    statusCode === 504 ||
+    lower.includes('resource_exhausted') ||
+    lower.includes('unavailable') ||
+    lower.includes('high demand') ||
+    lower.includes('timeout') ||
+    lower.includes('429')
+  );
+}
+
 function getFriendlyGeminiError(err: unknown): { status: number; message: string } {
   const errObj = err as { status?: number; code?: number; message?: string };
   const statusCode = Number(errObj?.status || errObj?.code || 0);
   const raw = err instanceof Error ? err.message : String(err);
   const lower = raw.toLowerCase();
 
-  console.error('[Gemini API Error]', { statusCode, message: raw.slice(0, 500) });
+  if (
+    statusCode === 429 ||
+    statusCode === 503 ||
+    statusCode === 404 ||
+    lower.includes('resource_exhausted') ||
+    lower.includes('429') ||
+    lower.includes('unavailable') ||
+    lower.includes('high demand') ||
+    lower.includes('timeout')
+  ) {
+    console.warn('[Gemini API Notice]', { statusCode, message: raw.slice(0, 320) });
+  } else {
+    console.error('[Gemini API Error]', { statusCode, message: raw.slice(0, 500) });
+  }
 
   if (lower.includes('gemini_api_key')) {
     return {
@@ -215,17 +244,19 @@ async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 2): Promise<T> {
       const errObj = err as { status?: number; code?: number };
       const statusCode = Number(errObj?.status || errObj?.code || 0);
       const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+      // Never tight-loop retry 429 RESOURCE_EXHAUSTED — immediate fallback/cooldown prevents quota spiral
+      const isRateLimited =
+        statusCode === 429 || msg.includes('429') || msg.includes('resource_exhausted');
       const retryable =
-        statusCode === 429 ||
-        statusCode === 503 ||
-        statusCode === 500 ||
-        msg.includes('429') ||
-        msg.includes('503') ||
-        msg.includes('500') ||
-        msg.includes('unavailable') ||
-        msg.includes('high demand') ||
-        msg.includes('timeout') ||
-        msg.includes('network');
+        !isRateLimited &&
+        (statusCode === 503 ||
+          statusCode === 500 ||
+          msg.includes('503') ||
+          msg.includes('500') ||
+          msg.includes('unavailable') ||
+          msg.includes('high demand') ||
+          msg.includes('timeout') ||
+          msg.includes('network'));
       if (!retryable || attempt === maxAttempts) {
         throw err;
       }
@@ -356,6 +387,26 @@ const noorAlBayanServerCache = new Map<
 >();
 
 const ttsAudioServerCache = new Map<string, string>();
+const ttsInFlightCache = new Map<string, Promise<{ audioBase64: string; mimeType: string }>>();
+let ttsRateLimitUntilMs = 0;
+let ttsQueueTail: Promise<void> = Promise.resolve();
+let lastTtsDispatchAtMs = 0;
+
+function enqueueTtsRequest<T>(task: () => Promise<T>): Promise<T> {
+  const run = ttsQueueTail.then(async () => {
+    const gapMs = Date.now() - lastTtsDispatchAtMs;
+    if (gapMs < 240) {
+      await new Promise((r) => setTimeout(r, 240 - gapMs));
+    }
+    lastTtsDispatchAtMs = Date.now();
+    return task();
+  });
+  ttsQueueTail = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
 
 function setLruCache<K, V>(cache: Map<K, V>, key: K, val: V, maxSize = 250): void {
   if (cache.has(key)) {
@@ -493,7 +544,7 @@ async function startServer() {
 
       const analyzeCandidates = buildOrderedModels(
         ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'],
-        ['gemini-3.8-flash', 'gemini-3.5-flash-lite'],
+        ['gemini-2.5-flash', 'gemini-2.5-flash-lite'],
         shouldPreferPublicGeminiModels()
       );
       let result;
@@ -706,7 +757,7 @@ async function startServer() {
 
       const noorCandidates = buildOrderedModels(
         ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'],
-        ['gemini-3.5-flash-lite', 'gemini-3.8-flash'],
+        ['gemini-2.5-flash-lite', 'gemini-2.5-flash'],
         shouldPreferPublicGeminiModels()
       );
       let result;
@@ -775,95 +826,156 @@ async function startServer() {
         return;
       }
 
-      const ttsStyleInstruction =
-        readingMode === 'tahajji'
-          ? 'Arabic Tajweed teacher reciting Al-Fath Al-Rabbani step-by-step spelling. Articulate every single short vowel (Fatha, Kasra, Damma) crisply and accurately even on isolated one-letter syllables—never mute them into Sukoon or change Kasra to Fatha. Hold every Sukoon cleanly without adding extra vowels. Pronounce every Shadda with clear double gemination and its exact attached vowel. Lengthen Madd letters and Ghunnah clearly and naturally at a calm, measured instructional pace.'
-          : 'Eloquent Classical Arabic Quran and pedagogy teacher reciting with exact Tashkeel, clear Shadda gemination, accurate Sukoon stops, proper Madd elongation, and natural connected pacing without rushing.';
-
-      const ai = getGeminiClient();
-      const ttsCandidates = buildOrderedModels(
-        ['gemini-3.8-flash-lite-tts'],
-        ['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts'],
-        shouldPreferPublicGeminiModels()
-      ).filter((m, idx, arr) => arr.indexOf(m) === idx);
-      let response;
-      let lastTtsErr: unknown;
-      for (const candidateModel of ttsCandidates) {
-        const sendTts = (withStyleMetadata: boolean) =>
-          withTimeout(
-            withRetry(() =>
-              ai.models.generateContent({
-                model: candidateModel,
-                contents: [
-                  {
-                    role: 'user',
-                    parts: [
-                      withStyleMetadata
-                        ? ({
-                            text: spokenText,
-                            speechMetadata: { style: ttsStyleInstruction },
-                          } as unknown as { text: string })
-                        : { text: spokenText },
-                    ],
-                  },
-                ],
-                config: {
-                  responseModalities: ['AUDIO'],
-                  speechConfig: {
-                    voiceConfig: {
-                      prebuiltVoiceConfig: { voiceName: 'Charon' },
-                    },
-                  },
-                },
-              })
-            ),
-            12000
-          );
-        try {
-          response = await sendTts(true);
-          break;
-        } catch (err) {
-          const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
-          if (msg.includes('speechmetadata') || msg.includes('speech_metadata')) {
-            try {
-              response = await sendTts(false);
-              break;
-            } catch (err2) {
-              lastTtsErr = err2;
-              if (!isModelRetryableOrFallbackError(err2)) {
-                throw err2;
-              }
-              continue;
-            }
-          }
-          lastTtsErr = err;
-          if (!isModelRetryableOrFallbackError(err)) {
-            throw err;
-          }
-        }
-      }
-      if (!response) {
-        throw lastTtsErr || new Error('No TTS model succeeded.');
-      }
-
-      const audioPart = response.candidates?.[0]?.content?.parts?.find(
-        (p) => Boolean(p.inlineData?.data)
-      )?.inlineData;
-      const base64Audio = audioPart?.data;
-
-      if (!base64Audio || base64Audio.length < 120) {
-        res.status(502).json({ error: 'لم يتمكن محرك الصوت من توليد المقطع الصوتي.' });
+      if (Date.now() < ttsRateLimitUntilMs) {
+        const retryAfterSec = Math.max(
+          2,
+          Math.ceil((ttsRateLimitUntilMs - Date.now()) / 1000)
+        );
+        res.setHeader('Retry-After', String(retryAfterSec));
+        res.status(429).json({
+          error: 'تم الوصول للحد المؤقت من طلبات الصوت، انتظر لحظات ثم أعد المحاولة.',
+        });
         return;
       }
 
-      const wrapped = ensureWavBase64(base64Audio, audioPart?.mimeType);
-      setLruCache(ttsAudioServerCache, cacheKey, wrapped.base64Wav, 250);
-      res.json({
-        audioBase64: wrapped.base64Wav,
-        mimeType: wrapped.mimeType,
-      });
+      let pendingPromise = ttsInFlightCache.get(cacheKey);
+      if (!pendingPromise) {
+        const ttsStyleInstruction =
+          readingMode === 'tahajji'
+            ? 'Arabic Tajweed teacher reciting Al-Fath Al-Rabbani step-by-step spelling. Articulate every single short vowel (Fatha, Kasra, Damma) crisply and accurately even on isolated one-letter syllables—never mute them into Sukoon or change Kasra to Fatha. Hold every Sukoon cleanly without adding extra vowels. Pronounce every Shadda with clear double gemination and its exact attached vowel. Lengthen Madd letters and Ghunnah clearly and naturally at a calm, measured instructional pace.'
+            : 'Eloquent Classical Arabic Quran and pedagogy teacher reciting with exact Tashkeel, clear Shadda gemination, accurate Sukoon stops, proper Madd elongation, and natural connected pacing without rushing.';
+
+        const ai = getGeminiClient();
+        const ttsCandidates = buildOrderedModels(
+          ['gemini-3.8-flash-lite-tts'],
+          ['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts'],
+          shouldPreferPublicGeminiModels()
+        ).filter((m, idx, arr) => arr.indexOf(m) === idx);
+
+        pendingPromise = enqueueTtsRequest(async () => {
+          const cachedInsideQueue = ttsAudioServerCache.get(cacheKey);
+          if (cachedInsideQueue) {
+            return { audioBase64: cachedInsideQueue, mimeType: 'audio/wav' };
+          }
+          if (Date.now() < ttsRateLimitUntilMs) {
+            throw Object.assign(new Error('429 RESOURCE_EXHAUSTED cooldown active'), {
+              status: 429,
+            });
+          }
+
+          let response;
+          let lastTtsErr: unknown;
+          for (const candidateModel of ttsCandidates) {
+            const sendTts = (withStyleMetadata: boolean) =>
+              withTimeout(
+                ai.models.generateContent({
+                  model: candidateModel,
+                  contents: [
+                    {
+                      role: 'user',
+                      parts: [
+                        withStyleMetadata
+                          ? ({
+                              text: spokenText,
+                              speechMetadata: { style: ttsStyleInstruction },
+                            } as unknown as { text: string })
+                          : { text: spokenText },
+                      ],
+                    },
+                  ],
+                  config: {
+                    responseModalities: ['AUDIO'],
+                    speechConfig: {
+                      voiceConfig: {
+                        prebuiltVoiceConfig: { voiceName: 'Charon' },
+                      },
+                    },
+                  },
+                }),
+                12000
+              );
+
+            try {
+              response = await sendTts(true);
+              break;
+            } catch (err) {
+              const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+              if (msg.includes('speechmetadata') || msg.includes('speech_metadata')) {
+                try {
+                  response = await sendTts(false);
+                  break;
+                } catch (err2) {
+                  lastTtsErr = err2;
+                  if (!isModelRetryableOrFallbackError(err2)) {
+                    throw err2;
+                  }
+                  continue;
+                }
+              }
+              lastTtsErr = err;
+              if (!isModelRetryableOrFallbackError(err)) {
+                throw err;
+              }
+            }
+          }
+
+          if (!response) {
+            const lastErrObj = lastTtsErr as { status?: number; code?: number; message?: string };
+            const lastStatus = Number(lastErrObj?.status || lastErrObj?.code || 0);
+            const lastMsg = (
+              lastTtsErr instanceof Error ? lastTtsErr.message : String(lastTtsErr || '')
+            ).toLowerCase();
+            if (
+              lastStatus === 429 ||
+              lastMsg.includes('429') ||
+              lastMsg.includes('resource_exhausted')
+            ) {
+              ttsRateLimitUntilMs = Date.now() + 12000;
+            }
+            throw lastTtsErr || new Error('No TTS model succeeded.');
+          }
+
+          const audioPart = response.candidates?.[0]?.content?.parts?.find(
+            (p) => Boolean(p.inlineData?.data)
+          )?.inlineData;
+          const base64Audio = audioPart?.data;
+
+          if (!base64Audio || base64Audio.length < 120) {
+            throw Object.assign(new Error('لم يتمكن محرك الصوت من توليد المقطع الصوتي.'), {
+              status: 502,
+            });
+          }
+
+          const wrapped = ensureWavBase64(base64Audio, audioPart?.mimeType);
+          setLruCache(ttsAudioServerCache, cacheKey, wrapped.base64Wav, 250);
+          return {
+            audioBase64: wrapped.base64Wav,
+            mimeType: wrapped.mimeType,
+          };
+        }).finally(() => {
+          ttsInFlightCache.delete(cacheKey);
+        });
+
+        ttsInFlightCache.set(cacheKey, pendingPromise);
+      }
+
+      const generated = await pendingPromise;
+      res.json(generated);
     } catch (err) {
+      if ((err as { status?: number })?.status === 502) {
+        res.status(502).json({ error: 'لم يتمكن محرك الصوت من توليد المقطع الصوتي.' });
+        return;
+      }
       const friendly = getFriendlyGeminiError(err);
+      if (friendly.status === 429) {
+        if (ttsRateLimitUntilMs <= Date.now()) {
+          ttsRateLimitUntilMs = Date.now() + 12000;
+        }
+        res.setHeader(
+          'Retry-After',
+          String(Math.max(2, Math.ceil(Math.max(0, ttsRateLimitUntilMs - Date.now()) / 1000) || 12))
+        );
+      }
       res.status(friendly.status).json({ error: friendly.message });
     }
   });
@@ -891,8 +1003,9 @@ async function startServer() {
       const safeContext = String(systemContext || '').slice(0, 95000);
       const systemInstruction = `أنت المساعد التقني الذكي المتخصص لمبرمج منصة «براعم عمران» (منصة تعليمية قرآنية متعددة قواعد البيانات).
 مهمتك مساعدة المبرمج في فحص كل شاردة وواردة بدقة وسرعة ووضوح باللغة العربية الفصحى المنظمة:
-- أين تُخزن كل البيانات والمجموعات (Primary DB أم External DB للمجمع أم Tab Shards 4GB المعزولة لكل تبويب: attendance / library / curricula / accounts_invites / mosques_halaqat).
-- تحليل استهلاك المساحة والوثائق لكل قاعدة ولكل مجموعة وكم تبقى على الحدود (Spark 1 GiB للقاعدة الأساسية/المنفردة و4 GiB لكل شريحة تبويب).
+- أين تُخزن كل البيانات والمجموعات (Primary DB أم External DB للمجمع أم Tab Shards المعزولة لكل تبويب: attendance / library / curricula / accounts_invites / mosques_halaqat).
+- تحليل استهلاك المساحة والوثائق لكل قاعدة ولكل مجموعة وكم تبقى على الحدود (خطة Firebase Spark المجانية تمنح 1 GiB لكل قاعدة/مشروع مجاني + 50,000 قراءة/يوم + 20,000 كتابة/يوم + 20,000 حذف/يوم + 10 GiB نقل شبكة شهرياً + حد 1 MiB للوثيقة الواحدة؛ بينما تمتد شرائح التبويب حتى 4 GB عند الترقية لخطة Blaze).
+- تحليل تخزين الصوتيات (wordAudio) بدقة من حقل "audioStorageAndRemainingCapacity" وحقل "freeLimitsReference": عدد المقاطع الصوتية المحفوظة، متوسط حجم المقطع، القواعد المستضيفة للمكتبة والصوتيات، كم تبقى بالميجابايت/جيجابايت وكم مقطعاً صوتياً تقريباً يكفي قبل نفاد حد Spark المجاني (1 GiB لكل قاعدة)، وكيف تقلل القاعدة والـ IndexedDB استهلاك Gemini TTS المجاني (RPM/RPD).
 - كشف نقاط الضعف والمشاكل التقنية والتشغيلية (قواعد ممتلئة أو تقترب من الحد، قواعد لا تستجيب، أخطاء Firestore Rules مفصلة، مجمعات دون معزولة، حلقات بلا طلاب أو بلا معلمين، حسابات لم تربط جوجل، كتب عالقة أو متوقفة، إلخ).
 - إذا لم تتوفر معلومة دقيقة في اللقطة الحية المرفقة فاذكر ذلك بوضوح ولا تخمّن بيانات غير موجودة.
 - قدّم إجابات دقيقة، مركزة، بنقاط مرقمة وعملية.
@@ -934,7 +1047,14 @@ ${safeContext || 'لم يتم إرفاق بيانات بعد.'}`;
                 contents,
                 config: {
                   ...(isAiStudioManagedModel(modelName)
-                    ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+                    ? {
+                        thinkingConfig: {
+                          thinkingLevel:
+                            modelName === 'gemini-3.1-flash-lite'
+                              ? ThinkingLevel.MINIMAL
+                              : ThinkingLevel.LOW,
+                        },
+                      }
                     : {}),
                   systemInstruction,
                 },
@@ -946,8 +1066,8 @@ ${safeContext || 'لم يتم إرفاق بيانات بعد.'}`;
       };
 
       const chatCandidates = buildOrderedModels(
-        ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'],
-        ['gemini-3.5-flash-lite', 'gemini-3.8-flash'],
+        ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'],
+        ['gemini-2.5-flash', 'gemini-2.5-flash-lite'],
         shouldPreferPublicGeminiModels(trimmedCustomKey)
       );
 
@@ -958,7 +1078,14 @@ ${safeContext || 'لم يتم إرفاق بيانات بعد.'}`;
           result = await callModel(candidateModel, 18000);
           break;
         } catch (candidateErr) {
-          lastChatErr = candidateErr;
+          const errStatus = Number(
+            (candidateErr as { status?: number; code?: number })?.status ||
+              (candidateErr as { status?: number; code?: number })?.code ||
+              0
+          );
+          if (!lastChatErr || errStatus !== 404) {
+            lastChatErr = candidateErr;
+          }
           const rawErr =
             candidateErr instanceof Error ? candidateErr.message : String(candidateErr);
           console.warn(`[AI Chat fallback from ${candidateModel}]`, rawErr.slice(0, 220));
