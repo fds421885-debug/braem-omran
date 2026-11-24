@@ -58,6 +58,8 @@ interface ComplexWorkspaceProps {
   supervisorMode?: boolean;
   initialWorkspace?: ComplexWorkspaceData | null;
   restrictMosqueIds?: string[];
+  currentAccountId?: string;
+  currentUserUid?: string;
   onWorkspaceMutated?: () => Promise<void> | void;
 }
 
@@ -84,6 +86,8 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
   supervisorMode = false,
   initialWorkspace = null,
   restrictMosqueIds,
+  currentAccountId,
+  currentUserUid,
   onWorkspaceMutated,
 }) => {
   const [workspace, setWorkspace] = useState<ComplexWorkspaceData | null>(initialWorkspace);
@@ -668,13 +672,27 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
     }
   };
 
+  const isSelfAccount = (acc: AccountRecord): boolean =>
+    Boolean(
+      (currentAccountId && acc.id === currentAccountId) ||
+        (currentUserUid && (acc.uid === currentUserUid || acc.id === currentUserUid))
+    );
+
   const handleConfirmDeleteMember = async () => {
     if (!confirmDeleteMember) return;
+    if (isSelfAccount(confirmDeleteMember)) {
+      setConfirmDeleteMember(null);
+      setFeedback({ type: 'err', text: 'لا يمكن لمشرف المجمع حذف حسابه الشخصي.' });
+      return;
+    }
     setDeletingMember(true);
     setFeedback(null);
     try {
       const deletedName = confirmDeleteMember.quadrupleName;
-      await deleteMemberAccountFromWorkspace(workspace, confirmDeleteMember);
+      await deleteMemberAccountFromWorkspace(workspace, confirmDeleteMember, {
+        accountId: currentAccountId,
+        uid: currentUserUid,
+      });
       setConfirmDeleteMember(null);
       setFeedback({ type: 'ok', text: `تم حذف "${deletedName}" من المجمع بنجاح.` });
       await refreshWorkspace();
@@ -1455,20 +1473,29 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                               <button
                                 type="button"
                                 onClick={() => openEditMemberModal(acc)}
-                                className="min-h-[40px] px-2.5 py-1.5 rounded-xl border border-[#EADBC8] bg-white hover:border-[#F56900] text-xs font-bold text-[#4A220D] inline-flex items-center justify-center gap-1 cursor-pointer"
+                                className={`min-h-[40px] px-2.5 py-1.5 rounded-xl border border-[#EADBC8] bg-white hover:border-[#F56900] text-xs font-bold text-[#4A220D] inline-flex items-center justify-center gap-1 cursor-pointer ${
+                                  isSelfAccount(acc) ? 'col-span-2' : ''
+                                }`}
                               >
                                 <Edit3 className="w-3.5 h-3.5 text-[#F56900]" />
                                 <span>تعديل</span>
                               </button>
 
-                              <button
-                                type="button"
-                                onClick={() => setConfirmDeleteMember(acc)}
-                                className="min-h-[40px] px-2.5 py-1.5 rounded-xl border border-[#EADBC8] bg-white hover:border-[#D95338] text-xs font-bold text-[#D95338] inline-flex items-center justify-center gap-1 cursor-pointer"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                                <span>حذف</span>
-                              </button>
+                              {isSelfAccount(acc) ? (
+                                <div className="col-span-2 min-h-[36px] px-2.5 py-1.5 rounded-xl bg-[#58CC02]/10 border border-[#58CC02]/30 text-[11px] font-bold text-[#357A02] flex items-center justify-center gap-1">
+                                  <Lock className="w-3.5 h-3.5 shrink-0" />
+                                  <span>حسابك الحالي — محمي من الحذف</span>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteMember(acc)}
+                                  className="min-h-[40px] px-2.5 py-1.5 rounded-xl border border-[#EADBC8] bg-white hover:border-[#D95338] text-xs font-bold text-[#D95338] inline-flex items-center justify-center gap-1 cursor-pointer"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <span>حذف</span>
+                                </button>
+                              )}
                             </div>
                           )}
                         </div>
@@ -1553,15 +1580,25 @@ export const ComplexWorkspace: React.FC<ComplexWorkspaceProps> = ({
                                       <span>تعديل</span>
                                     </button>
 
-                                    <button
-                                      type="button"
-                                      onClick={() => setConfirmDeleteMember(acc)}
-                                      aria-label={`حذف ${acc.quadrupleName}`}
-                                      className="min-h-[38px] px-2.5 py-1.5 rounded-xl border border-[#EADBC8] bg-white hover:border-[#D95338] hover:bg-[#D95338]/10 text-xs font-bold text-[#D95338] inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
-                                    >
-                                      <Trash2 className="w-3.5 h-3.5" />
-                                      <span>حذف</span>
-                                    </button>
+                                    {isSelfAccount(acc) ? (
+                                      <span
+                                        title="لا يمكنك حذف حسابك الشخصي"
+                                        className="min-h-[38px] px-2.5 py-1.5 rounded-xl border border-[#58CC02]/40 bg-[#58CC02]/10 text-[11px] font-bold text-[#357A02] inline-flex items-center gap-1 whitespace-nowrap"
+                                      >
+                                        <Lock className="w-3.5 h-3.5 shrink-0" />
+                                        <span>حسابك الحالي</span>
+                                      </span>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => setConfirmDeleteMember(acc)}
+                                        aria-label={`حذف ${acc.quadrupleName}`}
+                                        className="min-h-[38px] px-2.5 py-1.5 rounded-xl border border-[#EADBC8] bg-white hover:border-[#D95338] hover:bg-[#D95338]/10 text-xs font-bold text-[#D95338] inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                        <span>حذف</span>
+                                      </button>
+                                    )}
                                   </div>
                                 )}
                               </td>

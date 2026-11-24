@@ -2491,7 +2491,7 @@ export async function loadComplexWorkspace(
   };
 }
 
-function resolveTargetDbForEntity(
+export function resolveTargetDbForEntity(
   workspace: ComplexWorkspaceData,
   mosqueId: string,
   halaqaIds?: string[]
@@ -2765,11 +2765,20 @@ export async function syncQuickLinkForAccount(
     active: true,
   };
 
-  await setDoc(doc(targetDb, 'quickLinks', token), {
-    ...quickPayload,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  });
+  const qlRef = doc(targetDb, 'quickLinks', token);
+  const existingQlSnap = await getDocFresh(qlRef).catch(() => null);
+  if (existingQlSnap?.exists()) {
+    await updateDoc(qlRef, {
+      ...quickPayload,
+      updatedAt: serverTimestamp(),
+    });
+  } else {
+    await setDoc(qlRef, {
+      ...quickPayload,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  }
 
   if (!account.quickToken) {
     await updateDoc(doc(targetDb, 'accounts', account.id), {
@@ -3117,10 +3126,18 @@ export async function updateMemberAccountInWorkspace(params: {
 
 export async function deleteMemberAccountFromWorkspace(
   workspace: ComplexWorkspaceData,
-  account: AccountRecord
+  account: AccountRecord,
+  currentActor?: { accountId?: string; uid?: string }
 ): Promise<void> {
   if (account.role === 'platform_admin') {
     throw new Error('لا يمكن حذف حساب المشرف المبرمج.');
+  }
+  const activeUid = currentActor?.uid || auth.currentUser?.uid || '';
+  if (
+    (currentActor?.accountId && account.id === currentActor.accountId) ||
+    (activeUid && (account.uid === activeUid || account.id === activeUid))
+  ) {
+    throw new Error('لا يمكن لمشرف المجمع حذف حسابه الشخصي.');
   }
 
   const candidateDbs = Array.from(
@@ -7644,4 +7661,326 @@ export async function gatherProgrammerAiPlatformSnapshot(params: {
       totalUsedBytes: usageReport?.totalUsedBytes ?? 0,
     },
   };
+}
+
+export type AccountAssignmentStatus =
+  | 'platform_admin'
+  | 'in_halaqa'
+  | 'complex_only'
+  | 'unassigned';
+
+export interface PlatformAccountDirectoryEntry {
+  account: AccountRecord;
+  sourceDb: Firestore;
+  sourceDbKey: string;
+  sourceDbLabel: string;
+  sourceConfig: ExternalFirebaseConfig | null;
+  complexName: string;
+  mosqueNames: string[];
+  halaqaNames: string[];
+  registeredAtMs: number;
+  assignmentStatus: AccountAssignmentStatus;
+}
+
+function parseAccountTimestampMs(val: unknown, fallbackDateKey?: string): number {
+  if (val && typeof (val as { toMillis?: () => number }).toMillis === 'function') {
+    try {
+      const ms = (val as { toMillis: () => number }).toMillis();
+      if (Number.isFinite(ms) && ms > 0) return ms;
+    } catch {
+      // ignore
+    }
+  }
+  if (val && typeof (val as { seconds?: number }).seconds === 'number') {
+    const sec = (val as { seconds: number }).seconds;
+    if (Number.isFinite(sec) && sec > 0) return sec * 1000;
+  }
+  if (val instanceof Date && !Number.isNaN(val.getTime())) {
+    return val.getTime();
+  }
+  if (typeof val === 'number' && Number.isFinite(val) && val > 0) {
+    return val;
+  }
+  if (typeof val === 'string' && val.trim()) {
+    const parsed = Date.parse(val.trim());
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  if (fallbackDateKey && fallbackDateKey.trim()) {
+    const parsed = Date.parse(fallbackDateKey.trim());
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return 0;
+}
+
+export async function listAllPlatformAccountsDirectory(): Promise<{
+  entries: PlatformAccountDirectoryEntry[];
+  complexes: DiscoveredComplex[];
+}> {
+  const [targets, discoveredComplexes] = await Promise.all([
+    getAllKnownDatabases(),
+    listAllComplexesAcrossDatabases(),
+  ]);
+
+  const orderedTargets = [
+    ...targets.filter((t) => !t.isPrimary),
+    ...targets.filter((t) => t.isPrimary),
+  ];
+
+  const complexMap = new Map<string, DiscoveredComplex>();
+  for (const c of discoveredComplexes) {
+    complexMap.set(c.id, c);
+  }
+
+  const mosqueMap = new Map<string, MosqueRecord>();
+  const halaqaMap = new Map<string, HalaqaRecord>();
+  const accountMap = new Map<
+    string,
+    {
+      account: AccountRecord;
+      target: ResolvedDbTarget;
+    }
+  >();
+
+  await Promise.all(
+    orderedTargets.map(async (target) => {
+      try {
+        const [mSnap, hSnap, aSnap] = await Promise.all([
+          getDocsFresh(query(collection(target.db, 'mosques'), where('active', '==', true))).catch(
+            () => null
+          ),
+          getDocsFresh(query(collection(target.db, 'halaqat'), where('active', '==', true))).catch(
+            () => null
+          ),
+          getDocsFresh(collection(target.db, 'accounts')).catch(() => null),
+        ]);
+
+        mSnap?.forEach((d) => {
+          const m = d.data() as MosqueRecord;
+          if (!mosqueMap.has(m.id) || !target.isPrimary) {
+            mosqueMap.set(m.id, m);
+          }
+        });
+
+        hSnap?.forEach((d) => {
+          const h = d.data() as HalaqaRecord;
+          if (!halaqaMap.has(h.id) || !target.isPrimary) {
+            halaqaMap.set(h.id, h);
+          }
+        });
+
+        aSnap?.forEach((d) => {
+          const raw = d.data() as AccountRecord;
+          const acc: AccountRecord = {
+            ...raw,
+            mosqueIds: Array.isArray(raw.mosqueIds) ? raw.mosqueIds : [],
+            halaqaIds: Array.isArray(raw.halaqaIds) ? raw.halaqaIds : [],
+          };
+          const existing = accountMap.get(acc.id);
+          if (!existing || (existing.target.isPrimary && !target.isPrimary)) {
+            accountMap.set(acc.id, { account: acc, target });
+          }
+        });
+      } catch {
+        // Skip unreachable database target
+      }
+    })
+  );
+
+  const entries: PlatformAccountDirectoryEntry[] = [];
+  for (const { account, target } of accountMap.values()) {
+    const complexObj = account.complexId ? complexMap.get(account.complexId) : undefined;
+    const complexName = complexObj?.name || (account.complexId ? account.complexId : '');
+
+    const rawMosqueIds = Array.from(
+      new Set([
+        ...(account.mosqueIds || []),
+        ...(account.mosqueId ? [account.mosqueId] : []),
+      ])
+    ).filter(Boolean);
+    const mosqueNames = rawMosqueIds
+      .map((id) => mosqueMap.get(id)?.name || '')
+      .filter(Boolean);
+
+    const halaqaNames = (account.halaqaIds || [])
+      .map((id) => halaqaMap.get(id)?.name || '')
+      .filter(Boolean);
+
+    let assignmentStatus: AccountAssignmentStatus = 'unassigned';
+    if (account.role === 'platform_admin') {
+      assignmentStatus = 'platform_admin';
+    } else if (account.complexId && account.halaqaIds.length > 0) {
+      assignmentStatus = 'in_halaqa';
+    } else if (account.complexId) {
+      assignmentStatus = 'complex_only';
+    } else {
+      assignmentStatus = 'unassigned';
+    }
+
+    const registeredAtMs =
+      parseAccountTimestampMs(account.createdAt) ||
+      parseAccountTimestampMs(account.updatedAt, account.lastLoginDate);
+
+    entries.push({
+      account,
+      sourceDb: target.db,
+      sourceDbKey: target.key,
+      sourceDbLabel: target.label,
+      sourceConfig: target.config,
+      complexName,
+      mosqueNames,
+      halaqaNames,
+      registeredAtMs,
+      assignmentStatus,
+    });
+  }
+
+  entries.sort((a, b) => {
+    if (b.registeredAtMs !== a.registeredAtMs) {
+      return b.registeredAtMs - a.registeredAtMs;
+    }
+    return a.account.quadrupleName.localeCompare(b.account.quadrupleName, 'ar');
+  });
+
+  return {
+    entries,
+    complexes: discoveredComplexes,
+  };
+}
+
+export async function assignOrTransferPlatformAccount(params: {
+  entry: PlatformAccountDirectoryEntry;
+  targetComplex: DiscoveredComplex;
+  targetWorkspace: ComplexWorkspaceData;
+  role: Exclude<UserRole, 'platform_admin'>;
+  mosqueId: string;
+  mosqueIds: string[];
+  halaqaIds: string[];
+}): Promise<AccountRecord> {
+  const { entry, targetComplex, targetWorkspace, role, mosqueId, mosqueIds, halaqaIds } = params;
+  const account = entry.account;
+
+  if (account.role === 'platform_admin') {
+    throw new Error('لا يمكن نقل أو تغيير صلاحية حساب مشرف المنصة المبرمج.');
+  }
+
+  const normalizedMosqueIds = (
+    role === 'supervisor'
+      ? mosqueIds
+      : mosqueIds.length > 0
+      ? mosqueIds
+      : mosqueId
+      ? [mosqueId]
+      : []
+  ).slice(0, 50);
+  const normalizedPrimaryMosque = role === 'supervisor' ? normalizedMosqueIds[0] || '' : mosqueId;
+  const normalizedHalaqaIds = (role === 'supervisor' ? [] : halaqaIds).slice(0, 50);
+  const quickToken = account.quickToken || generateToken(24);
+  const nameHash = account.nameHash || (await hashQuadrupleName(account.quadrupleName));
+
+  const destDb = resolveTargetDbForEntity(
+    targetWorkspace,
+    normalizedPrimaryMosque,
+    normalizedHalaqaIds
+  );
+
+  const updatedAccount: AccountRecord = {
+    ...account,
+    nameHash,
+    role,
+    complexId: targetComplex.id,
+    mosqueId: normalizedPrimaryMosque,
+    mosqueIds: normalizedMosqueIds,
+    halaqaIds: normalizedHalaqaIds,
+    quickToken,
+  };
+
+  if (entry.sourceDb === destDb) {
+    await updateDoc(doc(destDb, 'accounts', account.id), {
+      nameHash,
+      role: updatedAccount.role,
+      complexId: updatedAccount.complexId,
+      mosqueId: updatedAccount.mosqueId,
+      mosqueIds: updatedAccount.mosqueIds,
+      halaqaIds: updatedAccount.halaqaIds,
+      quickToken: updatedAccount.quickToken,
+      updatedAt: serverTimestamp(),
+    });
+    await upsertNameIndexSafe(destDb, nameHash, account.id).catch(() => {});
+  } else {
+    if (nameHash) {
+      await upsertNameIndexSafe(destDb, nameHash, account.id);
+    }
+    await upsertTransferredDoc(destDb, 'accounts', account.id, {
+      id: updatedAccount.id,
+      uid: updatedAccount.uid || '',
+      quadrupleName: updatedAccount.quadrupleName,
+      nameHash,
+      email: updatedAccount.email || '',
+      photoURL: updatedAccount.photoURL || '',
+      role: updatedAccount.role,
+      complexId: updatedAccount.complexId,
+      mosqueId: updatedAccount.mosqueId || '',
+      mosqueIds: updatedAccount.mosqueIds || [],
+      halaqaIds: updatedAccount.halaqaIds || [],
+      inviteToken: updatedAccount.inviteToken || '',
+      quickToken: updatedAccount.quickToken || '',
+      lastLoginDate: updatedAccount.lastLoginDate || '',
+    });
+
+    await deleteDoc(doc(entry.sourceDb, 'accounts', account.id)).catch(() => {});
+    if (account.nameHash) {
+      await deleteDoc(doc(entry.sourceDb, 'nameIndex', account.nameHash)).catch(() => {});
+    }
+    if (account.quickToken) {
+      await deleteDoc(doc(entry.sourceDb, 'quickLinks', account.quickToken)).catch(() => {});
+    }
+    try {
+      const oldQSnap = await getDocs(
+        query(collection(entry.sourceDb, 'quickLinks'), where('accountId', '==', account.id))
+      );
+      for (const qDoc of oldQSnap.docs) {
+        await deleteDoc(doc(entry.sourceDb, 'quickLinks', qDoc.id)).catch(() => {});
+      }
+    } catch {
+      // Non-fatal cleanup
+    }
+  }
+
+  await syncQuickLinkForAccount(targetWorkspace, updatedAccount, destDb);
+  return updatedAccount;
+}
+
+export async function deletePlatformAccountDirectoryEntry(
+  entry: PlatformAccountDirectoryEntry,
+  currentActor?: { accountId?: string; uid?: string }
+): Promise<void> {
+  const account = entry.account;
+  if (account.role === 'platform_admin') {
+    throw new Error('لا يمكن حذف حساب مشرف المنصة المبرمج.');
+  }
+  const activeUid = currentActor?.uid || auth.currentUser?.uid || '';
+  if (
+    (currentActor?.accountId && account.id === currentActor.accountId) ||
+    (activeUid && (account.uid === activeUid || account.id === activeUid))
+  ) {
+    throw new Error('لا يمكنك حذف حسابك الشخصي.');
+  }
+
+  await deleteDoc(doc(entry.sourceDb, 'accounts', account.id));
+  if (account.nameHash) {
+    await deleteDoc(doc(entry.sourceDb, 'nameIndex', account.nameHash)).catch(() => {});
+  }
+  if (account.quickToken) {
+    await deleteDoc(doc(entry.sourceDb, 'quickLinks', account.quickToken)).catch(() => {});
+  }
+  try {
+    const qSnap = await getDocs(
+      query(collection(entry.sourceDb, 'quickLinks'), where('accountId', '==', account.id))
+    );
+    for (const qDoc of qSnap.docs) {
+      await deleteDoc(doc(entry.sourceDb, 'quickLinks', qDoc.id)).catch(() => {});
+    }
+  } catch {
+    // Non-fatal
+  }
 }

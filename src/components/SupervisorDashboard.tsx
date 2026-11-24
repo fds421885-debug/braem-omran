@@ -973,6 +973,8 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                 supervisorMode
                 initialWorkspace={workspace}
                 restrictMosqueIds={restrictMosqueIds}
+                currentAccountId={session.account.id}
+                currentUserUid={session.account.uid}
                 onWorkspaceMutated={async () => {
                   await loadAll(true);
                 }}
