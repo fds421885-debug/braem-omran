@@ -12,7 +12,7 @@ import {
 
 interface NotificationPermissionButtonProps {
   variant?: 'compact' | 'banner';
-  responsiveLabel?: 'sm' | 'md' | 'xl';
+  responsiveLabel?: 'sm' | 'md' | 'lg' | 'xl';
 }
 
 export const NotificationPermissionButton: React.FC<NotificationPermissionButtonProps> = ({
@@ -259,6 +259,8 @@ export const NotificationPermissionButton: React.FC<NotificationPermissionButton
             ? 'px-2.5 sm:px-3'
             : responsiveLabel === 'md'
             ? 'px-2.5 md:px-3'
+            : responsiveLabel === 'lg'
+            ? 'px-2.5 lg:px-3'
             : 'px-2.5 xl:px-3'
         } ${
           permission === 'granted' && !outdated
@@ -275,6 +277,8 @@ export const NotificationPermissionButton: React.FC<NotificationPermissionButton
                   ? 'hidden sm:inline'
                   : responsiveLabel === 'md'
                   ? 'hidden md:inline'
+                  : responsiveLabel === 'lg'
+                  ? 'hidden lg:inline'
                   : 'hidden xl:inline'
               }
             >
@@ -290,6 +294,8 @@ export const NotificationPermissionButton: React.FC<NotificationPermissionButton
                   ? 'hidden sm:inline'
                   : responsiveLabel === 'md'
                   ? 'hidden md:inline'
+                  : responsiveLabel === 'lg'
+                  ? 'hidden lg:inline'
                   : 'hidden xl:inline'
               }
             >
@@ -305,6 +311,8 @@ export const NotificationPermissionButton: React.FC<NotificationPermissionButton
                   ? 'hidden sm:inline'
                   : responsiveLabel === 'md'
                   ? 'hidden md:inline'
+                  : responsiveLabel === 'lg'
+                  ? 'hidden lg:inline'
                   : 'hidden xl:inline'
               }
             >

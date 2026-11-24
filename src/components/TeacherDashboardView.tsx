@@ -277,10 +277,11 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
   ];
 
   return (
-    <div className="min-h-screen bg-[#FDF6EE] text-[#4A220D] flex flex-col pb-24 lg:pb-8" dir="rtl">
+    <div className="min-h-screen bg-[#FDF6EE] text-[#4A220D] flex flex-col pb-24 md:pb-8" dir="rtl">
       {/* Top Bar */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b-2 border-[#EADBC8]">
-        <div className="max-w-7xl mx-auto px-3 sm:px-6 min-h-14 sm:min-h-16 py-2 flex items-center justify-between gap-2 lg:gap-4">
+        {/* Row 1: Halaqa Identity + Primary Actions */}
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 min-h-14 sm:min-h-16 py-2 flex items-center justify-between gap-2 sm:gap-4">
           <div className="min-w-0 flex-1">
             <p className="text-[11px] sm:text-xs font-extrabold text-[#F56900] truncate">
               وضع المعلم · {context.mosqueName}
@@ -299,7 +300,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                     if (next) onSwitchContext(next);
                   }}
                   aria-label="تبديل الحلقة"
-                  className="min-h-[34px] max-w-[110px] sm:max-w-[180px] px-2 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE] text-[11px] sm:text-xs font-bold text-[#4A220D] cursor-pointer truncate shrink-0"
+                  className="min-h-[34px] max-w-[115px] sm:max-w-[200px] px-2 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE] text-[11px] sm:text-xs font-bold text-[#4A220D] cursor-pointer truncate shrink-0"
                 >
                   {availableContexts.map((ctx) => (
                     <option key={ctx.halaqaId} value={ctx.halaqaId}>
@@ -311,7 +312,42 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
             </div>
           </div>
 
-          <nav className="hidden lg:flex items-center gap-1 bg-[#FDF6EE] p-1 rounded-2xl border border-[#EADBC8] shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            <NotificationPermissionButton variant="compact" responsiveLabel="md" />
+            <PWAInstallButton variant="compact" responsiveLabel="md" />
+            <button
+              type="button"
+              onClick={onReturnToSupervisor}
+              className={`${
+                isStandaloneTeacher
+                  ? 'min-h-[40px] min-w-[40px] px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] font-display font-bold text-xs sm:text-sm'
+                  : 'duo-btn-green min-h-[40px] px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl sm:rounded-2xl font-display font-extrabold text-xs sm:text-sm'
+              } inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0`}
+              aria-label={isStandaloneTeacher ? 'تسجيل الخروج' : 'العودة لدور المشرف'}
+            >
+              {isStandaloneTeacher ? (
+                <>
+                  <LogOut className="w-4 h-4 shrink-0" />
+                  <span className="hidden md:inline">تسجيل الخروج</span>
+                  <span className="hidden sm:inline md:hidden">خروج</span>
+                </>
+              ) : (
+                <>
+                  <ArrowRight className="w-4 h-4 shrink-0" />
+                  <span className="hidden md:inline">العودة لدور المشرف</span>
+                  <span className="md:hidden">المشرف</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* Row 2: Dedicated Tablet & Laptop Navigation Tabs */}
+        <div className="hidden md:block border-t border-[#EADBC8]/70 bg-[#FDF6EE]/70">
+          <nav
+            aria-label="أقسام المعلم"
+            className="max-w-7xl mx-auto px-4 sm:px-6 py-1.5 flex items-center gap-1.5 overflow-x-auto no-scrollbar"
+          >
             {navItems.map((item) => {
               const Icon = item.icon;
               const active = tab === item.id;
@@ -326,7 +362,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
                       setActiveBookSession(null);
                     }
                   }}
-                  className={`min-h-[38px] px-2.5 xl:px-3 py-1.5 rounded-xl font-display text-xs xl:text-sm font-bold inline-flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap shrink-0 ${
+                  className={`min-h-[38px] px-3.5 py-1.5 rounded-xl font-display text-xs lg:text-sm font-bold inline-flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap shrink-0 ${
                     active
                       ? 'bg-[#F56900] text-white'
                       : 'text-[#7D4E35] hover:text-[#4A220D] hover:bg-white'
@@ -338,35 +374,6 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
               );
             })}
           </nav>
-
-          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-            <NotificationPermissionButton variant="compact" />
-            <PWAInstallButton variant="compact" />
-            <button
-              type="button"
-              onClick={onReturnToSupervisor}
-              className={`${
-                isStandaloneTeacher
-                  ? 'min-h-[40px] min-w-[40px] px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] font-display font-bold text-xs sm:text-sm'
-                  : 'duo-btn-green min-h-[40px] px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl sm:rounded-2xl font-display font-extrabold text-xs sm:text-sm'
-              } inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0`}
-              aria-label={isStandaloneTeacher ? 'تسجيل الخروج' : 'العودة لدور المشرف'}
-            >
-              {isStandaloneTeacher ? (
-                <>
-                  <LogOut className="w-4 h-4 shrink-0" />
-                  <span className="hidden xl:inline">تسجيل الخروج</span>
-                  <span className="hidden sm:inline xl:hidden">خروج</span>
-                </>
-              ) : (
-                <>
-                  <ArrowRight className="w-4 h-4 shrink-0" />
-                  <span className="hidden xl:inline">العودة لدور المشرف</span>
-                  <span className="xl:hidden">المشرف</span>
-                </>
-              )}
-            </button>
-          </div>
         </div>
       </header>
 
@@ -979,9 +986,9 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
       )}
     </main>
 
-      {/* Mobile & Tablet Fixed Bottom Navigation Bar */}
+      {/* Mobile Fixed Bottom Navigation Bar */}
       <nav
-        className="lg:hidden fixed bottom-0 inset-x-0 z-30 bg-white/95 backdrop-blur-md border-t-2 border-[#EADBC8] px-2 pt-1.5 pb-safe"
+        className="md:hidden fixed bottom-0 inset-x-0 z-30 bg-white/95 backdrop-blur-md border-t-2 border-[#EADBC8] px-2 pt-1.5 pb-safe"
         aria-label="تنقل المعلم"
       >
         <div className="max-w-lg mx-auto grid grid-cols-4 gap-1">

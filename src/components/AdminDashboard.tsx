@@ -212,10 +212,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
   const externalOnlyDbs = connectedDbs.filter((d) => !d.isPrimary);
 
   return (
-    <div className="min-h-screen bg-[#FDF6EE] text-[#4A220D] flex flex-col pb-24 lg:pb-0">
+    <div className="min-h-screen bg-[#FDF6EE] text-[#4A220D] flex flex-col pb-24 md:pb-0">
       {/* Top Bar */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b-2 border-[#EADBC8]">
-        <div className="max-w-7xl mx-auto px-3 sm:px-6 min-h-14 sm:min-h-16 py-2 flex items-center justify-between gap-2 lg:gap-4">
+        {/* Row 1: Brand + Primary Actions */}
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 min-h-14 sm:min-h-16 py-2 flex items-center justify-between gap-2 sm:gap-4">
           <button
             type="button"
             onClick={() => {
@@ -234,52 +235,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
             </span>
           </button>
 
-          {/* Desktop Navigation */}
-          <nav className="hidden lg:flex items-center gap-4 xl:gap-6" aria-label="التنقل الرئيسي">
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedComplex(null);
-                setPage('home');
-              }}
-              className={`min-h-[44px] px-3 font-display text-sm font-bold whitespace-nowrap shrink-0 border-b-2 transition-colors cursor-pointer ${
-                page === 'home' && !selectedComplex
-                  ? 'border-[#F56900] text-[#F56900]'
-                  : 'border-transparent text-[#7D4E35] hover:text-[#4A220D]'
-              }`}
-            >
-              الرئيسية
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedComplex(null);
-                setPage('complexes');
-              }}
-              className={`min-h-[44px] px-3 font-display text-sm font-bold whitespace-nowrap shrink-0 border-b-2 transition-colors cursor-pointer ${
-                page === 'complexes' || selectedComplex
-                  ? 'border-[#F56900] text-[#F56900]'
-                  : 'border-transparent text-[#7D4E35] hover:text-[#4A220D]'
-              }`}
-            >
-              المجمعات
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedComplex(null);
-                setPage('databases');
-              }}
-              className={`min-h-[44px] px-3 font-display text-sm font-bold whitespace-nowrap shrink-0 border-b-2 transition-colors cursor-pointer ${
-                page === 'databases' && !selectedComplex
-                  ? 'border-[#F56900] text-[#F56900]'
-                  : 'border-transparent text-[#7D4E35] hover:text-[#4A220D]'
-              }`}
-            >
-              قواعد البيانات
-            </button>
-          </nav>
-
           {/* Actions */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {auditingRules ? (
@@ -295,8 +250,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
                 className="min-h-[40px] sm:min-h-[42px] px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl border-2 border-[#D95338] bg-[#D95338]/10 hover:bg-[#D95338]/18 text-[#D95338] font-display font-extrabold text-xs inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <ShieldAlert className="w-4 h-4 shrink-0" />
-                <span className="hidden xl:inline">تحديث Rules ({rulesAuditReport.unhealthyDatabases.length})</span>
-                <span className="hidden sm:inline xl:hidden">Rules ({rulesAuditReport.unhealthyDatabases.length})</span>
+                <span className="hidden lg:inline">تحديث Rules ({rulesAuditReport.unhealthyDatabases.length})</span>
+                <span className="hidden sm:inline lg:hidden">Rules ({rulesAuditReport.unhealthyDatabases.length})</span>
                 <span className="sm:hidden tabular-nums">{rulesAuditReport.unhealthyDatabases.length}</span>
               </button>
             ) : rulesAuditReport &&
@@ -319,8 +274,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
                 className="min-h-[40px] sm:min-h-[42px] px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl border-2 border-[#58CC02]/50 bg-[#58CC02]/10 hover:bg-[#58CC02]/18 text-[#46A302] font-display font-extrabold text-xs inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <ShieldCheck className="w-4 h-4 shrink-0" />
-                <span className="hidden xl:inline">Rules سليمة ({rulesAuditReport.healthyCount}/{rulesAuditReport.totalDatabases})</span>
-                <span className="hidden sm:inline xl:hidden">Rules ({rulesAuditReport.healthyCount}/{rulesAuditReport.totalDatabases})</span>
+                <span className="hidden lg:inline">Rules سليمة ({rulesAuditReport.healthyCount}/{rulesAuditReport.totalDatabases})</span>
+                <span className="hidden sm:inline lg:hidden">Rules ({rulesAuditReport.healthyCount}/{rulesAuditReport.totalDatabases})</span>
                 <span className="sm:hidden tabular-nums">{rulesAuditReport.healthyCount}/{rulesAuditReport.totalDatabases}</span>
               </button>
             ) : null}
@@ -333,7 +288,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
               <Megaphone className="w-4 h-4 shrink-0" />
               <span className="hidden sm:inline">رسالة</span>
             </button>
-            <PWAInstallButton variant="compact" />
+            <PWAInstallButton variant="compact" responsiveLabel="md" />
             <button
               type="button"
               onClick={handleLogout}
@@ -341,10 +296,64 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
               className="min-h-[40px] min-w-[40px] sm:min-h-[42px] px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <LogOut className="w-4 h-4 shrink-0" />
-              <span className="hidden xl:inline">تسجيل الخروج</span>
-              <span className="hidden sm:inline xl:hidden">خروج</span>
+              <span className="hidden md:inline">تسجيل الخروج</span>
+              <span className="hidden sm:inline md:hidden">خروج</span>
             </button>
           </div>
+        </div>
+
+        {/* Row 2: Dedicated Tablet & Laptop Navigation */}
+        <div className="hidden md:block border-t border-[#EADBC8]/70 bg-[#FDF6EE]/70">
+          <nav
+            className="max-w-7xl mx-auto px-4 sm:px-6 py-1.5 flex items-center gap-2 overflow-x-auto no-scrollbar"
+            aria-label="التنقل الرئيسي"
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedComplex(null);
+                setPage('home');
+              }}
+              className={`min-h-[38px] px-3.5 py-1.5 rounded-xl font-display text-xs lg:text-sm font-bold whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 transition-colors cursor-pointer ${
+                page === 'home' && !selectedComplex
+                  ? 'bg-[#F56900] text-white'
+                  : 'text-[#7D4E35] hover:text-[#4A220D] hover:bg-white'
+              }`}
+            >
+              <Home className="w-4 h-4 shrink-0" />
+              <span>الرئيسية</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedComplex(null);
+                setPage('complexes');
+              }}
+              className={`min-h-[38px] px-3.5 py-1.5 rounded-xl font-display text-xs lg:text-sm font-bold whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 transition-colors cursor-pointer ${
+                page === 'complexes' || selectedComplex
+                  ? 'bg-[#F56900] text-white'
+                  : 'text-[#7D4E35] hover:text-[#4A220D] hover:bg-white'
+              }`}
+            >
+              <Building2 className="w-4 h-4 shrink-0" />
+              <span>المجمعات</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedComplex(null);
+                setPage('databases');
+              }}
+              className={`min-h-[38px] px-3.5 py-1.5 rounded-xl font-display text-xs lg:text-sm font-bold whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 transition-colors cursor-pointer ${
+                page === 'databases' && !selectedComplex
+                  ? 'bg-[#F56900] text-white'
+                  : 'text-[#7D4E35] hover:text-[#4A220D] hover:bg-white'
+              }`}
+            >
+              <Database className="w-4 h-4 shrink-0" />
+              <span>قواعد البيانات</span>
+            </button>
+          </nav>
         </div>
       </header>
 
@@ -782,7 +791,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ session }) => {
       {/* Mobile Bottom Nav */}
       <nav
         aria-label="تنقل المشرف للهاتف"
-        className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t-2 border-[#EADBC8] min-h-[64px] pt-1.5 pb-safe px-3 grid grid-cols-3 items-center"
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t-2 border-[#EADBC8] min-h-[64px] pt-1.5 pb-safe px-3 grid grid-cols-3 items-center"
       >
         <button
           type="button"

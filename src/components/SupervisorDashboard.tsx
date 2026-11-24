@@ -306,11 +306,12 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
   }
 
   return (
-    <div className="min-h-screen bg-[#FDF6EE] text-[#4A220D] flex flex-col justify-between pb-24 lg:pb-0">
+    <div className="min-h-screen bg-[#FDF6EE] text-[#4A220D] flex flex-col justify-between pb-24 md:pb-0">
       {/* Top Clean Navigation Header — Zero DB Details */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b-2 border-[#EADBC8]">
-        <div className="max-w-7xl mx-auto px-3 sm:px-6 min-h-14 sm:min-h-16 py-2 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+        {/* Row 1: Brand + Primary Actions */}
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 min-h-14 sm:min-h-16 py-2 flex items-center justify-between gap-2 sm:gap-4">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0 shrink-0 max-w-[185px] sm:max-w-[260px]">
             <img
               src={`${BASE_URL}icon.svg`}
               alt="براعم عمران"
@@ -322,7 +323,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                   براعم عمران
                 </span>
                 <span className="hidden xl:inline text-xs font-bold text-[#F56900] whitespace-nowrap">
-                  · {isComplexWide ? 'إشراف المجمع بالكامل' : 'إشراف المسجد'}
+                  · {isComplexWide ? 'إشراف المجمع' : 'إشراف المسجد'}
                 </span>
               </div>
               <p className="text-[11px] sm:text-xs font-bold text-[#7D4E35] truncate">
@@ -331,33 +332,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
             </div>
           </div>
 
-          {/* Desktop Main Tabs */}
-          <nav
-            aria-label="أقسام لوحة المشرف"
-            className="hidden lg:flex items-center gap-1 bg-[#FDF6EE] p-1 rounded-2xl border border-[#EADBC8]"
-          >
-            {navItems.map((item) => {
-              const Icon = item.icon;
-              const active = tab === item.id;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setTab(item.id)}
-                  className={`min-h-[38px] px-2.5 xl:px-3.5 py-1.5 rounded-xl font-display text-xs xl:text-sm font-bold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors ${
-                    active
-                      ? 'bg-[#F56900] text-white'
-                      : 'text-[#7D4E35] hover:text-[#4A220D] hover:bg-white'
-                  }`}
-                >
-                  <Icon className="w-4 h-4 shrink-0" />
-                  <span>{item.label}</span>
-                </button>
-              );
-            })}
-          </nav>
-
-          {/* Actions: Mobile compact + Tablet/Desktop inline */}
+          {/* Actions: Mobile compact + Tablet/Laptop inline */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {!loading && workspace && (
               <>
@@ -365,7 +340,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                   type="button"
                   onClick={() => setMessageModalOpen(true)}
                   aria-label="إرسال رسالة"
-                  className="hidden sm:inline-flex duo-btn-orange min-h-[40px] min-w-[40px] px-2.5 sm:px-3 py-1.5 rounded-xl font-display font-extrabold text-xs items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+                  className="hidden sm:inline-flex duo-btn-orange min-h-[40px] min-w-[40px] px-2.5 lg:px-3 py-1.5 rounded-xl font-display font-extrabold text-xs items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
                 >
                   <Megaphone className="w-4 h-4 shrink-0" />
                   <span>رسالة</span>
@@ -374,24 +349,25 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                   type="button"
                   onClick={openTeacherPicker}
                   aria-label="الانتقال لدور المعلم"
-                  className="hidden sm:inline-flex duo-btn-green min-h-[40px] px-2.5 sm:px-3 py-1.5 rounded-xl font-display font-bold text-xs items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+                  className="hidden sm:inline-flex duo-btn-green min-h-[40px] px-2.5 lg:px-3 py-1.5 rounded-xl font-display font-bold text-xs items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
                 >
                   <ArrowLeftRight className="w-4 h-4 shrink-0" />
-                  <span className="hidden xl:inline">الانتقال لدور المعلم</span>
-                  <span className="xl:hidden">المعلم</span>
+                  <span className="hidden lg:inline">دور المعلم</span>
+                  <span className="lg:hidden">المعلم</span>
                 </button>
               </>
             )}
 
-            <NotificationPermissionButton variant="compact" />
-            <PWAInstallButton variant="compact" />
+            <NotificationPermissionButton variant="compact" responsiveLabel="lg" />
+            <PWAInstallButton variant="compact" responsiveLabel="md" />
 
             <button
               type="button"
               onClick={() => void loadAll(true)}
               disabled={refreshing || loading}
               aria-label="تحديث البيانات"
-              className="hidden sm:inline-flex min-h-[40px] min-w-[40px] px-2.5 py-1.5 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] items-center justify-center gap-1.5 font-display font-bold text-xs cursor-pointer disabled:opacity-50"
+              title="تحديث البيانات"
+              className="hidden sm:inline-flex min-h-[40px] min-w-[40px] px-2.5 py-1.5 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] items-center justify-center gap-1.5 font-display font-bold text-xs cursor-pointer disabled:opacity-50 shrink-0"
             >
               <RefreshCw
                 className={`w-4 h-4 text-[#F56900] ${refreshing ? 'animate-spin' : ''}`}
@@ -403,11 +379,11 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
               type="button"
               onClick={handleLogout}
               aria-label="تسجيل الخروج"
-              className="min-h-[40px] min-w-[40px] px-2.5 sm:px-3 py-1.5 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+              className="min-h-[40px] min-w-[40px] px-2.5 sm:px-3 py-1.5 rounded-xl border-2 border-[#EADBC8] bg-white hover:bg-[#FDF6EE] text-[#7D4E35] hover:text-[#4A220D] font-display font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
             >
               <LogOut className="w-4 h-4 shrink-0" />
-              <span className="hidden xl:inline">تسجيل الخروج</span>
-              <span className="hidden sm:inline xl:hidden">خروج</span>
+              <span className="hidden lg:inline">تسجيل الخروج</span>
+              <span className="hidden sm:inline lg:hidden">خروج</span>
             </button>
 
             {/* Mobile Overflow Menu for Secondary Header Actions */}
@@ -478,6 +454,34 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
               )}
             </div>
           </div>
+        </div>
+
+        {/* Row 2: Dedicated Tablet & Laptop Navigation Tabs */}
+        <div className="hidden md:block border-t border-[#EADBC8]/70 bg-[#FDF6EE]/70">
+          <nav
+            aria-label="أقسام لوحة المشرف"
+            className="max-w-7xl mx-auto px-4 sm:px-6 py-1.5 flex items-center gap-1.5 overflow-x-auto no-scrollbar"
+          >
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              const active = tab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setTab(item.id)}
+                  className={`min-h-[38px] px-3.5 py-1.5 rounded-xl font-display text-xs lg:text-sm font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                    active
+                      ? 'bg-[#F56900] text-white'
+                      : 'text-[#7D4E35] hover:text-[#4A220D] hover:bg-white'
+                  }`}
+                >
+                  <Icon className="w-4 h-4 shrink-0" />
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </nav>
         </div>
       </header>
 
@@ -560,7 +564,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                 </div>
 
                 {/* 5 Core KPI Cards */}
-                <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
                   <div className="bg-white border-2 border-[#EADBC8] rounded-3xl p-4 sm:p-5">
                     <div className="flex items-center justify-between gap-2 mb-2">
                       <span className="text-xs font-bold text-[#7D4E35]">
@@ -997,10 +1001,10 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
         )}
       </main>
 
-      {/* Mobile & Tablet Bottom Navigation */}
+      {/* Mobile Bottom Navigation */}
       <nav
         aria-label="التنقل السفلي للمشرف"
-        className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-white/95 backdrop-blur-md border-t-2 border-[#EADBC8] px-1.5 pt-1.5 pb-safe flex items-center justify-around gap-1"
+        className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-white/95 backdrop-blur-md border-t-2 border-[#EADBC8] px-1.5 pt-1.5 pb-safe flex items-center justify-around gap-1"
       >
         {navItems.map((item) => {
           const Icon = item.icon;
@@ -1162,7 +1166,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
         />
       )}
 
-      <footer className="hidden lg:block py-4 px-4 text-center text-xs sm:text-sm font-medium text-[#7D4E35]">
+      <footer className="hidden md:block py-4 px-4 text-center text-xs sm:text-sm font-medium text-[#7D4E35]">
         منصة براعم عمران · جميع الحقوق محفوظة لاستيديو expraiment
       </footer>
     </div>
