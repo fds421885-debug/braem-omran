@@ -25,7 +25,9 @@ import {
 import {
   computeSegmentTahajjiContext,
   generateNoorAlBayanClientFallback,
+  inferArabicDiacriticsForWord,
   isWordStartingWithHamzatWasl,
+  normalizeUthmaniForTts,
 } from '../services/clientArabicEngine';
 import { getReciterAyahAudioUrl } from '../services/multiDb';
 import {
@@ -195,10 +197,13 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
   const [audioDuration, setAudioDuration] = useState(0);
   const [wordAudioStatus, setWordAudioStatus] = useState<string | null>(null);
 
-  // Continuous Reading Mode State (القراءة المتواصلة)
-  const [continuousMode, setContinuousMode] = useState<'noor_albayan' | 'normal'>('noor_albayan');
+  // Continuous Reading Mode State (القراءة المتواصلة ووضع البداية والنهاية التجميعي)
+  const [continuousMode, setContinuousMode] = useState<
+    'noor_albayan' | 'cumulative_tahajji' | 'normal'
+  >('noor_albayan');
   const [continuousStartId, setContinuousStartId] = useState<string>('');
-  const [pickingContinuousStart, setPickingContinuousStart] = useState(false);
+  const [continuousEndId, setContinuousEndId] = useState<string>('');
+  const [pickingBoundary, setPickingBoundary] = useState<'start' | 'end' | null>(null);
   const [continuousAutoNextPage, setContinuousAutoNextPage] = useState(true);
   const [continuousStatus, setContinuousStatus] = useState<'idle' | 'playing' | 'paused'>('idle');
   const [continuousProgress, setContinuousProgress] = useState<{
@@ -207,6 +212,7 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
     wordText: string;
     pageNumber: number;
     sourceLabel: string;
+    cumulativePhrase?: string;
   } | null>(null);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -218,10 +224,21 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
   const continuousPositionRef = useRef<{
     pageIndex: number;
     segIndex: number;
-    mode: 'noor_albayan' | 'normal';
-  }>({ pageIndex: 0, segIndex: 0, mode: 'noor_albayan' });
+    mode: 'noor_albayan' | 'cumulative_tahajji' | 'normal';
+    anchorPageIndex: number;
+    anchorSegIndex: number;
+    endSegId: string;
+  }>({
+    pageIndex: 0,
+    segIndex: 0,
+    mode: 'noor_albayan',
+    anchorPageIndex: 0,
+    anchorSegIndex: 0,
+    endSegId: '',
+  });
   const wordChipRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const prefetchMapRef = useRef<Map<string, Promise<ResolvedWordAudio>>>(new Map());
+  const phrasePrefetchMapRef = useRef<Map<string, Promise<{ base64Wav: string; mimeType: string; cacheKey: string } | null>>>(new Map());
   const dbRecordSessionCacheRef = useRef<Map<string, BookWordAudioRecord | null>>(new Map());
   const activeNavSeqRef = useRef<number>(manualNavigationSeq);
   const selectedSegmentIdRef = useRef<string | null>(null);
@@ -343,7 +360,7 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
   const stopContinuousReading = useCallback(() => {
     continuousTokenRef.current++;
     continuousPausedRef.current = false;
-    setPickingContinuousStart(false);
+    setPickingBoundary(null);
     setContinuousStatus('idle');
     setContinuousProgress(null);
     stopAndResetAudio();
@@ -391,7 +408,7 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
       if (!normalizedText) return null;
       const contextSuffix = mode === 'noor_albayan' ? ctx?.contextSuffix || '' : '';
       const cacheKey = `${
-        mode === 'noor_albayan' ? `fath_v3${contextSuffix}` : 'normal_v2'
+        mode === 'noor_albayan' ? `fath_v4${contextSuffix}` : 'normal_v2'
       }_${normalizedText}`;
       const instantLocal =
         mode === 'noor_albayan'
@@ -517,6 +534,8 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
     setSelectedSegment(first);
     selectedSegmentIdRef.current = first?.id || null;
     setContinuousStartId(first?.id || '');
+    setContinuousEndId('');
+    setPickingBoundary(null);
     setNoorSteps([]);
     setNoorFullReading('');
     setNoorDiacritizedWord('');
@@ -892,7 +911,7 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
       const ctx = getSegmentContext(seg, options?.segments);
       const contextSuffix = mode === 'noor_albayan' ? ctx.contextSuffix : '';
       const cacheKey = `${
-        mode === 'noor_albayan' ? `fath_v3${contextSuffix}` : 'normal_v2'
+        mode === 'noor_albayan' ? `fath_v4${contextSuffix}` : 'normal_v2'
       }_${normalizedText}`;
 
       const applyBreakdownUi = (data: {
@@ -1224,14 +1243,37 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
   );
 
   const handleSelectSegment = (seg: BookTextSegment) => {
-    if (pickingContinuousStart) {
+    if (pickingBoundary === 'start') {
+      const pickedIdx = activeSegments.findIndex((s) => s.id === seg.id);
+      const endIdx = continuousEndId
+        ? activeSegments.findIndex((s) => s.id === continuousEndId)
+        : -1;
       setContinuousStartId(seg.id);
+      if (endIdx >= 0 && pickedIdx > endIdx) {
+        setContinuousEndId('');
+      }
       setSelectedSegment(seg);
-      setPickingContinuousStart(false);
+      setPickingBoundary(null);
       setAudioError(null);
       void hydrateSegmentSavedInfo(seg);
       return;
     }
+    if (pickingBoundary === 'end') {
+      const pickedIdx = activeSegments.findIndex((s) => s.id === seg.id);
+      const startIdx = continuousStartId
+        ? activeSegments.findIndex((s) => s.id === continuousStartId)
+        : -1;
+      setContinuousEndId(seg.id);
+      if (startIdx < 0 || startIdx > pickedIdx) {
+        setContinuousStartId(seg.id);
+        setSelectedSegment(seg);
+        void hydrateSegmentSavedInfo(seg);
+      }
+      setPickingBoundary(null);
+      setAudioError(null);
+      return;
+    }
+
     if (continuousStatus !== 'idle') {
       stopContinuousReading();
     } else {
@@ -1239,6 +1281,13 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
     }
     setSelectedSegment(seg);
     setContinuousStartId(seg.id);
+    if (continuousEndId) {
+      const pickedIdx = activeSegments.findIndex((s) => s.id === seg.id);
+      const endIdx = activeSegments.findIndex((s) => s.id === continuousEndId);
+      if (endIdx >= 0 && pickedIdx > endIdx) {
+        setContinuousEndId('');
+      }
+    }
     setNoorSteps([]);
     setNoorFullReading('');
     setNoorDiacritizedWord('');
@@ -1250,25 +1299,142 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
     if (autoPlayOnTap) {
       if (seg.kind === 'ayah' && seg.surahNumber && seg.ayahNumber) {
         void handlePlaySheikhAyah(undefined, seg);
-      } else if (continuousMode === 'noor_albayan') {
-        void handlePlayNoorAlBayan(seg);
-      } else {
+      } else if (continuousMode === 'normal') {
         void handlePlayNormalReading(seg);
+      } else {
+        void handlePlayNoorAlBayan(seg);
       }
     }
   };
 
-  const handlePlaySingleNoorStep = (step: NoorAlBayanStep) => {
-    if (continuousStatus !== 'idle') {
-      stopContinuousReading();
-    }
-    const bareShortVowelLabels = new Set(['فتحة', 'ضمة', 'كسرة', 'حرف متحرك']);
-    const line =
-      bareShortVowelLabels.has(step.ruleLabel) || !step.ruleLabel
-        ? step.reading
-        : `${step.ruleLabel}، ${step.reading}`;
-    playBrowserSpeech('noor_albayan', line);
-  };
+  const resolveConnectedPhraseAudio = useCallback(
+    async (
+      phraseText: string
+    ): Promise<{ base64Wav: string; mimeType: string; cacheKey: string } | null> => {
+      const cleanPhrase = normalizeUthmaniForTts(phraseText) || phraseText.trim();
+      if (!cleanPhrase) return null;
+      const cacheKey = `phrase_v4_${cleanPhrase}`;
+      const local = await getCachedAudioEntry(cacheKey);
+      if (local?.base64Wav && local.base64Wav.length > 120) {
+        return {
+          base64Wav: local.base64Wav,
+          mimeType: local.mimeType || 'audio/wav',
+          cacheKey,
+        };
+      }
+      const existing = phrasePrefetchMapRef.current.get(cacheKey);
+      if (existing) return existing;
+
+      const work = (async () => {
+        try {
+          const tts = await synthesizeSpeechOnServer({
+            text: cleanPhrase,
+            mode: 'normal',
+          });
+          if (tts.engine === 'server_wav' && tts.audioBase64.length > 120) {
+            await saveCachedAudioEntry({
+              key: cacheKey,
+              base64Wav: tts.audioBase64,
+              mimeType: tts.mimeType || 'audio/wav',
+              diacritizedWord: cleanPhrase,
+              fullReading: cleanPhrase,
+              updatedAtMs: Date.now(),
+            });
+            return {
+              base64Wav: tts.audioBase64,
+              mimeType: tts.mimeType || 'audio/wav',
+              cacheKey,
+            };
+          }
+        } catch {
+          // Fall back cleanly in caller
+        }
+        return null;
+      })();
+
+      phrasePrefetchMapRef.current.set(cacheKey, work);
+      try {
+        return await work;
+      } finally {
+        phrasePrefetchMapRef.current.delete(cacheKey);
+      }
+    },
+    []
+  );
+
+  const handlePlaySingleNoorStep = useCallback(
+    async (step: NoorAlBayanStep) => {
+      if (continuousStatus !== 'idle') {
+        stopContinuousReading();
+      }
+      const bareShortVowelLabels = new Set(['فتحة', 'ضمة', 'كسرة', 'حرف متحرك']);
+      const silentAlifLabels =
+        step.ruleLabel.includes('تسقط وصلاً') ||
+        step.ruleLabel.includes('لا يُنطق') ||
+        step.ruleLabel.includes('لا تُنطق');
+
+      let rawLine: string;
+      if (!step.ruleLabel || bareShortVowelLabels.has(step.ruleLabel)) {
+        rawLine = step.reading;
+      } else if (
+        silentAlifLabels &&
+        (!step.reading || step.reading === step.part || step.reading === 'ا' || step.reading === 'ٱ')
+      ) {
+        rawLine = step.ruleLabel;
+      } else {
+        rawLine = `${step.ruleLabel}، ${step.reading}`;
+      }
+
+      const spokenStep = normalizeUthmaniForTts(rawLine) || rawLine.trim();
+      if (!spokenStep) return;
+
+      const callToken = ++audioRunTokenRef.current;
+      const stepCacheKey = `step_v4_${spokenStep}`;
+      setAudioError(null);
+      setAudioLoadingMode('noor_albayan');
+
+      try {
+        let wav = await getCachedAudioEntry(stepCacheKey);
+        if (!wav || !wav.base64Wav || wav.base64Wav.length <= 120) {
+          const tts = await synthesizeSpeechOnServer({
+            text: spokenStep,
+            mode: 'noor_albayan',
+          }).catch(() => null);
+          if (tts && tts.engine === 'server_wav' && tts.audioBase64.length > 120) {
+            wav = {
+              key: stepCacheKey,
+              base64Wav: tts.audioBase64,
+              mimeType: tts.mimeType || 'audio/wav',
+              diacritizedWord: spokenStep,
+              fullReading: spokenStep,
+              updatedAtMs: Date.now(),
+            };
+            void saveCachedAudioEntry(wav);
+          }
+        }
+        if (audioRunTokenRef.current !== callToken) return;
+        if (wav?.base64Wav && wav.base64Wav.length > 120) {
+          const url = base64AudioToObjectUrl(wav.base64Wav, wav.mimeType || 'audio/wav');
+          await playAudioSource(
+            'noor_albayan',
+            url,
+            true,
+            () => playBrowserSpeech('noor_albayan', spokenStep),
+            stepCacheKey
+          );
+        } else {
+          playBrowserSpeech('noor_albayan', spokenStep);
+        }
+      } catch {
+        playBrowserSpeech('noor_albayan', spokenStep);
+      } finally {
+        if (audioRunTokenRef.current === callToken) {
+          setAudioLoadingMode(null);
+        }
+      }
+    },
+    [continuousStatus, playAudioSource, playBrowserSpeech, stopContinuousReading]
+  );
 
   const getSegmentsForPage = (p?: BookPageRecord): BookTextSegment[] => {
     if (!p) return [];
@@ -1290,15 +1456,39 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
     async (
       startPageIdx: number,
       startSegIdx: number,
-      mode: 'noor_albayan' | 'normal'
+      mode: 'noor_albayan' | 'cumulative_tahajji' | 'normal',
+      anchorPageIdx: number,
+      anchorSegIdx: number,
+      endSegId: string
     ) => {
       const loopToken = ++continuousTokenRef.current;
       continuousPausedRef.current = false;
-      setPickingContinuousStart(false);
+      setPickingBoundary(null);
       setContinuousStatus('playing');
       setAudioError(null);
 
-      for (let pIdx = startPageIdx; pIdx < pages.length; pIdx++) {
+      const wordAudioMode: 'noor_albayan' | 'normal' =
+        mode === 'normal' ? 'normal' : 'noor_albayan';
+
+      const buildCumulativePhraseText = (currPIdx: number, currSIdx: number): string => {
+        const collected: string[] = [];
+        for (let p = anchorPageIdx; p <= currPIdx; p++) {
+          const pSegs = getSegmentsForPage(pages[p]);
+          const fromIdx = p === anchorPageIdx ? anchorSegIdx : 0;
+          const toIdx = p === currPIdx ? currSIdx : pSegs.length - 1;
+          for (let s = fromIdx; s <= toIdx; s++) {
+            const item = pSegs[s];
+            if (!item) continue;
+            const voc = inferArabicDiacriticsForWord(item.text).vocalized || item.text;
+            collected.push(voc);
+          }
+        }
+        return normalizeUthmaniForTts(collected.join(' ')) || collected.join(' ');
+      };
+
+      let reachedEnd = false;
+
+      for (let pIdx = startPageIdx; pIdx < pages.length && !reachedEnd; pIdx++) {
         if (continuousTokenRef.current !== loopToken || continuousPausedRef.current) return;
         const page = pages[pIdx];
         const segs = getSegmentsForPage(page);
@@ -1315,9 +1505,15 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
         for (let sIdx = firstSegIdx; sIdx < segs.length; sIdx++) {
           if (continuousTokenRef.current !== loopToken || continuousPausedRef.current) return;
           const seg = segs[sIdx];
-          continuousPositionRef.current = { pageIndex: pIdx, segIndex: sIdx, mode };
+          continuousPositionRef.current = {
+            pageIndex: pIdx,
+            segIndex: sIdx,
+            mode,
+            anchorPageIndex: anchorPageIdx,
+            anchorSegIndex: anchorSegIdx,
+            endSegId,
+          };
           setSelectedSegment(seg);
-          setContinuousStartId(seg.id);
 
           const chipEl = wordChipRefs.current[seg.id];
           if (chipEl) {
@@ -1332,17 +1528,34 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
             sourceLabel: 'جاري البحث في قاعدة المكتبة وتجهيز الصوت...',
           });
 
-          const nextSegOnSamePage = segs[sIdx + 1];
-          const nextPageSegs = continuousAutoNextPage ? getSegmentsForPage(pages[pIdx + 1]) : [];
+          const nextSegOnSamePage =
+            endSegId && seg.id === endSegId ? undefined : segs[sIdx + 1];
+          const nextPageSegs =
+            continuousAutoNextPage && !(endSegId && seg.id === endSegId)
+              ? getSegmentsForPage(pages[pIdx + 1])
+              : [];
           const nextSeg = nextSegOnSamePage || nextPageSegs[0];
           if (nextSeg) {
-            void resolveSegmentAudio(nextSeg, mode, {
+            void resolveSegmentAudio(nextSeg, wordAudioMode, {
               showUi: false,
               segments: nextSegOnSamePage ? segs : nextPageSegs,
             }).catch(() => {});
           }
 
-          const resolved = await resolveSegmentAudio(seg, mode, {
+          // Prefetch cumulative connected phrase while current word's Tahajji plays
+          const currentPhraseText =
+            mode === 'cumulative_tahajji'
+              ? buildCumulativePhraseText(pIdx, sIdx)
+              : '';
+          const isCumulativeStep =
+            mode === 'cumulative_tahajji' &&
+            (pIdx > anchorPageIdx || sIdx > anchorSegIdx) &&
+            currentPhraseText.length > 0;
+          if (isCumulativeStep) {
+            void resolveConnectedPhraseAudio(currentPhraseText).catch(() => {});
+          }
+
+          const resolved = await resolveSegmentAudio(seg, wordAudioMode, {
             showUi: true,
             segments: segs,
           });
@@ -1366,7 +1579,7 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
               settled = true;
               resolve();
             };
-            const safetyMaxWait = mode === 'noor_albayan' ? 28000 : 14000;
+            const safetyMaxWait = wordAudioMode === 'noor_albayan' ? 28000 : 14000;
             const safetyTimer = window.setTimeout(done, safetyMaxWait);
             const finishWord = () => {
               window.clearTimeout(safetyTimer);
@@ -1377,23 +1590,82 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
             if (resolved.audioBase64 && resolved.audioBase64.length > 120) {
               const url = base64AudioToObjectUrl(resolved.audioBase64, resolved.mimeType);
               void playAudioSource(
-                mode,
+                wordAudioMode,
                 url,
                 true,
-                () => playBrowserSpeech(mode, script, 0, finishWord),
+                () => playBrowserSpeech(wordAudioMode, script, 0, finishWord),
                 resolved.cacheKey,
                 finishWord
               );
             } else {
-              playBrowserSpeech(mode, script, 0, finishWord);
+              playBrowserSpeech(wordAudioMode, script, 0, finishWord);
             }
           });
 
           if (continuousTokenRef.current !== loopToken || continuousPausedRef.current) return;
-          await new Promise((r) => window.setTimeout(r, mode === 'noor_albayan' ? 260 : 180));
+
+          // If in Cumulative Tahajji mode and we have accumulated > 1 word, read the connected phrase!
+          if (isCumulativeStep) {
+            await new Promise((r) => window.setTimeout(r, 180));
+            if (continuousTokenRef.current !== loopToken || continuousPausedRef.current) return;
+
+            setContinuousProgress({
+              currentIndex: sIdx + 1,
+              totalCount: segs.length,
+              wordText: seg.text,
+              pageNumber: page.pageNumber,
+              sourceLabel: 'الربط التجميعي من البداية حتى هذه الكلمة',
+              cumulativePhrase: currentPhraseText,
+            });
+
+            const phraseWav = await resolveConnectedPhraseAudio(currentPhraseText);
+            if (continuousTokenRef.current !== loopToken || continuousPausedRef.current) return;
+
+            await new Promise<void>((resolve) => {
+              let settled = false;
+              const done = () => {
+                if (settled) return;
+                settled = true;
+                resolve();
+              };
+              const safetyTimer = window.setTimeout(
+                done,
+                Math.min(45000, Math.max(12000, currentPhraseText.length * 140))
+              );
+              const finishPhrase = () => {
+                window.clearTimeout(safetyTimer);
+                done();
+              };
+
+              if (phraseWav && phraseWav.base64Wav.length > 120) {
+                const url = base64AudioToObjectUrl(phraseWav.base64Wav, phraseWav.mimeType);
+                void playAudioSource(
+                  'normal',
+                  url,
+                  true,
+                  () => playBrowserSpeech('normal', currentPhraseText, 0, finishPhrase),
+                  phraseWav.cacheKey,
+                  finishPhrase
+                );
+              } else {
+                playBrowserSpeech('normal', currentPhraseText, 0, finishPhrase);
+              }
+            });
+
+            if (continuousTokenRef.current !== loopToken || continuousPausedRef.current) return;
+          }
+
+          if (endSegId && seg.id === endSegId) {
+            reachedEnd = true;
+            break;
+          }
+
+          await new Promise((r) =>
+            window.setTimeout(r, wordAudioMode === 'noor_albayan' ? 240 : 180)
+          );
         }
 
-        if (!continuousAutoNextPage) break;
+        if (!continuousAutoNextPage || reachedEnd) break;
       }
 
       if (continuousTokenRef.current === loopToken && !continuousPausedRef.current) {
@@ -1408,6 +1680,7 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
       pages,
       playAudioSource,
       playBrowserSpeech,
+      resolveConnectedPhraseAudio,
       resolveSegmentAudio,
     ]
   );
@@ -1419,7 +1692,23 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
       startIdx = activeSegments.findIndex((s) => s.id === selectedSegment.id);
     }
     if (startIdx < 0) startIdx = 0;
-    void runContinuousFrom(currentPageIndex, startIdx, continuousMode);
+
+    let validEndId = continuousEndId;
+    if (validEndId) {
+      const endIdx = activeSegments.findIndex((s) => s.id === validEndId);
+      if (endIdx < startIdx) {
+        validEndId = '';
+      }
+    }
+
+    void runContinuousFrom(
+      currentPageIndex,
+      startIdx,
+      continuousMode,
+      currentPageIndex,
+      startIdx,
+      validEndId
+    );
   };
 
   const handlePauseContinuousReading = () => {
@@ -1431,7 +1720,14 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
 
   const handleResumeContinuousReading = () => {
     const pos = continuousPositionRef.current;
-    void runContinuousFrom(pos.pageIndex, pos.segIndex, pos.mode);
+    void runContinuousFrom(
+      pos.pageIndex,
+      pos.segIndex,
+      pos.mode,
+      pos.anchorPageIndex,
+      pos.anchorSegIndex,
+      pos.endSegId
+    );
   };
 
   const handlePauseAudio = () => {
@@ -1532,8 +1828,8 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
                 <span>نطق مباشر عند لمس الكلمة: {autoPlayOnTap ? 'مفعّل' : 'متوقف'}</span>
               </button>
 
-              {/* Mode Selector */}
-              <div className="flex items-center gap-1.5 bg-[#FDF6EE] border border-[#EADBC8] rounded-2xl p-1">
+              {/* Mode Selector: بالتهجي / تهجي تجميعي / سريعة */}
+              <div className="flex flex-wrap items-center gap-1.5 bg-[#FDF6EE] border border-[#EADBC8] rounded-2xl p-1">
                 <button
                   type="button"
                   disabled={continuousStatus === 'playing'}
@@ -1545,6 +1841,18 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
                   }`}
                 >
                   بالتهجي (الفتح الرباني)
+                </button>
+                <button
+                  type="button"
+                  disabled={continuousStatus === 'playing'}
+                  onClick={() => setContinuousMode('cumulative_tahajji')}
+                  className={`min-h-[36px] px-3 rounded-xl font-display font-bold text-xs cursor-pointer transition-colors disabled:opacity-60 ${
+                    continuousMode === 'cumulative_tahajji'
+                      ? 'bg-[#8B5CF6] text-white'
+                      : 'text-[#4A220D] hover:bg-white'
+                  }`}
+                >
+                  تهجي تجميعي (من البداية)
                 </button>
                 <button
                   type="button"
@@ -1563,12 +1871,13 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-center">
-            <div className="lg:col-span-5 flex items-center gap-2">
+            {/* Start word selector */}
+            <div className="lg:col-span-4 flex items-center gap-1.5">
               <label
                 htmlFor="teacher-continuous-start-select"
                 className="text-xs font-bold text-[#7D4E35] shrink-0 whitespace-nowrap"
               >
-                ابدأ من الكلمة:
+                ابدأ من:
               </label>
               <select
                 id="teacher-continuous-start-select"
@@ -1579,46 +1888,111 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
                   if (seg) {
                     setContinuousStartId(seg.id);
                     setSelectedSegment(seg);
+                    if (continuousEndId) {
+                      const sI = activeSegments.findIndex((x) => x.id === seg.id);
+                      const eI = activeSegments.findIndex((x) => x.id === continuousEndId);
+                      if (eI >= 0 && sI > eI) setContinuousEndId('');
+                    }
                     void hydrateSegmentSavedInfo(seg);
                   }
                 }}
-                className="w-full min-h-[42px] px-3 py-1.5 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE]/70 text-xs sm:text-sm font-bold text-[#4A220D]"
+                className="w-full min-w-0 min-h-[42px] px-2.5 py-1.5 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE]/70 text-xs font-bold text-[#4A220D]"
               >
                 {activeSegments.map((seg, i) => (
                   <option key={seg.id} value={seg.id}>
-                    {toArabicIndicDigits(i + 1)}. {seg.text.slice(0, 42)}
+                    {toArabicIndicDigits(i + 1)}. {seg.text.slice(0, 32)}
                   </option>
                 ))}
               </select>
-            </div>
-
-            <div className="lg:col-span-3 flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 disabled={continuousStatus === 'playing'}
-                onClick={() => setPickingContinuousStart((p) => !p)}
-                className={`min-h-[42px] px-3 rounded-xl border-2 font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50 ${
-                  pickingContinuousStart
+                onClick={() =>
+                  setPickingBoundary((p) => (p === 'start' ? null : 'start'))
+                }
+                title="تحديد كلمة البداية بالنقر"
+                className={`min-h-[42px] px-2.5 rounded-xl border-2 font-display font-bold text-xs inline-flex items-center gap-1 shrink-0 cursor-pointer disabled:opacity-50 ${
+                  pickingBoundary === 'start'
                     ? 'bg-[#F56900] border-[#C95200] text-white'
                     : 'bg-[#FDF6EE] border-[#EADBC8] text-[#4A220D] hover:border-[#F56900]'
                 }`}
               >
                 <Crosshair className="w-3.5 h-3.5 shrink-0" />
-                <span>{pickingContinuousStart ? 'انقر على أي كلمة...' : 'تحديد بالنقر'}</span>
+                <span className="hidden sm:inline">
+                  {pickingBoundary === 'start' ? 'انقر...' : 'بداية'}
+                </span>
               </button>
-
-              <label className="inline-flex items-center gap-1.5 text-xs font-bold text-[#4A220D] cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={continuousAutoNextPage}
-                  onChange={(e) => setContinuousAutoNextPage(e.target.checked)}
-                  className="w-4 h-4 accent-[#58CC02] rounded cursor-pointer"
-                />
-                <span>التالي تلقائياً</span>
-              </label>
             </div>
 
-            <div className="lg:col-span-4 flex flex-wrap items-center justify-end gap-2">
+            {/* End word selector */}
+            <div className="lg:col-span-4 flex items-center gap-1.5">
+              <label
+                htmlFor="teacher-continuous-end-select"
+                className="text-xs font-bold text-[#7D4E35] shrink-0 whitespace-nowrap"
+              >
+                انتهِ عند:
+              </label>
+              <select
+                id="teacher-continuous-end-select"
+                disabled={continuousStatus === 'playing'}
+                value={continuousEndId}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setContinuousEndId(val);
+                  if (val) {
+                    const eI = activeSegments.findIndex((x) => x.id === val);
+                    const sI = activeSegments.findIndex((x) => x.id === continuousStartId);
+                    if (sI < 0 || sI > eI) {
+                      const endSeg = activeSegments[eI];
+                      if (endSeg) {
+                        setContinuousStartId(endSeg.id);
+                        setSelectedSegment(endSeg);
+                      }
+                    }
+                  }
+                }}
+                className="w-full min-w-0 min-h-[42px] px-2.5 py-1.5 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE]/70 text-xs font-bold text-[#4A220D]"
+              >
+                <option value="">حتى نهاية الصفحة</option>
+                {activeSegments.map((seg, i) => (
+                  <option key={seg.id} value={seg.id}>
+                    {toArabicIndicDigits(i + 1)}. {seg.text.slice(0, 32)}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                disabled={continuousStatus === 'playing'}
+                onClick={() =>
+                  setPickingBoundary((p) => (p === 'end' ? null : 'end'))
+                }
+                title="تحديد كلمة النهاية بالنقر"
+                className={`min-h-[42px] px-2.5 rounded-xl border-2 font-display font-bold text-xs inline-flex items-center gap-1 shrink-0 cursor-pointer disabled:opacity-50 ${
+                  pickingBoundary === 'end'
+                    ? 'bg-[#46A302] border-[#357D01] text-white'
+                    : 'bg-[#FDF6EE] border-[#EADBC8] text-[#4A220D] hover:border-[#46A302]'
+                }`}
+              >
+                <Crosshair className="w-3.5 h-3.5 shrink-0" />
+                <span className="hidden sm:inline">
+                  {pickingBoundary === 'end' ? 'انقر...' : 'نهاية'}
+                </span>
+              </button>
+            </div>
+
+            <div className="lg:col-span-4 flex flex-wrap items-center justify-between lg:justify-end gap-2">
+              {!continuousEndId && (
+                <label className="inline-flex items-center gap-1.5 text-xs font-bold text-[#4A220D] cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={continuousAutoNextPage}
+                    onChange={(e) => setContinuousAutoNextPage(e.target.checked)}
+                    className="w-4 h-4 accent-[#58CC02] rounded cursor-pointer"
+                  />
+                  <span>التالي تلقائياً</span>
+                </label>
+              )}
+
               {continuousStatus === 'idle' && (
                 <button
                   type="button"
@@ -1626,7 +2000,11 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
                   className="duo-btn-green w-full sm:w-auto min-h-[44px] px-5 rounded-xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <Play className="w-4 h-4 shrink-0" />
-                  <span>ابدأ القراءة المتواصلة</span>
+                  <span>
+                    {continuousMode === 'cumulative_tahajji'
+                      ? 'ابدأ التهجي التجميعي'
+                      : 'ابدأ القراءة المتواصلة'}
+                  </span>
                 </button>
               )}
 
@@ -1674,29 +2052,39 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
             </div>
           </div>
 
-          {pickingContinuousStart && (
+          {pickingBoundary && (
             <div className="bg-[#FDF6EE] border border-[#F56900]/40 rounded-xl px-3.5 py-2 text-xs font-bold text-[#F56900]">
-              اضغط الآن على أي كلمة في صورة الصفحة أو من قائمة الكلمات لتكون نقطة البداية في القراءة المتواصلة.
+              {pickingBoundary === 'start'
+                ? 'اضغط الآن على أي كلمة في صورة الصفحة أو من قائمة الكلمات لتحديد نقطة البداية.'
+                : 'اضغط الآن على أي كلمة في صورة الصفحة أو من قائمة الكلمات لتحديد نقطة النهاية.'}
             </div>
           )}
 
           {continuousProgress && (
-            <div className="bg-[#FDF6EE] border border-[#58CC02]/40 rounded-2xl px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs font-bold">
-              <div className="flex items-center gap-2 text-[#4A220D]">
-                <Volume2 className="w-4 h-4 text-[#46A302] shrink-0" />
-                <span>
-                  صفحة {toArabicIndicDigits(continuousProgress.pageNumber)} · كلمة{' '}
-                  {toArabicIndicDigits(continuousProgress.currentIndex)} من{' '}
-                  {toArabicIndicDigits(continuousProgress.totalCount)}:
-                </span>
-                <span className="font-display font-extrabold text-sm text-[#F56900]">
-                  {continuousProgress.wordText}
+            <div className="bg-[#FDF6EE] border border-[#58CC02]/40 rounded-2xl px-4 py-2.5 space-y-1.5 text-xs font-bold">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-[#4A220D]">
+                  <Volume2 className="w-4 h-4 text-[#46A302] shrink-0" />
+                  <span>
+                    صفحة {toArabicIndicDigits(continuousProgress.pageNumber)} · كلمة{' '}
+                    {toArabicIndicDigits(continuousProgress.currentIndex)} من{' '}
+                    {toArabicIndicDigits(continuousProgress.totalCount)}:
+                  </span>
+                  <span className="font-display font-extrabold text-sm text-[#F56900]">
+                    {continuousProgress.wordText}
+                  </span>
+                </div>
+                <span className="text-[11px] font-bold text-[#46A302] inline-flex items-center gap-1">
+                  <Database className="w-3.5 h-3.5" />
+                  <span>{continuousProgress.sourceLabel}</span>
                 </span>
               </div>
-              <span className="text-[11px] font-bold text-[#46A302] inline-flex items-center gap-1">
-                <Database className="w-3.5 h-3.5" />
-                <span>{continuousProgress.sourceLabel}</span>
-              </span>
+              {continuousProgress.cumulativePhrase && (
+                <div className="bg-white border border-[#8B5CF6]/30 rounded-xl px-3 py-1.5 text-xs sm:text-sm font-display font-extrabold text-[#4A220D]">
+                  <span className="text-[#8B5CF6] ml-1.5">الربط التجميعي:</span>
+                  <span>{continuousProgress.cumulativePhrase}</span>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1730,37 +2118,55 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
                 draggable={false}
               />
               {/* Clickable Hotspots over recognized words & ayahs */}
-              {currentPage.segments.map((seg) => {
-                const [ymin, xmin, ymax, xmax] = seg.box;
-                if (!(ymax > ymin && xmax > xmin)) return null;
-                const top = Math.max(0, Math.min(99, ymin / 10));
-                const left = Math.max(0, Math.min(99, xmin / 10));
-                const width = Math.max(2, Math.min(100 - left, (xmax - xmin) / 10));
-                const height = Math.max(2, Math.min(100 - top, (ymax - ymin) / 10));
-                const isSelected = selectedSegment?.id === seg.id;
-                return (
-                  <button
-                    key={seg.id}
-                    type="button"
-                    onClick={() => handleSelectSegment(seg)}
-                    title={seg.text}
-                    aria-label={seg.text}
-                    style={{
-                      top: `${top}%`,
-                      left: `${left}%`,
-                      width: `${width}%`,
-                      height: `${height}%`,
-                    }}
-                    className={`absolute rounded-md transition-all cursor-pointer ${
-                      isSelected
-                        ? 'bg-[#F56900]/25 ring-2 ring-[#F56900]'
-                        : seg.kind === 'ayah'
-                        ? 'hover:bg-[#58CC02]/20 hover:ring-2 hover:ring-[#58CC02]/70'
-                        : 'hover:bg-[#F56900]/15 hover:ring-1 hover:ring-[#F56900]/60'
-                    }`}
-                  />
-                );
-              })}
+              {(() => {
+                const startIdx = continuousStartId
+                  ? currentPage.segments.findIndex((x) => x.id === continuousStartId)
+                  : -1;
+                const endIdx = continuousEndId
+                  ? currentPage.segments.findIndex((x) => x.id === continuousEndId)
+                  : -1;
+                return currentPage.segments.map((seg, segIdx) => {
+                  const [ymin, xmin, ymax, xmax] = seg.box;
+                  if (!(ymax > ymin && xmax > xmin)) return null;
+                  const top = Math.max(0, Math.min(99, ymin / 10));
+                  const left = Math.max(0, Math.min(99, xmin / 10));
+                  const width = Math.max(2, Math.min(100 - left, (xmax - xmin) / 10));
+                  const height = Math.max(2, Math.min(100 - top, (ymax - ymin) / 10));
+                  const isSelected = selectedSegment?.id === seg.id;
+                  const isEnd = Boolean(continuousEndId && seg.id === continuousEndId);
+                  const inSelectedRange =
+                    startIdx >= 0 &&
+                    endIdx >= startIdx &&
+                    segIdx >= startIdx &&
+                    segIdx <= endIdx;
+                  return (
+                    <button
+                      key={seg.id}
+                      type="button"
+                      onClick={() => handleSelectSegment(seg)}
+                      title={seg.text}
+                      aria-label={seg.text}
+                      style={{
+                        top: `${top}%`,
+                        left: `${left}%`,
+                        width: `${width}%`,
+                        height: `${height}%`,
+                      }}
+                      className={`absolute rounded-md transition-all cursor-pointer ${
+                        isSelected
+                          ? 'bg-[#F56900]/25 ring-2 ring-[#F56900]'
+                          : isEnd
+                          ? 'bg-[#46A302]/25 ring-2 ring-[#46A302]'
+                          : inSelectedRange
+                          ? 'bg-[#58CC02]/15 ring-1 ring-[#58CC02]/60'
+                          : seg.kind === 'ayah'
+                          ? 'hover:bg-[#58CC02]/20 hover:ring-2 hover:ring-[#58CC02]/70'
+                          : 'hover:bg-[#F56900]/15 hover:ring-1 hover:ring-[#F56900]/60'
+                      }`}
+                    />
+                  );
+                });
+              })()}
             </div>
           </div>
 
@@ -1781,33 +2187,62 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
               </p>
             ) : (
               <div className="flex flex-wrap gap-2 leading-loose" dir="rtl">
-                {activeSegments.map((seg) => {
-                  const isSelected = selectedSegment?.id === seg.id;
-                  return (
-                    <button
-                      key={seg.id}
-                      ref={(el) => {
-                        wordChipRefs.current[seg.id] = el;
-                      }}
-                      type="button"
-                      onClick={() => handleSelectSegment(seg)}
-                      className={`min-h-[38px] px-3 py-1 rounded-xl border-2 text-base font-bold transition-colors cursor-pointer ${
-                        isSelected
-                          ? 'bg-[#F56900] border-[#C95200] text-white'
-                          : seg.kind === 'ayah'
-                          ? 'bg-[#58CC02]/10 border-[#58CC02]/40 text-[#4A220D] hover:border-[#58CC02]'
-                          : 'bg-[#FDF6EE] border-[#EADBC8] text-[#4A220D] hover:border-[#F56900]'
-                      }`}
-                    >
-                      <span>{seg.text}</span>
-                      {seg.kind === 'ayah' && seg.ayahNumber ? (
-                        <span className="mr-1.5 text-xs opacity-80 tabular-nums">
-                          ﴿{toArabicIndicDigits(seg.ayahNumber)}﴾
-                        </span>
-                      ) : null}
-                    </button>
-                  );
-                })}
+                {(() => {
+                  const startIdx = continuousStartId
+                    ? activeSegments.findIndex((x) => x.id === continuousStartId)
+                    : -1;
+                  const endIdx = continuousEndId
+                    ? activeSegments.findIndex((x) => x.id === continuousEndId)
+                    : -1;
+                  return activeSegments.map((seg, segIdx) => {
+                    const isSelected = selectedSegment?.id === seg.id;
+                    const isEnd = Boolean(continuousEndId && seg.id === continuousEndId);
+                    const isStart = Boolean(continuousStartId && seg.id === continuousStartId);
+                    const inSelectedRange =
+                      startIdx >= 0 &&
+                      endIdx >= startIdx &&
+                      segIdx >= startIdx &&
+                      segIdx <= endIdx;
+                    return (
+                      <button
+                        key={seg.id}
+                        ref={(el) => {
+                          wordChipRefs.current[seg.id] = el;
+                        }}
+                        type="button"
+                        onClick={() => handleSelectSegment(seg)}
+                        className={`min-h-[38px] px-3 py-1 rounded-xl border-2 text-base font-bold transition-colors cursor-pointer inline-flex items-center gap-1 ${
+                          isSelected
+                            ? 'bg-[#F56900] border-[#C95200] text-white'
+                            : isEnd
+                            ? 'bg-[#46A302] border-[#357D01] text-white'
+                            : inSelectedRange
+                            ? 'bg-[#58CC02]/15 border-[#58CC02] text-[#4A220D]'
+                            : seg.kind === 'ayah'
+                            ? 'bg-[#58CC02]/10 border-[#58CC02]/40 text-[#4A220D] hover:border-[#58CC02]'
+                            : 'bg-[#FDF6EE] border-[#EADBC8] text-[#4A220D] hover:border-[#F56900]'
+                        }`}
+                      >
+                        {isStart && !isSelected && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#F56900]/15 text-[#F56900] font-extrabold">
+                            بداية
+                          </span>
+                        )}
+                        <span>{seg.text}</span>
+                        {isEnd && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/25 text-white font-extrabold">
+                            نهاية
+                          </span>
+                        )}
+                        {seg.kind === 'ayah' && seg.ayahNumber ? (
+                          <span className="mr-1 text-xs opacity-80 tabular-nums">
+                            ﴿{toArabicIndicDigits(seg.ayahNumber)}﴾
+                          </span>
+                        ) : null}
+                      </button>
+                    );
+                  });
+                })()}
               </div>
             )}
           </div>
@@ -2052,7 +2487,7 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
                         <button
                           key={`${step.part}_${i}`}
                           type="button"
-                          onClick={() => handlePlaySingleNoorStep(step)}
+                          onClick={() => void handlePlaySingleNoorStep(step)}
                           className="w-full text-right bg-white border border-[#EADBC8] hover:border-[#F56900] rounded-xl px-3 py-2 flex items-center justify-between gap-2 text-xs transition-colors cursor-pointer"
                         >
                           <div className="flex items-center gap-2 min-w-0">

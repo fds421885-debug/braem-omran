@@ -5,6 +5,7 @@ import {
   enhanceImageDataUrlForRecognition,
   generateNoorAlBayanClientFallback,
   inferArabicDiacriticsForWord,
+  normalizeUthmaniForTts,
   verifyAndAlignSegmentsWithQuran,
   type PageOcrProgress,
 } from './clientArabicEngine';
@@ -730,7 +731,7 @@ export async function synthesizeSpeechOnServer(params: {
   mimeType: string;
   text: string;
 }> {
-  const preparedText =
+  const rawPrepared =
     params.mode === 'normal'
       ? params.text
           .trim()
@@ -739,6 +740,7 @@ export async function synthesizeSpeechOnServer(params: {
           .map((w) => inferArabicDiacriticsForWord(w).vocalized)
           .join(' ') || params.text
       : params.text;
+  const preparedText = normalizeUthmaniForTts(rawPrepared) || rawPrepared;
 
   if (staticHostWithoutApi !== true) {
     try {

@@ -3996,7 +3996,7 @@ export function buildWordAudioDocId(
     mode === 'noor_albayan'
       ? contextSuffix.replace(/[^a-zA-Z0-9_]/g, '').slice(0, 12)
       : '';
-  const modeTag = mode === 'noor_albayan' ? `fr3${cleanCtx}` : 'nm';
+  const modeTag = mode === 'noor_albayan' ? `fr4${cleanCtx}` : 'nm';
   const h1 = fnv1aHex(normalized, 0);
   const h2 = fnv1aHex(normalized.split('').reverse().join(''), 0x9e3779b9);
   return `wa_${cleanComplex}_${modeTag}_${h1}${h2}`.slice(0, 128);
