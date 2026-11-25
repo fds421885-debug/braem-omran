@@ -124,11 +124,18 @@ export const AudioDatabasesManager: React.FC<AudioDatabasesManagerProps> = ({
     const maxBytes =
       addMaxGb === '4' ? 4 * 1024 * 1024 * 1024 : SPARK_FREE_TIER_BYTES;
 
-    setBusyLabel(`جاري ربط قاعدة الأصوات (${getDbDisplayLabel(ver.config)})...`);
+    const wasFirstDb = pool.length === 0;
+    setBusyLabel(
+      wasFirstDb
+        ? `جاري ربط قاعدة الأصوات (${getDbDisplayLabel(ver.config)}) ونقل جميع الأصوات السابقة إليها تلقائياً...`
+        : `جاري ربط قاعدة الأصوات (${getDbDisplayLabel(ver.config)})...`
+    );
     try {
       const res = await addDbToGlobalAudioPool({
         config: ver.config,
         maxBytes,
+        autoMigrateWhenFirst: true,
+        onProgress: (msg) => setBusyLabel(msg),
       });
       setPool(res.pool);
       setShowAddModal(false);
@@ -138,7 +145,10 @@ export const AudioDatabasesManager: React.FC<AudioDatabasesManagerProps> = ({
       onPoolChanged?.();
       setFeedback({
         type: 'ok',
-        text: `تم ربط قاعدة الأصوات (${getDbDisplayLabel(ver.config)}) بنجاح. أي صوت جديد سيُحفظ هنا ويُبحث عنه هنا أولاً.`,
+        text:
+          res.autoMigratedCount > 0
+            ? `تم ربط قاعدة الأصوات (${getDbDisplayLabel(ver.config)}) ونقل جميع الأصوات المحفوظة مسبقاً (${res.autoMigratedCount} صوت) إليها بالكامل وحذفها من القواعد القديمة بنجاح.`
+            : `تم ربط قاعدة الأصوات (${getDbDisplayLabel(ver.config)}) بنجاح. أي صوت جديد سيُحفظ هنا ويُبحث عنه هنا أولاً.`,
       });
     } catch (err) {
       setAddModalError(
@@ -684,9 +694,17 @@ export const AudioDatabasesManager: React.FC<AudioDatabasesManagerProps> = ({
                 <div className="bg-[#FFA900]/12 border border-[#FFA900]/40 rounded-xl p-3 flex items-start gap-2 text-xs text-[#4A220D]">
                   <AlertTriangle className="w-4 h-4 text-[#D98A00] shrink-0 mt-0.5" />
                   <span>
-                    ملاحظة: لا يُسمح باختيار القاعدة الأساسية للموقع؛ يجب أن تكون قاعدة الأصوات مشروع Firebase خارجي مستقل لضمان بقاء القاعدة الأساسية خفيفة.
+                    {pool.length === 0
+                      ? 'عند ربط أول قاعدة أصوات الآن، سيبدأ النظام تلقائياً بنقل ١٠٠٪ من جميع الأصوات المحفوظة سابقاً من القواعد القديمة إلى هذه القاعدة وحذفها نهائياً من القواعد القديمة.'
+                      : 'ملاحظة: لا يُسمح باختيار القاعدة الأساسية للموقع؛ يجب أن تكون قاعدة الأصوات مشروع Firebase خارجي مستقل لضمان بقاء القاعدة الأساسية خفيفة.'}
                   </span>
                 </div>
+
+                {busyLabel && (
+                  <div className="rounded-2xl border border-[#EADBC8] bg-[#FDF6EE] p-3">
+                    <ModernLoader label={busyLabel} />
+                  </div>
+                )}
 
                 {addModalError && (
                   <div
@@ -700,14 +718,16 @@ export const AudioDatabasesManager: React.FC<AudioDatabasesManagerProps> = ({
                 <div className="flex items-center gap-3 pt-2 border-t-2 border-[#F7EBDD]">
                   <button
                     type="submit"
-                    className="duo-btn-orange flex-1 min-h-[46px] rounded-2xl font-display font-extrabold text-sm cursor-pointer"
+                    disabled={Boolean(busyLabel)}
+                    className="duo-btn-orange flex-1 min-h-[46px] rounded-2xl font-display font-extrabold text-sm cursor-pointer disabled:opacity-50"
                   >
-                    إضافة وتفعيل في سلسلة الأصوات
+                    {busyLabel ? 'جاري الربط ونقل الأصوات...' : 'إضافة وتفعيل في سلسلة الأصوات'}
                   </button>
                   <button
                     type="button"
+                    disabled={Boolean(busyLabel)}
                     onClick={() => setShowAddModal(false)}
-                    className="duo-btn-cream min-h-[46px] px-5 rounded-2xl font-display font-bold text-sm cursor-pointer"
+                    className="duo-btn-cream min-h-[46px] px-5 rounded-2xl font-display font-bold text-sm cursor-pointer disabled:opacity-50"
                   >
                     إلغاء
                   </button>

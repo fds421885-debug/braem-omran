@@ -4202,8 +4202,10 @@ async function measureAudioDbUsage(db: Firestore): Promise<{ usedBytes: number; 
 export async function addDbToGlobalAudioPool(params: {
   config: ExternalFirebaseConfig;
   maxBytes?: number;
-}): Promise<{ pool: TabDbShard[] }> {
-  const { config, maxBytes = SPARK_FREE_TIER_BYTES } = params;
+  autoMigrateWhenFirst?: boolean;
+  onProgress?: (msg: string) => void;
+}): Promise<{ pool: TabDbShard[]; autoMigratedCount: number }> {
+  const { config, maxBytes = SPARK_FREE_TIER_BYTES, autoMigrateWhenFirst = true, onProgress } = params;
   const candidateDb = getFirestoreForConfig(config);
   if (candidateDb === primaryDb) {
     throw new Error('لا يمكن وضع القاعدة الأساسية ضمن قواعد الصوتيات المخصصة؛ يرجى اختيار قاعدة خارجية مستقلة.');
@@ -4219,6 +4221,7 @@ export async function addDbToGlobalAudioPool(params: {
     throw new Error('قاعدة البيانات هذه مضافة بالفعل إلى قواعد الصوتيات.');
   }
 
+  const wasEmptyPool = existingPool.length === 0;
   await registerExternalDatabaseConnection(config);
   const stats = await measureAudioDbUsage(candidateDb);
   const hasAvailableActive = existingPool.some((s) => s.status === 'active');
@@ -4234,8 +4237,16 @@ export async function addDbToGlobalAudioPool(params: {
     createdAtMs: Date.now(),
   };
 
-  const saved = await saveGlobalAudioDbPool([...existingPool, newShard]);
-  return { pool: saved };
+  let saved = await saveGlobalAudioDbPool([...existingPool, newShard]);
+  let autoMigratedCount = 0;
+
+  if (wasEmptyPool && autoMigrateWhenFirst) {
+    const migRes = await migrateLegacyWordAudioToGlobalPool(onProgress);
+    saved = migRes.pool;
+    autoMigratedCount = migRes.movedCount;
+  }
+
+  return { pool: saved, autoMigratedCount };
 }
 
 export async function activateGlobalAudioShard(shardId: string): Promise<TabDbShard[]> {
@@ -4384,38 +4395,111 @@ export async function migrateGlobalAudioShard(params: {
 
 export async function migrateLegacyWordAudioToGlobalPool(
   onProgress?: (msg: string) => void
-): Promise<{ movedCount: number }> {
+): Promise<{ movedCount: number; pool: TabDbShard[] }> {
   const globalPool = await loadGlobalAudioDbPool(true);
   if (globalPool.length === 0) {
     throw new Error('يرجى ربط قاعدة بيانات واحدة على الأقل في قسم «قواعد الأصوات» أولاً.');
   }
   const globalDbKeys = new Set(globalPool.map((s) => dbKeyFromConfig(s.config)));
   const targets = await getAllKnownDatabases();
-  let movedCount = 0;
+
+  onProgress?.('جاري حصر جميع الأصوات المحفوظة في القواعد القديمة تمهيداً لنقلها...');
+  const pendingSources: Array<{
+    db: Firestore;
+    label: string;
+    docs: Array<{ docId: string; rec: BookWordAudioRecord }>;
+  }> = [];
+  let totalSourceDocs = 0;
 
   for (const t of targets) {
     if (globalDbKeys.has(t.key)) continue;
-    onProgress?.(`فحص الصوتيات السابقة في ${t.label}...`);
     const snap = await getDocsFresh(collection(t.db, 'wordAudio')).catch(() => null);
     if (!snap || snap.empty) continue;
+    const list: Array<{ docId: string; rec: BookWordAudioRecord }> = [];
     for (const d of snap.docs) {
       const rec = d.data() as BookWordAudioRecord;
-      if (!rec || !rec.wordText) continue;
-      const gId = buildGlobalWordAudioDocId(
-        rec.mode === 'normal' ? 'normal' : 'noor_albayan',
-        rec.wordText
-      );
-      const payload = { ...rec, id: gId };
-      const bytes = estimateRecordBytes(payload);
-      await executeGlobalAudioWriteWithRollover(bytes, true, async (destDb) => {
-        await copyDocWithTimestamp(destDb, 'wordAudio', gId, payload as unknown as Record<string, unknown>);
-      });
-      await deleteDoc(doc(t.db, 'wordAudio', d.id)).catch(() => {});
-      movedCount++;
+      if (!rec) continue;
+      list.push({ docId: d.id, rec });
+    }
+    if (list.length > 0) {
+      pendingSources.push({ db: t.db, label: t.label, docs: list });
+      totalSourceDocs += list.length;
     }
   }
-  await recalculateGlobalAudioPoolUsage();
-  return { movedCount };
+
+  if (totalSourceDocs === 0) {
+    const freshPool = await recalculateGlobalAudioPoolUsage();
+    return { movedCount: 0, pool: freshPool };
+  }
+
+  // Track global doc IDs already containing valid WAV so duplicate cross-complex entries
+  // do not overwrite valid audio or fail cleanup deletion.
+  const seededValidIds = new Set<string>();
+  for (const sh of globalPool) {
+    const gDb = getFirestoreForConfig(sh.config);
+    const existingSnap = await getDocsFresh(collection(gDb, 'wordAudio')).catch(() => null);
+    existingSnap?.forEach((d) => {
+      const r = d.data() as BookWordAudioRecord;
+      if (r && r.audioBase64 && r.audioBase64.length > 120) {
+        seededValidIds.add(d.id);
+      }
+    });
+  }
+
+  let processedCount = 0;
+  let movedCount = 0;
+
+  for (const src of pendingSources) {
+    for (const item of src.docs) {
+      processedCount++;
+      const pct = Math.round((processedCount / totalSourceDocs) * 100);
+      onProgress?.(
+        `جاري نقل الصوتيات من ${src.label} إلى قاعدة الأصوات وحذفها من القديمة (${processedCount}/${totalSourceDocs} · ${pct}%)...`
+      );
+
+      const rec = item.rec;
+      const rawWord = String(rec.wordText || rec.diacritizedWord || '').trim();
+      const normalizedWord = rawWord
+        ? (canonicalizeArabicForAudioKey(rawWord) || rawWord.replace(/\s+/g, ' ')).slice(0, 1200)
+        : '';
+
+      if (normalizedWord) {
+        const mode: 'noor_albayan' | 'normal' = rec.mode === 'normal' ? 'normal' : 'noor_albayan';
+        const gId = buildGlobalWordAudioDocId(mode, normalizedWord);
+        const hasValidWav = Boolean(rec.audioBase64 && rec.audioBase64.length > 120);
+
+        if (!seededValidIds.has(gId)) {
+          const payload = {
+            ...rec,
+            id: gId,
+            mode,
+            wordText: normalizedWord,
+            diacritizedWord: String(rec.diacritizedWord || normalizedWord).slice(0, 1200),
+          };
+          const bytes = estimateRecordBytes(payload);
+          await executeGlobalAudioWriteWithRollover(bytes, true, async (destDb) => {
+            await copyDocWithTimestamp(
+              destDb,
+              'wordAudio',
+              gId,
+              payload as unknown as Record<string, unknown>
+            );
+          });
+          if (hasValidWav) {
+            seededValidIds.add(gId);
+          }
+          movedCount++;
+        }
+      }
+
+      // Strictly delete transferred doc from the old database
+      await deleteDoc(doc(src.db, 'wordAudio', item.docId));
+    }
+  }
+
+  onProgress?.('جاري تحديث عدادات المساحة بعد النقل التام...');
+  const recalculatedPool = await recalculateGlobalAudioPoolUsage();
+  return { movedCount, pool: recalculatedPool };
 }
 
 async function resolveWriteShardForGlobalAudio(
