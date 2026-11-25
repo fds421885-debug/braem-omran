@@ -63,6 +63,7 @@ const ALL_TAB_KEYS: ComplexFeatureTabKey[] = [
   'attendance',
   'library',
   'curricula',
+  'presentations',
   'accounts_invites',
   'mosques_halaqat',
 ];

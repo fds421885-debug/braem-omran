@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 import { collection, deleteDoc, doc, query, serverTimestamp, setDoc, updateDoc, where } from 'firebase/firestore';
 import { auth, handleFirestoreError, OperationType } from '../firebase';
+import { extractAiDiagnosticFromPayload, resolveEffectiveAiAccess } from './aiPolicyService';
 import { generateValidId } from './multiDb';
 import {
   estimateRecordBytes,
@@ -65,20 +66,145 @@ const ALLOWED_HTML_TAGS = new Set([
   'th',
   'td',
   'button',
+  'svg',
+  'path',
+  'circle',
+  'line',
+  'polyline',
+  'polygon',
+  'rect',
 ]);
 
 const ALLOWED_ATTRS = new Set([
   'class',
   'dir',
+  'title',
   'data-tahajji',
   'data-ayah',
   'data-surah',
   'data-ayah-num',
   'data-surah-name',
+  'data-speaker-trigger',
+  'data-audio-text',
+  'data-audio-kind',
   'type',
   'role',
   'aria-label',
+  'viewbox',
+  'fill',
+  'stroke',
+  'stroke-width',
+  'stroke-linecap',
+  'stroke-linejoin',
+  'd',
+  'cx',
+  'cy',
+  'r',
+  'x',
+  'y',
+  'width',
+  'height',
+  'rx',
+  'x1',
+  'y1',
+  'x2',
+  'y2',
+  'points',
 ]);
+
+function enhanceSanitizedSlideDom(root: HTMLElement, docHtml: Document): void {
+  const createSpeakerSvg = (): SVGSVGElement => {
+    const svg = docHtml.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2.2');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('class', 'w-4 h-4 shrink-0');
+
+    const poly = docHtml.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+    poly.setAttribute('points', '11 5 6 9 2 9 2 15 6 15 11 19 11 5');
+    const p1 = docHtml.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p1.setAttribute('d', 'M15.54 8.46a5 5 0 0 1 0 7.07');
+    const p2 = docHtml.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p2.setAttribute('d', 'M19.07 4.93a10 10 0 0 1 0 14.14');
+    svg.append(poly, p1, p2);
+    return svg;
+  };
+
+  // Enhance Ayah cards with .font-quran + Speaker button
+  const ayahEls = Array.from(root.querySelectorAll('[data-ayah], .quran-ayah-card'));
+  for (const el of ayahEls) {
+    el.classList.add('font-quran', 'leading-[2.2]');
+    const existingBtn = el.querySelector('[data-speaker-trigger]');
+    const rawAttrText = el.getAttribute('data-audio-text');
+    let cleanText = (rawAttrText || '').trim();
+    if (!cleanText) {
+      const clone = el.cloneNode(true) as HTMLElement;
+      clone.querySelectorAll('[data-speaker-trigger]').forEach((b) => b.remove());
+      cleanText = (clone.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+    if (!cleanText) continue;
+
+    el.setAttribute('data-audio-text', cleanText);
+    if (!existingBtn) {
+      el.classList.add('relative');
+      const btn = docHtml.createElement('button');
+      btn.setAttribute('type', 'button');
+      btn.setAttribute('data-speaker-trigger', 'true');
+      btn.setAttribute('data-audio-kind', 'ayah');
+      btn.setAttribute('data-audio-text', cleanText);
+      const sNum = el.getAttribute('data-surah');
+      const aNum = el.getAttribute('data-ayah-num');
+      const sName = el.getAttribute('data-surah-name');
+      if (sNum) btn.setAttribute('data-surah', sNum);
+      if (aNum) btn.setAttribute('data-ayah-num', aNum);
+      if (sName) btn.setAttribute('data-surah-name', sName);
+      btn.setAttribute('aria-label', `استماع أو تهجي: ${cleanText.slice(0, 40)}`);
+      btn.setAttribute(
+        'class',
+        'font-display inline-flex items-center gap-1.5 mt-2 mx-auto px-3 py-1.5 rounded-xl bg-white/95 hover:bg-[#F56900] text-[#4A220D] hover:text-white border-2 border-[#58CC02]/60 hover:border-[#F56900] text-xs font-extrabold shadow-xs transition-colors cursor-pointer'
+      );
+      btn.appendChild(createSpeakerSvg());
+      const lbl = docHtml.createElement('span');
+      lbl.textContent = 'استماع / تهجي';
+      btn.appendChild(lbl);
+      el.appendChild(docHtml.createElement('br'));
+      el.appendChild(btn);
+    }
+  }
+
+  // Enhance Tahajji word chips with .font-quran + Speaker icon trigger
+  const tahajjiEls = Array.from(root.querySelectorAll('[data-tahajji], .tahajji-chip'));
+  for (const el of tahajjiEls) {
+    el.classList.add('font-quran', 'leading-[2.1]');
+    const rawAttrText = el.getAttribute('data-audio-text');
+    let cleanText = (rawAttrText || '').trim();
+    if (!cleanText) {
+      const clone = el.cloneNode(true) as HTMLElement;
+      clone.querySelectorAll('[data-speaker-trigger], svg').forEach((n) => n.remove());
+      cleanText = (clone.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+    if (!cleanText) continue;
+
+    el.setAttribute('data-audio-text', cleanText);
+    if (!el.querySelector('[data-speaker-trigger]')) {
+      const btn = docHtml.createElement('span');
+      btn.setAttribute('data-speaker-trigger', 'true');
+      btn.setAttribute('data-audio-kind', 'tahajji_words');
+      btn.setAttribute('data-audio-text', cleanText);
+      btn.setAttribute('role', 'button');
+      btn.setAttribute('aria-label', `استماع أو تهجي: ${cleanText}`);
+      btn.setAttribute(
+        'class',
+        'inline-flex items-center justify-center w-6 h-6 ms-1.5 rounded-lg bg-[#F56900]/12 text-[#F56900] hover:bg-[#F56900] hover:text-white transition-colors shrink-0'
+      );
+      btn.appendChild(createSpeakerSvg());
+      el.appendChild(btn);
+    }
+  }
+}
 
 /**
  * DOMParser-based allowlist sanitizer so AI-generated HTML renders safely
@@ -133,7 +259,8 @@ export function sanitizeSlideHtml(rawHtml: string): string {
   };
 
   cleanNode(root);
-  return root.innerHTML.slice(0, 18000);
+  enhanceSanitizedSlideDom(root, docHtml);
+  return root.innerHTML.slice(0, 24000);
 }
 
 function normalizeSlideList(rawSlides: PresentationSlide[]): PresentationSlide[] {
@@ -196,11 +323,28 @@ function normalizeChatHistory(rawHistory: PresentationChatTurn[]): PresentationC
     }));
 }
 
+function resolvePresentationsTabKey(
+  workspace: ComplexWorkspaceData
+): 'presentations' | 'curricula' {
+  const hasPresentationsPool =
+    Boolean(workspace.tabPools?.presentations?.length) ||
+    Boolean(workspace.tabConfigMap?.presentations);
+  if (hasPresentationsPool) return 'presentations';
+
+  const hasCurriculaPool =
+    Boolean(workspace.tabPools?.curricula?.length) ||
+    Boolean(workspace.tabConfigMap?.curricula);
+  if (hasCurriculaPool) return 'curricula';
+
+  return 'presentations';
+}
+
 export async function listPresentationsInComplex(
   workspace: ComplexWorkspaceData
 ): Promise<PresentationRecord[]> {
   try {
-    const readDbs = getReadDbsForComplexTab(workspace, 'curricula');
+    const tabKey = resolvePresentationsTabKey(workspace);
+    const readDbs = getReadDbsForComplexTab(workspace, tabKey);
     const byId = new Map<string, PresentationRecord>();
     await Promise.all(
       readDbs.map(async (targetDb) => {
@@ -297,8 +441,9 @@ export async function savePresentationRecord(params: {
   }
 
   try {
+    const tabKey = resolvePresentationsTabKey(workspace);
     const located = id
-      ? await findExistingDocInTabPool(workspace, 'curricula', 'presentations', recordId)
+      ? await findExistingDocInTabPool(workspace, tabKey, 'presentations', recordId)
       : { exists: false, db: workspace.complexDb, shard: null };
 
     if (located.exists) {
@@ -330,7 +475,7 @@ export async function savePresentationRecord(params: {
       };
       await executeTabWriteWithRollover(
         workspace,
-        'curricula',
+        tabKey,
         Math.max(approxBytes, estimateRecordBytes(payload)),
         true,
         async (targetDb) => {
@@ -368,9 +513,10 @@ export async function deletePresentationRecord(
   presentationId: string
 ): Promise<void> {
   try {
+    const tabKey = resolvePresentationsTabKey(workspace);
     const located = await findExistingDocInTabPool(
       workspace,
-      'curricula',
+      tabKey,
       'presentations',
       presentationId
     );
@@ -553,7 +699,6 @@ export async function generateOrEditPresentationWithAi(params: {
   complexId?: string;
   accountId?: string;
 }): Promise<PresentationAiChatResponse> {
-  const { resolveEffectiveAiAccess, extractAiDiagnosticFromPayload } = await import('./aiPolicyService');
   const access = await resolveEffectiveAiAccess({
     complexId: params.complexId,
     accountId: params.accountId,

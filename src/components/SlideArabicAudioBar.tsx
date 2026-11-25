@@ -6,6 +6,7 @@ import {
   Loader2,
   Pause,
   Play,
+  Repeat,
   Sparkles,
   Square,
   Volume2,
@@ -19,9 +20,7 @@ import {
   saveCachedAudioEntry,
   synthesizeSpeechOnServer,
 } from '../services/bookStorage';
-import {
-  generateNoorAlBayanClientFallback,
-} from '../services/clientArabicEngine';
+import { generateNoorAlBayanClientFallback } from '../services/clientArabicEngine';
 import { getReciterAyahAudioUrl } from '../services/multiDb';
 import {
   getSavedTeacherReciterId,
@@ -29,6 +28,7 @@ import {
   toArabicIndicDigits,
 } from '../services/mushafService';
 import {
+  canonicalizeArabicForAudioKey,
   lookupWordAudioAcrossLibrary,
   saveWordAudioToLibraryDb,
   type ComplexWorkspaceData,
@@ -48,16 +48,25 @@ export interface SlideAudioTarget {
   label?: string;
 }
 
+export type SlideAudioPlayMode = 'noor_albayan' | 'normal' | 'cumulative_tahajji' | 'sheikh';
+
+export interface SlideAudioCommand {
+  id: number;
+  target: SlideAudioTarget;
+  mode: SlideAudioPlayMode;
+}
+
 interface SlideArabicAudioBarProps {
   workspace: ComplexWorkspaceData;
   currentUserId: string;
   selectedTarget: SlideAudioTarget | null;
   slideBlocks: PresentationInteractiveBlock[];
   onSelectTarget: (target: SlideAudioTarget) => void;
+  commandRequest?: SlideAudioCommand | null;
   compact?: boolean;
 }
 
-type AudioMode = 'noor_albayan' | 'normal' | 'sheikh';
+type AudioMode = 'noor_albayan' | 'normal' | 'cumulative_tahajji' | 'sheikh';
 
 export const SlideArabicAudioBar: React.FC<SlideArabicAudioBarProps> = ({
   workspace,
@@ -65,6 +74,7 @@ export const SlideArabicAudioBar: React.FC<SlideArabicAudioBarProps> = ({
   selectedTarget,
   slideBlocks,
   onSelectTarget,
+  commandRequest = null,
   compact = false,
 }) => {
   const [selectedReciterId, setSelectedReciterId] = useState<string>(() =>
@@ -79,6 +89,7 @@ export const SlideArabicAudioBar: React.FC<SlideArabicAudioBarProps> = ({
   const [activeAudioMode, setActiveAudioMode] = useState<AudioMode | null>(null);
   const [audioPlaying, setAudioPlaying] = useState(false);
   const [wordStatusNote, setWordStatusNote] = useState<string | null>(null);
+  const [cumulativeBanner, setCumulativeBanner] = useState<string | null>(null);
 
   // Strict sequential reading over interactive blocks/words on the slide
   const [seqMode, setSeqMode] = useState<'noor_albayan' | 'normal'>('noor_albayan');
@@ -90,6 +101,7 @@ export const SlideArabicAudioBar: React.FC<SlideArabicAudioBarProps> = ({
   const runTokenRef = useRef<number>(0);
   const requestTokenRef = useRef<number>(0);
   const seqTokenRef = useRef<number>(0);
+  const lastHandledCommandIdRef = useRef<number>(0);
 
   const detachAndStopAudio = useCallback(() => {
     runTokenRef.current += 1;
@@ -123,6 +135,7 @@ export const SlideArabicAudioBar: React.FC<SlideArabicAudioBarProps> = ({
     setSeqPlaying(false);
     setAudioLoadingMode(null);
     setNoorLoading(false);
+    setCumulativeBanner(null);
     detachAndStopAudio();
   }, [detachAndStopAudio]);
 
@@ -237,7 +250,6 @@ export const SlideArabicAudioBar: React.FC<SlideArabicAudioBarProps> = ({
           }
         }, 8500);
 
-        // Enforce completion only after audio genuinely reaches ended state
         let lastTime = -1;
         let stalledSince = 0;
         guardId = window.setInterval(() => {
@@ -289,7 +301,8 @@ export const SlideArabicAudioBar: React.FC<SlideArabicAudioBarProps> = ({
       ttsError?: string;
       ttsRetryAfterMs?: number;
     }> => {
-      const clean = text.trim().replace(/\s+/g, ' ');
+      const clean =
+        canonicalizeArabicForAudioKey(text) || text.trim().replace(/\s+/g, ' ');
       const cacheKey = `${mode === 'noor_albayan' ? 'fath_v4' : 'normal_v2'}_${clean}`;
 
       // 1. Browser IndexedDB cache
@@ -311,8 +324,10 @@ export const SlideArabicAudioBar: React.FC<SlideArabicAudioBarProps> = ({
         };
       }
 
-      // 2. Complex Library DB cache
-      const dbRec = await lookupWordAudioAcrossLibrary(workspace, mode, clean).catch(() => null);
+      // 2. Global Audio Pool -> Presentations DB -> Library DB cache
+      const dbRec = await lookupWordAudioAcrossLibrary(workspace, mode, clean, '', {
+        preferredTabKey: 'presentations',
+      }).catch(() => null);
       if (dbRec && dbRec.audioBase64 && dbRec.audioBase64.length > 120) {
         await saveCachedAudioEntry({
           key: cacheKey,
@@ -328,7 +343,7 @@ export const SlideArabicAudioBar: React.FC<SlideArabicAudioBarProps> = ({
           setNoorDiacritizedWord(dbRec.diacritizedWord || clean);
           setNoorSteps(dbRec.steps || []);
           setNoorFullReading(dbRec.fullReading || clean);
-          setWordStatusNote('تم جلب الصوت من قاعدة المكتبة');
+          setWordStatusNote('تم جلب الصوت من قاعدة البيانات (متاح عبر كل الأجهزة)');
         }
         return {
           cacheKey,
@@ -340,7 +355,7 @@ export const SlideArabicAudioBar: React.FC<SlideArabicAudioBarProps> = ({
         };
       }
 
-      // 3. Server generation (Al-Fath Al-Rabbani + Gemini TTS, no browser fallback)
+      // 3. Server generation (Al-Fath Al-Rabbani + Gemini TTS)
       const fallback = mode === 'noor_albayan' ? generateNoorAlBayanClientFallback(clean, {}) : null;
       let diacritizedWord = fallback?.diacritizedWord || clean;
       let wasAutoDiacritized = fallback?.wasAutoDiacritized || false;
@@ -396,9 +411,10 @@ export const SlideArabicAudioBar: React.FC<SlideArabicAudioBarProps> = ({
           audioBase64,
           mimeType,
           createdBy: currentUserId,
+          preferredTabKey: 'presentations',
         });
         if (showUi) {
-          setWordStatusNote('تم توليد الصوت وحفظه في قاعدة المكتبة');
+          setWordStatusNote('تم توليد الصوت وحفظه سحابياً لجميع الأجهزة');
         }
       }
 
@@ -416,54 +432,66 @@ export const SlideArabicAudioBar: React.FC<SlideArabicAudioBarProps> = ({
     [workspace, currentUserId]
   );
 
+  const playClipWithRetry = useCallback(
+    async (
+      displayMode: AudioMode,
+      fetchMode: 'noor_albayan' | 'normal',
+      text: string,
+      surahName: string | undefined,
+      isCancelled: () => boolean,
+      showUi = true
+    ): Promise<'ended' | 'failed' | 'cancelled'> => {
+      for (let attempt = 1; attempt <= 6; attempt++) {
+        if (isCancelled()) return 'cancelled';
+        setAudioLoadingMode(displayMode);
+        if (fetchMode === 'noor_albayan') setNoorLoading(true);
+        const resolved = await resolveAudioClip(text, fetchMode, surahName, showUi);
+        if (isCancelled()) return 'cancelled';
+
+        if (resolved.audioBase64 && resolved.audioBase64.length > 120) {
+          setAudioLoadingMode(null);
+          setNoorLoading(false);
+          const url = base64AudioToObjectUrl(resolved.audioBase64, resolved.mimeType);
+          const outcome = await playAudioStrict(
+            displayMode,
+            url,
+            true,
+            resolved.cacheKey,
+            isCancelled
+          );
+          if (outcome === 'cancelled') return 'cancelled';
+          if (outcome === 'ended') return 'ended';
+        }
+
+        if (attempt >= 6) {
+          setAudioError(
+            resolved.ttsError ||
+              'هناك ضغط مؤقت على محرك الصوت؛ يرجى الانتظار لحظات ثم إعادة المحاولة.'
+          );
+          return 'failed';
+        }
+
+        const waitMs = Math.max(4000, Math.min(20000, resolved.ttsRetryAfterMs || 8000));
+        const ok = await waitWithCancellation(waitMs, isCancelled, (rem) => {
+          setAudioError(
+            `هناك ضغط مؤقت على محرك الصوت حالياً؛ يرجى الانتظار لحين استعادة القراءة تلقائياً (المحاولة ${toArabicIndicDigits(attempt)} — إعادة خلال ${toArabicIndicDigits(rem)} ث)...`
+          );
+        });
+        if (!ok) return 'cancelled';
+      }
+      return 'failed';
+    },
+    [playAudioStrict, resolveAudioClip, waitWithCancellation]
+  );
+
   const playSingleWithRetry = useCallback(
     async (mode: 'noor_albayan' | 'normal', target: SlideAudioTarget) => {
       stopAllAudio();
       const callToken = ++requestTokenRef.current;
       const isCancelled = () => requestTokenRef.current !== callToken;
-
       setAudioError(null);
-      setAudioLoadingMode(mode);
-      if (mode === 'noor_albayan') setNoorLoading(true);
-
       try {
-        for (let attempt = 1; attempt <= 6; attempt++) {
-          if (isCancelled()) return;
-          const resolved = await resolveAudioClip(
-            target.text,
-            mode,
-            target.surahName,
-            true
-          );
-          if (isCancelled()) return;
-
-          if (resolved.audioBase64 && resolved.audioBase64.length > 120) {
-            setAudioLoadingMode(null);
-            setNoorLoading(false);
-            const url = base64AudioToObjectUrl(resolved.audioBase64, resolved.mimeType);
-            const outcome = await playAudioStrict(mode, url, true, resolved.cacheKey, isCancelled);
-            if (outcome === 'error' && !isCancelled()) {
-              setAudioError('تعذّر تشغيل الصوت حالياً؛ يرجى الانتظار ثم إعادة المحاولة.');
-            }
-            return;
-          }
-
-          if (attempt >= 6) {
-            setAudioError(
-              resolved.ttsError ||
-                'هناك ضغط مؤقت على محرك الصوت؛ يرجى الانتظار لحظات ثم إعادة المحاولة.'
-            );
-            return;
-          }
-
-          const waitMs = Math.max(4000, Math.min(20000, resolved.ttsRetryAfterMs || 8000));
-          const ok = await waitWithCancellation(waitMs, isCancelled, (rem) => {
-            setAudioError(
-              `هناك ضغط مؤقت على محرك الصوت حالياً؛ يرجى الانتظار لحين استعادة القراءة تلقائياً (المحاولة ${toArabicIndicDigits(attempt)} — إعادة خلال ${toArabicIndicDigits(rem)} ث)...`
-            );
-          });
-          if (!ok) return;
-        }
+        await playClipWithRetry(mode, mode, target.text, target.surahName, isCancelled, true);
       } finally {
         if (requestTokenRef.current === callToken) {
           setAudioLoadingMode(null);
@@ -471,33 +499,117 @@ export const SlideArabicAudioBar: React.FC<SlideArabicAudioBarProps> = ({
         }
       }
     },
-    [playAudioStrict, resolveAudioClip, stopAllAudio, waitWithCancellation]
+    [playClipWithRetry, stopAllAudio]
   );
 
-  const playSheikhAyah = useCallback(async () => {
-    if (!selectedTarget?.surahNumber || !selectedTarget?.ayahNumber) return;
-    stopAllAudio();
-    const callToken = ++requestTokenRef.current;
-    const isCancelled = () => requestTokenRef.current !== callToken;
-    const reciter =
-      QURAN_RECITERS.find((r) => r.id === selectedReciterId) || QURAN_RECITERS[0];
-    const url = getReciterAyahAudioUrl(
-      reciter.everyAyahFolder,
-      selectedTarget.surahNumber,
-      selectedTarget.ayahNumber
-    );
-    setAudioLoadingMode('sheikh');
-    try {
-      const outcome = await playAudioStrict('sheikh', url, false, undefined, isCancelled);
-      if (outcome === 'error' && !isCancelled()) {
-        setAudioError('تعذّر جلب تلاوة الشيخ لهذه الآية حالياً.');
+  /**
+   * Cumulative Tahajji ("يتهجى ويرجع من البداية"):
+   * Spells word 0 -> spells word 1 + reads words 0..1 -> spells word 2 + reads words 0..2 -> ...
+   * Waits strictly for each clip to reach ended state before moving on.
+   */
+  const runCumulativeTahajji = useCallback(
+    async (target: SlideAudioTarget) => {
+      const normalized =
+        canonicalizeArabicForAudioKey(target.text) || target.text.trim().replace(/\s+/g, ' ');
+      const words = normalized.split(/\s+/).filter(Boolean);
+      if (words.length === 0) return;
+
+      if (words.length === 1) {
+        await playSingleWithRetry('noor_albayan', target);
+        return;
       }
-    } finally {
-      if (requestTokenRef.current === callToken) {
-        setAudioLoadingMode(null);
+
+      stopAllAudio();
+      const callToken = ++requestTokenRef.current;
+      const isCancelled = () => requestTokenRef.current !== callToken;
+      setAudioError(null);
+
+      try {
+        for (let i = 0; i < words.length; i++) {
+          if (isCancelled()) return;
+          const currentWord = words[i];
+          setCumulativeBanner(
+            `تهجي الكلمة (${toArabicIndicDigits(i + 1)}/${toArabicIndicDigits(words.length)}): ${currentWord}`
+          );
+          const wordResult = await playClipWithRetry(
+            'cumulative_tahajji',
+            'noor_albayan',
+            currentWord,
+            target.surahName,
+            isCancelled,
+            true
+          );
+          if (wordResult !== 'ended' || isCancelled()) return;
+
+          if (i > 0) {
+            const phraseSoFar = words.slice(0, i + 1).join(' ');
+            setCumulativeBanner(`الربط من البداية: ${phraseSoFar}`);
+            const phraseResult = await playClipWithRetry(
+              'cumulative_tahajji',
+              'normal',
+              phraseSoFar,
+              target.surahName,
+              isCancelled,
+              false
+            );
+            if (phraseResult !== 'ended' || isCancelled()) return;
+          }
+        }
+      } finally {
+        if (requestTokenRef.current === callToken) {
+          setAudioLoadingMode(null);
+          setNoorLoading(false);
+          setCumulativeBanner(null);
+        }
       }
+    },
+    [playClipWithRetry, playSingleWithRetry, stopAllAudio]
+  );
+
+  const playSheikhAyah = useCallback(
+    async (overrideTarget?: SlideAudioTarget) => {
+      const target = overrideTarget || selectedTarget;
+      if (!target?.surahNumber || !target?.ayahNumber) return;
+      stopAllAudio();
+      const callToken = ++requestTokenRef.current;
+      const isCancelled = () => requestTokenRef.current !== callToken;
+      const reciter =
+        QURAN_RECITERS.find((r) => r.id === selectedReciterId) || QURAN_RECITERS[0];
+      const url = getReciterAyahAudioUrl(
+        reciter.everyAyahFolder,
+        target.surahNumber,
+        target.ayahNumber
+      );
+      setAudioLoadingMode('sheikh');
+      try {
+        const outcome = await playAudioStrict('sheikh', url, false, undefined, isCancelled);
+        if (outcome === 'error' && !isCancelled()) {
+          setAudioError('تعذّر جلب تلاوة الشيخ لهذه الآية حالياً.');
+        }
+      } finally {
+        if (requestTokenRef.current === callToken) {
+          setAudioLoadingMode(null);
+        }
+      }
+    },
+    [playAudioStrict, selectedReciterId, selectedTarget, stopAllAudio]
+  );
+
+  // Dispatch external Speaker menu commands automatically
+  useEffect(() => {
+    if (!commandRequest || commandRequest.id === lastHandledCommandIdRef.current) return;
+    lastHandledCommandIdRef.current = commandRequest.id;
+
+    if (commandRequest.mode === 'sheikh') {
+      void playSheikhAyah(commandRequest.target);
+    } else if (commandRequest.mode === 'cumulative_tahajji') {
+      void runCumulativeTahajji(commandRequest.target);
+    } else if (commandRequest.mode === 'noor_albayan') {
+      void playSingleWithRetry('noor_albayan', commandRequest.target);
+    } else {
+      void playSingleWithRetry('normal', commandRequest.target);
     }
-  }, [playAudioStrict, selectedReciterId, selectedTarget, stopAllAudio]);
+  }, [commandRequest, playSheikhAyah, playSingleWithRetry, runCumulativeTahajji]);
 
   const playableBlocks = useMemo(
     () => slideBlocks.filter((b) => b.arabicText && b.arabicText.trim().length > 0),
@@ -525,36 +637,15 @@ export const SlideArabicAudioBar: React.FC<SlideArabicAudioBarProps> = ({
           label: blk.label,
         });
 
-        let finished = false;
-        for (let attempt = 1; attempt <= 6; attempt++) {
-          if (isCancelled()) return;
-          setAudioLoadingMode(seqMode);
-          const resolved = await resolveAudioClip(blk.arabicText, seqMode, blk.surahName, true);
-          if (isCancelled()) return;
-
-          if (resolved.audioBase64 && resolved.audioBase64.length > 120) {
-            setAudioLoadingMode(null);
-            setAudioError(null);
-            const url = base64AudioToObjectUrl(resolved.audioBase64, resolved.mimeType);
-            const outcome = await playAudioStrict(seqMode, url, true, resolved.cacheKey, isCancelled);
-            if (outcome === 'cancelled') return;
-            finished = true;
-            break;
-          }
-
-          if (attempt >= 6) {
-            setAudioError('هناك ضغط مؤقت على محرك الصوت؛ توقفت القراءة التتابعية مؤقتاً.');
-            return;
-          }
-          const waitMs = Math.max(4000, Math.min(20000, resolved.ttsRetryAfterMs || 8000));
-          const ok = await waitWithCancellation(waitMs, isCancelled, (rem) => {
-            setAudioError(
-              `انتظار استعادة الصوت للعنصر ${toArabicIndicDigits(i + 1)} (${toArabicIndicDigits(rem)} ث)...`
-            );
-          });
-          if (!ok) return;
-        }
-        if (!finished || isCancelled()) return;
+        const outcome = await playClipWithRetry(
+          seqMode,
+          seqMode,
+          blk.arabicText,
+          blk.surahName,
+          isCancelled,
+          true
+        );
+        if (outcome !== 'ended' || isCancelled()) return;
       }
     } finally {
       if (seqTokenRef.current === token) {
@@ -581,6 +672,11 @@ export const SlideArabicAudioBar: React.FC<SlideArabicAudioBarProps> = ({
       selectedTarget.ayahNumber >= 1
   );
 
+  const wordCount = useMemo(() => {
+    if (!selectedTarget?.text) return 0;
+    return selectedTarget.text.trim().split(/\s+/).filter(Boolean).length;
+  }, [selectedTarget]);
+
   return (
     <div
       className={`bg-white border-2 border-[#EADBC8] rounded-3xl ${
@@ -595,15 +691,15 @@ export const SlideArabicAudioBar: React.FC<SlideArabicAudioBarProps> = ({
             <Headphones className="w-5 h-5" />
           </div>
           <div className="min-w-0">
-            <p className="font-display font-extrabold text-xs sm:text-sm text-[#4A220D] truncate">
+            <p className="font-quran text-lg sm:text-xl text-[#4A220D] leading-[1.9] truncate">
               {selectedTarget
                 ? selectedTarget.text
-                : 'اضغط على أي كلمة أو آية في الشريحة لسماع تهجيها أو تلاوتها'}
+                : 'اضغط على أيقونة السماعة أو أي كلمة أو آية في الشريحة'}
             </p>
             <p className="text-[11px] font-bold text-[#7D4E35] truncate">
               {hasAyahCoords
                 ? `آية قرآنية · سورة ${selectedTarget?.surahName || toArabicIndicDigits(selectedTarget!.surahNumber!)} (آية ${toArabicIndicDigits(selectedTarget!.ayahNumber!)})`
-                : wordStatusNote || 'يدعم تهجي الفتح الرباني والقراءة المضبوطة وتلاوة المشايخ'}
+                : wordStatusNote || 'قراءة مباشرة · تهجي الفتح الرباني · تهجي تجميعي · تلاوة المشايخ'}
             </p>
           </div>
         </div>
@@ -625,8 +721,28 @@ export const SlideArabicAudioBar: React.FC<SlideArabicAudioBarProps> = ({
             ) : (
               <Sparkles className="w-3.5 h-3.5 text-[#F56900]" />
             )}
-            <span>تهجي الفتح الرباني</span>
+            <span>تهجي مباشر</span>
           </button>
+
+          {wordCount > 1 && (
+            <button
+              type="button"
+              disabled={!selectedTarget || audioLoadingMode !== null}
+              onClick={() => selectedTarget && void runCumulativeTahajji(selectedTarget)}
+              className={`min-h-[38px] px-3 py-1.5 rounded-xl font-display font-extrabold text-xs inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50 ${
+                activeAudioMode === 'cumulative_tahajji'
+                  ? 'duo-btn-orange'
+                  : 'bg-[#FFA900]/15 border-2 border-[#FFA900]/60 text-[#4A220D] hover:border-[#F56900]'
+              }`}
+            >
+              {audioLoadingMode === 'cumulative_tahajji' ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Repeat className="w-3.5 h-3.5 text-[#D98A00]" />
+              )}
+              <span>تهجي ويرجع</span>
+            </button>
+          )}
 
           <button
             type="button"
@@ -643,7 +759,7 @@ export const SlideArabicAudioBar: React.FC<SlideArabicAudioBarProps> = ({
             ) : (
               <Volume2 className="w-3.5 h-3.5 text-[#46A302]" />
             )}
-            <span>قراءة عادية</span>
+            <span>قراءة مباشرة</span>
           </button>
 
           {hasAyahCoords && (
@@ -710,7 +826,7 @@ export const SlideArabicAudioBar: React.FC<SlideArabicAudioBarProps> = ({
             </div>
           )}
 
-          {(audioPlaying || activeAudioMode !== null) && (
+          {(audioPlaying || activeAudioMode !== null || cumulativeBanner !== null) && (
             <div className="inline-flex items-center gap-1">
               <button
                 type="button"
@@ -733,13 +849,32 @@ export const SlideArabicAudioBar: React.FC<SlideArabicAudioBarProps> = ({
         </div>
       </div>
 
+      {/* Cumulative Tahajji Progress Banner */}
+      {cumulativeBanner && (
+        <div className="bg-[#FFF8EB] border-2 border-[#FFA900]/50 rounded-2xl px-3.5 py-2 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <Repeat className="w-4 h-4 text-[#D98A00] shrink-0" />
+            <span className="font-quran text-lg text-[#4A220D] leading-[1.9] truncate">
+              {cumulativeBanner}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={stopAllAudio}
+            className="px-2.5 py-1 rounded-lg bg-[#D95338] text-white text-[11px] font-bold cursor-pointer shrink-0"
+          >
+            إيقاف
+          </button>
+        </div>
+      )}
+
       {/* Tahajji Visual Steps Pill Ribbon */}
       {selectedTarget && (noorLoading || noorSteps.length > 0) && (
         <div className="bg-[#FDF6EE] border border-[#EADBC8] rounded-2xl p-2.5 space-y-1.5">
           <div className="flex items-center justify-between gap-2 text-[11px] font-bold text-[#7D4E35]">
             <span>تفصيل التهجي (منهج الفتح الرباني):</span>
             {noorDiacritizedWord && (
-              <span className="font-display font-extrabold text-sm text-[#4A220D]">
+              <span className="font-quran text-lg text-[#4A220D] leading-[1.8]">
                 {noorDiacritizedWord}
               </span>
             )}

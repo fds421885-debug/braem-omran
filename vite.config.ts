@@ -67,7 +67,7 @@ export default defineConfig(() => {
           skipWaiting: true,
           clientsClaim: true,
           cleanupOutdatedCaches: true,
-          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+          maximumFileSizeToCacheInBytes: 10 * 1024 * 1024,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,jpg,woff,woff2}', 'mushaf/**/*.json'],
           navigateFallbackDenylist: [/^\/api\//, /\/pdfjs\//, /\/version\.json/],
           runtimeCaching: [

@@ -56,6 +56,7 @@ import {
   type PhysicalDatabaseUsageSummary,
   type QuickLinkRecord,
   type QuranReviewType,
+  type SavedWordAudioBrowserItem,
   type StudentBookHomeworkItem,
   type StudentBookPlanRecord,
   type StudentMushafMistakesRecord,
@@ -1674,6 +1675,7 @@ const ALL_FEATURE_TAB_KEYS: ComplexFeatureTabKey[] = [
   'attendance',
   'library',
   'curricula',
+  'presentations',
   'accounts_invites',
   'mosques_halaqat',
 ];
@@ -3985,13 +3987,51 @@ function fnv1aHex(input: string, seedOffset: number): string {
   return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
+const GLOBAL_AUDIO_POOL_DOC_ID = 'global_audio_db_pool_v1';
+const LOCAL_GLOBAL_AUDIO_MIRROR_KEY = 'braem_global_audio_pool_v1';
+let cachedGlobalAudioPool: TabDbShard[] | null = null;
+let cachedGlobalAudioPoolAtMs = 0;
+
+/**
+ * Canonicalizes an Arabic word/phrase strictly for audio deduplication:
+ * - Removes tatweel, zero-width control chars, punctuation, and verse-end markers
+ * - Normalizes Unicode NFC and orders Shaddah before vowels so identical words share 1 clip
+ * - STRICTLY preserves all letters, prefixes (e.g. الله vs تالله), and harakat/shaddah/sukun!
+ */
+export function canonicalizeArabicForAudioKey(input: string): string {
+  return String(input || '')
+    .normalize('NFC')
+    .replace(/[\u200B-\u200F\u202A-\u202E\uFEFF]/g, '')
+    .replace(/\u0640/g, '')
+    .replace(/[۝۞،؛:.!?؟«»"'()[\]{}<>\u06DD\u06DE]/g, ' ')
+    .replace(/([\u064B-\u0650\u0652-\u065F\u0670])\u0651/g, '\u0651$1')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+export function buildGlobalWordAudioDocId(
+  mode: 'noor_albayan' | 'normal',
+  wordText: string,
+  contextSuffix = ''
+): string {
+  const normalized = canonicalizeArabicForAudioKey(wordText) || wordText.trim().replace(/\s+/g, ' ');
+  const cleanCtx =
+    mode === 'noor_albayan'
+      ? contextSuffix.replace(/[^a-zA-Z0-9_]/g, '').slice(0, 12)
+      : '';
+  const modeTag = mode === 'noor_albayan' ? `fr4${cleanCtx}` : 'nm';
+  const h1 = fnv1aHex(normalized, 0);
+  const h2 = fnv1aHex(normalized.split('').reverse().join(''), 0x9e3779b9);
+  return `gwa_${modeTag}_${h1}${h2}`.slice(0, 128);
+}
+
 export function buildWordAudioDocId(
   complexId: string,
   mode: 'noor_albayan' | 'normal',
   wordText: string,
   contextSuffix = ''
 ): string {
-  const normalized = wordText.trim().replace(/\s+/g, ' ');
+  const normalized = canonicalizeArabicForAudioKey(wordText) || wordText.trim().replace(/\s+/g, ' ');
   const cleanComplex = complexId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24) || 'cpx';
   const cleanCtx =
     mode === 'noor_albayan'
@@ -4003,48 +4043,674 @@ export function buildWordAudioDocId(
   return `wa_${cleanComplex}_${modeTag}_${h1}${h2}`.slice(0, 128);
 }
 
+function readLocalGlobalAudioMirror(): Record<
+  string,
+  { usedBytes: number; docsCount: number; status: TabDbShard['status'] }
+> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(LOCAL_GLOBAL_AUDIO_MIRROR_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw) as Record<
+      string,
+      { usedBytes: number; docsCount: number; status: TabDbShard['status'] }
+    >;
+  } catch {
+    return {};
+  }
+}
+
+function writeLocalGlobalAudioMirror(shards: TabDbShard[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const map: Record<
+      string,
+      { usedBytes: number; docsCount: number; status: TabDbShard['status'] }
+    > = {};
+    for (const sh of shards) {
+      map[sh.id] = {
+        usedBytes: sh.usedBytes,
+        docsCount: sh.docsCount,
+        status: sh.status,
+      };
+    }
+    window.localStorage.setItem(LOCAL_GLOBAL_AUDIO_MIRROR_KEY, JSON.stringify(map));
+  } catch {
+    // Non-fatal
+  }
+}
+
+export async function loadGlobalAudioDbPool(forceFresh = false): Promise<TabDbShard[]> {
+  if (!forceFresh && cachedGlobalAudioPool && Date.now() - cachedGlobalAudioPoolAtMs < 20_000) {
+    return cachedGlobalAudioPool;
+  }
+
+  try {
+    const snap = await getDocFresh(doc(primaryDb, 'dbRegistry', GLOBAL_AUDIO_POOL_DOC_ID));
+    if (!snap.exists()) {
+      cachedGlobalAudioPool = [];
+      cachedGlobalAudioPoolAtMs = Date.now();
+      return [];
+    }
+    const data = snap.data() as DbRegistryEntry;
+    const parsed = data.mosqueConfigsJson
+      ? (JSON.parse(data.mosqueConfigsJson) as { shards?: TabDbShard[] })
+      : { shards: [] };
+    const rawShards = Array.isArray(parsed?.shards) ? parsed.shards : [];
+    const localMirror = readLocalGlobalAudioMirror();
+    const merged = rawShards.map((sh) => {
+      const sid = sh.id || buildDbConnectionId(sh.config);
+      const loc = localMirror[sid];
+      if (!loc) return sh;
+      const bestUsed = Math.max(Number(sh.usedBytes) || 0, Number(loc.usedBytes) || 0);
+      const bestDocs = Math.max(Number(sh.docsCount) || 0, Number(loc.docsCount) || 0);
+      const maxB = Number(sh.maxBytes) || TAB_SHARD_MAX_BYTES;
+      const bestStatus: TabDbShard['status'] =
+        bestUsed >= maxB
+          ? 'full'
+          : sh.status === 'full' || loc.status === 'full'
+          ? 'full'
+          : sh.status;
+      return {
+        ...sh,
+        id: sid,
+        usedBytes: bestUsed,
+        docsCount: bestDocs,
+        status: bestStatus,
+      };
+    });
+    const normalized = normalizeShardPoolInvariants(merged);
+    cachedGlobalAudioPool = normalized;
+    cachedGlobalAudioPoolAtMs = Date.now();
+    return normalized;
+  } catch {
+    return cachedGlobalAudioPool || [];
+  }
+}
+
+export async function saveGlobalAudioDbPool(shards: TabDbShard[]): Promise<TabDbShard[]> {
+  const normalized = normalizeShardPoolInvariants(shards);
+  const regRef = doc(primaryDb, 'dbRegistry', GLOBAL_AUDIO_POOL_DOC_ID);
+  writeLocalGlobalAudioMirror(normalized);
+  cachedGlobalAudioPool = normalized;
+  cachedGlobalAudioPoolAtMs = Date.now();
+
+  if (normalized.length === 0) {
+    await deleteDoc(regRef).catch(() => {});
+    return [];
+  }
+
+  const compactShards = normalized.map((s) => ({
+    ...s,
+    config: {
+      apiKey: s.config.apiKey,
+      projectId: s.config.projectId,
+      appId: s.config.appId,
+      ...(s.config.authDomain ? { authDomain: s.config.authDomain } : {}),
+      ...(s.config.storageBucket ? { storageBucket: s.config.storageBucket } : {}),
+      ...(s.config.messagingSenderId ? { messagingSenderId: s.config.messagingSenderId } : {}),
+      ...(s.config.firestoreDatabaseId
+        ? { firestoreDatabaseId: s.config.firestoreDatabaseId }
+        : {}),
+    },
+  }));
+
+  const serialized = JSON.stringify({ shards: compactShards });
+  if (serialized.length > 31500) {
+    throw new Error('عدد قواعد بيانات الأصوات تجاوز الحد الأقصى المسموح في الفهرس.');
+  }
+
+  const existingSnap = await getDocFresh(regRef).catch(() => null);
+  if (existingSnap?.exists()) {
+    await updateDoc(regRef, {
+      name: 'سلسلة قواعد الصوتيات العامة',
+      hasExternalDb: false,
+      firebaseConfigJson: '',
+      mosqueConfigsJson: serialized,
+      active: false,
+      updatedAt: serverTimestamp(),
+    });
+  } else {
+    await setDoc(regRef, {
+      id: GLOBAL_AUDIO_POOL_DOC_ID,
+      name: 'سلسلة قواعد الصوتيات العامة',
+      hasExternalDb: false,
+      firebaseConfigJson: '',
+      mosqueConfigsJson: serialized,
+      active: false,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  return normalized;
+}
+
+async function measureAudioDbUsage(db: Firestore): Promise<{ usedBytes: number; docsCount: number }> {
+  let usedBytes = 0;
+  let docsCount = 0;
+  const snap = await getDocsFresh(collection(db, 'wordAudio')).catch(() => null);
+  if (snap) {
+    snap.forEach((d) => {
+      docsCount++;
+      usedBytes += estimateRecordBytes(d.data());
+    });
+  }
+  return { usedBytes, docsCount };
+}
+
+export async function addDbToGlobalAudioPool(params: {
+  config: ExternalFirebaseConfig;
+  maxBytes?: number;
+}): Promise<{ pool: TabDbShard[] }> {
+  const { config, maxBytes = SPARK_FREE_TIER_BYTES } = params;
+  const candidateDb = getFirestoreForConfig(config);
+  if (candidateDb === primaryDb) {
+    throw new Error('لا يمكن وضع القاعدة الأساسية ضمن قواعد الصوتيات المخصصة؛ يرجى اختيار قاعدة خارجية مستقلة.');
+  }
+
+  const candidateId = buildDbConnectionId(config);
+  const existingPool = await loadGlobalAudioDbPool(true);
+  if (
+    existingPool.some(
+      (s) => s.id === candidateId || buildDbConnectionId(s.config) === candidateId
+    )
+  ) {
+    throw new Error('قاعدة البيانات هذه مضافة بالفعل إلى قواعد الصوتيات.');
+  }
+
+  await registerExternalDatabaseConnection(config);
+  const stats = await measureAudioDbUsage(candidateDb);
+  const hasAvailableActive = existingPool.some((s) => s.status === 'active');
+
+  const newShard: TabDbShard = {
+    id: candidateId,
+    label: getDbDisplayLabel(config),
+    config,
+    usedBytes: stats.usedBytes,
+    maxBytes,
+    docsCount: stats.docsCount,
+    status: stats.usedBytes >= maxBytes ? 'full' : hasAvailableActive ? 'standby' : 'active',
+    createdAtMs: Date.now(),
+  };
+
+  const saved = await saveGlobalAudioDbPool([...existingPool, newShard]);
+  return { pool: saved };
+}
+
+export async function activateGlobalAudioShard(shardId: string): Promise<TabDbShard[]> {
+  const existingPool = await loadGlobalAudioDbPool(true);
+  const target = existingPool.find((s) => s.id === shardId);
+  if (!target) {
+    throw new Error('لم يتم العثور على قاعدة الأصوات المطلوبة.');
+  }
+  if (target.status === 'full' || target.usedBytes >= target.maxBytes) {
+    throw new Error('هذه القاعدة وصلت للحد الأقصى ولا يمكن الكتابة عليها مجدداً.');
+  }
+  const updated = existingPool.map((s) => ({
+    ...s,
+    status:
+      s.status === 'full'
+        ? ('full' as const)
+        : s.id === shardId
+        ? ('active' as const)
+        : ('standby' as const),
+  }));
+  return saveGlobalAudioDbPool(updated);
+}
+
+export async function removeShardFromGlobalAudioPool(shardId: string): Promise<TabDbShard[]> {
+  const existingPool = await loadGlobalAudioDbPool(true);
+  const filtered = existingPool.filter((s) => s.id !== shardId);
+  return saveGlobalAudioDbPool(filtered);
+}
+
+export async function recalculateGlobalAudioPoolUsage(): Promise<TabDbShard[]> {
+  const existingPool = await loadGlobalAudioDbPool(true);
+  if (existingPool.length === 0) return [];
+  const recalculated: TabDbShard[] = [];
+  for (const sh of existingPool) {
+    const sDb = getFirestoreForConfig(sh.config);
+    const stats = await measureAudioDbUsage(sDb);
+    const isFull = stats.usedBytes >= sh.maxBytes;
+    recalculated.push({
+      ...sh,
+      usedBytes: stats.usedBytes,
+      docsCount: stats.docsCount,
+      status: isFull ? 'full' : sh.status === 'full' ? 'standby' : sh.status,
+    });
+  }
+  return saveGlobalAudioDbPool(recalculated);
+}
+
+export async function migrateGlobalAudioShard(params: {
+  sourceShardId: string;
+  destConfig: ExternalFirebaseConfig;
+  removeSourceAfterMigration?: boolean;
+  onProgress?: (msg: string) => void;
+}): Promise<{ movedDocsCount: number; pool: TabDbShard[] }> {
+  const { sourceShardId, destConfig, removeSourceAfterMigration = true, onProgress } = params;
+  const existingPool = await loadGlobalAudioDbPool(true);
+  const sourceShard = existingPool.find((s) => s.id === sourceShardId);
+  if (!sourceShard) {
+    throw new Error('القاعدة المصدر غير موجودة في سلسلة قواعد الصوتيات.');
+  }
+  const destId = buildDbConnectionId(destConfig);
+  if (destId === sourceShard.id) {
+    throw new Error('القاعدة البديلة مطابقة تماماً للقاعدة المصدر.');
+  }
+  const sourceDb = getFirestoreForConfig(sourceShard.config);
+  const destDb = getFirestoreForConfig(destConfig);
+  if (destDb === primaryDb) {
+    throw new Error('لا يمكن نقل قواعد الصوتيات إلى القاعدة الأساسية.');
+  }
+
+  await registerExternalDatabaseConnection(destConfig);
+  let movedDocsCount = 0;
+  onProgress?.('جاري قراءة مقاطع الصوت من القاعدة المصدر...');
+  const snap = await getDocsFresh(collection(sourceDb, 'wordAudio')).catch(() => null);
+  if (snap) {
+    let idx = 0;
+    for (const d of snap.docs) {
+      idx++;
+      if (idx % 10 === 0) {
+        onProgress?.(`جاري نقل الصوتيات (${idx}/${snap.size})...`);
+      }
+      const data = d.data() as Record<string, unknown>;
+      await copyDocWithTimestamp(destDb, 'wordAudio', d.id, data);
+      await deleteDoc(doc(sourceDb, 'wordAudio', d.id)).catch(() => {});
+      movedDocsCount++;
+    }
+  }
+
+  const destStats = await measureAudioDbUsage(destDb);
+  const srcWasActive = sourceShard.status === 'active';
+  const existingDestIdx = existingPool.findIndex(
+    (s) => s.id === destId || buildDbConnectionId(s.config) === destId
+  );
+
+  let nextPool: TabDbShard[];
+  if (existingDestIdx >= 0) {
+    nextPool = existingPool
+      .map((s) => {
+        if (s.id === existingPool[existingDestIdx].id) {
+          return {
+            ...s,
+            usedBytes: destStats.usedBytes,
+            docsCount: destStats.docsCount,
+            status:
+              destStats.usedBytes >= s.maxBytes
+                ? ('full' as const)
+                : srcWasActive
+                ? ('active' as const)
+                : s.status,
+          };
+        }
+        if (s.id === sourceShardId && !removeSourceAfterMigration) {
+          return { ...s, usedBytes: 0, docsCount: 0, status: 'standby' as const };
+        }
+        return s;
+      })
+      .filter((s) => !(removeSourceAfterMigration && s.id === sourceShardId));
+  } else {
+    const replacementShard: TabDbShard = {
+      id: destId,
+      label: getDbDisplayLabel(destConfig),
+      config: destConfig,
+      usedBytes: destStats.usedBytes,
+      maxBytes: sourceShard.maxBytes || SPARK_FREE_TIER_BYTES,
+      docsCount: destStats.docsCount,
+      status:
+        destStats.usedBytes >= (sourceShard.maxBytes || SPARK_FREE_TIER_BYTES)
+          ? 'full'
+          : srcWasActive
+          ? 'active'
+          : 'standby',
+      createdAtMs: Date.now(),
+    };
+    nextPool = removeSourceAfterMigration
+      ? existingPool.map((s) => (s.id === sourceShardId ? replacementShard : s))
+      : [
+          ...existingPool.map((s) =>
+            s.id === sourceShardId ? { ...s, usedBytes: 0, docsCount: 0, status: 'standby' as const } : s
+          ),
+          replacementShard,
+        ];
+  }
+
+  const saved = await saveGlobalAudioDbPool(nextPool);
+  return { movedDocsCount, pool: saved };
+}
+
+export async function migrateLegacyWordAudioToGlobalPool(
+  onProgress?: (msg: string) => void
+): Promise<{ movedCount: number }> {
+  const globalPool = await loadGlobalAudioDbPool(true);
+  if (globalPool.length === 0) {
+    throw new Error('يرجى ربط قاعدة بيانات واحدة على الأقل في قسم «قواعد الأصوات» أولاً.');
+  }
+  const globalDbKeys = new Set(globalPool.map((s) => dbKeyFromConfig(s.config)));
+  const targets = await getAllKnownDatabases();
+  let movedCount = 0;
+
+  for (const t of targets) {
+    if (globalDbKeys.has(t.key)) continue;
+    onProgress?.(`فحص الصوتيات السابقة في ${t.label}...`);
+    const snap = await getDocsFresh(collection(t.db, 'wordAudio')).catch(() => null);
+    if (!snap || snap.empty) continue;
+    for (const d of snap.docs) {
+      const rec = d.data() as BookWordAudioRecord;
+      if (!rec || !rec.wordText) continue;
+      const gId = buildGlobalWordAudioDocId(
+        rec.mode === 'normal' ? 'normal' : 'noor_albayan',
+        rec.wordText
+      );
+      const payload = { ...rec, id: gId };
+      const bytes = estimateRecordBytes(payload);
+      await executeGlobalAudioWriteWithRollover(bytes, true, async (destDb) => {
+        await copyDocWithTimestamp(destDb, 'wordAudio', gId, payload as unknown as Record<string, unknown>);
+      });
+      await deleteDoc(doc(t.db, 'wordAudio', d.id)).catch(() => {});
+      movedCount++;
+    }
+  }
+  await recalculateGlobalAudioPoolUsage();
+  return { movedCount };
+}
+
+async function resolveWriteShardForGlobalAudio(
+  incomingBytes: number
+): Promise<{ db: Firestore; shard: TabDbShard }> {
+  const pool = await loadGlobalAudioDbPool();
+  const workingPool = pool.map((s) => ({ ...s }));
+  let current =
+    workingPool.find((s) => s.status === 'active') ||
+    workingPool.find((s) => s.status !== 'full') ||
+    null;
+
+  if (
+    !current ||
+    current.status === 'full' ||
+    current.usedBytes + incomingBytes > current.maxBytes
+  ) {
+    if (current) {
+      current.status = 'full';
+    }
+    const candidate = workingPool.find(
+      (s) => s.id !== current?.id && s.status !== 'full' && s.usedBytes + incomingBytes <= s.maxBytes
+    );
+    if (!candidate) {
+      await saveGlobalAudioDbPool(workingPool).catch(() => {});
+      throw new Error(
+        'امتلأت جميع قواعد البيانات المخصصة للصوتيات. يرجى ربط قاعدة أصوات جديدة في لوحة المبرمج.'
+      );
+    }
+    candidate.status = 'active';
+    current = candidate;
+    await saveGlobalAudioDbPool(workingPool).catch(() => {});
+  }
+
+  const writeDb = getFirestoreForConfig(current.config);
+  if (writeDb === primaryDb) {
+    throw new Error('حماية العزل: لا يمكن حفظ الصوتيات المخصصة داخل القاعدة الأساسية.');
+  }
+  return { db: writeDb, shard: current };
+}
+
+async function executeGlobalAudioWriteWithRollover<T>(
+  incomingBytes: number,
+  isNewDoc: boolean,
+  writeFn: (targetDb: Firestore, shard: TabDbShard) => Promise<T>
+): Promise<T> {
+  const first = await resolveWriteShardForGlobalAudio(incomingBytes);
+  try {
+    const res = await writeFn(first.db, first.shard);
+    const pool = (await loadGlobalAudioDbPool()).map((s) => {
+      if (s.id !== first.shard.id) return s;
+      const nextUsed = Math.max(0, s.usedBytes + incomingBytes);
+      const isNowFull = nextUsed >= s.maxBytes;
+      return {
+        ...s,
+        usedBytes: nextUsed,
+        docsCount: Math.max(0, s.docsCount + (isNewDoc ? 1 : 0)),
+        status: isNowFull ? ('full' as const) : s.status,
+      };
+    });
+    const curAfter = pool.find((s) => s.id === first.shard.id);
+    if (curAfter && curAfter.status === 'full') {
+      const nextStandby = pool.find((s) => s.id !== curAfter.id && s.status !== 'full');
+      if (nextStandby) nextStandby.status = 'active';
+    }
+    await saveGlobalAudioDbPool(pool).catch(() => {});
+    return res;
+  } catch (err) {
+    if (isQuotaOrFullError(err)) {
+      const rolledPool = (await loadGlobalAudioDbPool()).map((s) =>
+        s.id === first.shard.id ? { ...s, usedBytes: s.maxBytes, status: 'full' as const } : s
+      );
+      await saveGlobalAudioDbPool(rolledPool).catch(() => {});
+      const next = await resolveWriteShardForGlobalAudio(incomingBytes);
+      const retryRes = await writeFn(next.db, next.shard);
+      const finalPool = (await loadGlobalAudioDbPool()).map((s) =>
+        s.id === next.shard.id
+          ? {
+              ...s,
+              usedBytes: Math.max(0, s.usedBytes + incomingBytes),
+              docsCount: Math.max(0, s.docsCount + (isNewDoc ? 1 : 0)),
+            }
+          : s
+      );
+      await saveGlobalAudioDbPool(finalPool).catch(() => {});
+      return retryRes;
+    }
+    throw err;
+  }
+}
+
+export async function listAllSavedWordAudioEntries(): Promise<SavedWordAudioBrowserItem[]> {
+  const items: SavedWordAudioBrowserItem[] = [];
+  const seenKeyDoc = new Set<string>();
+  const globalPool = await loadGlobalAudioDbPool(true);
+
+  for (const sh of globalPool) {
+    const dbKey = dbKeyFromConfig(sh.config);
+    const sDb = getFirestoreForConfig(sh.config);
+    const snap = await getDocsFresh(collection(sDb, 'wordAudio')).catch(() => null);
+    if (!snap) continue;
+    snap.forEach((d) => {
+      const rec = d.data() as BookWordAudioRecord;
+      const uniqueKey = `${dbKey}::${d.id}`;
+      if (seenKeyDoc.has(uniqueKey)) return;
+      seenKeyDoc.add(uniqueKey);
+      items.push({
+        docId: d.id,
+        record: rec,
+        dbKey,
+        dbLabel: `قاعدة أصوات: ${sh.label}`,
+        isGlobalPool: true,
+        config: sh.config,
+        approxBytes: Number(rec.byteSize) || estimateRecordBytes(rec),
+      });
+    });
+  }
+
+  const targets = await getAllKnownDatabases();
+  for (const t of targets) {
+    const snap = await getDocsFresh(collection(t.db, 'wordAudio')).catch(() => null);
+    if (!snap) continue;
+    snap.forEach((d) => {
+      const rec = d.data() as BookWordAudioRecord;
+      const uniqueKey = `${t.key}::${d.id}`;
+      if (seenKeyDoc.has(uniqueKey)) return;
+      seenKeyDoc.add(uniqueKey);
+      items.push({
+        docId: d.id,
+        record: rec,
+        dbKey: t.key,
+        dbLabel: t.label,
+        isGlobalPool: false,
+        config: t.config,
+        approxBytes: Number(rec.byteSize) || estimateRecordBytes(rec),
+      });
+    });
+  }
+
+  return items.sort((a, b) => {
+    const aSec = (a.record.updatedAt as { seconds?: number } | undefined)?.seconds || 0;
+    const bSec = (b.record.updatedAt as { seconds?: number } | undefined)?.seconds || 0;
+    if (bSec !== aSec) return bSec - aSec;
+    return String(a.record.wordText || '').localeCompare(String(b.record.wordText || ''), 'ar');
+  });
+}
+
+export async function deleteSavedWordAudioEntry(item: SavedWordAudioBrowserItem): Promise<void> {
+  const hostDb = item.config ? getFirestoreForConfig(item.config) : primaryDb;
+  await deleteDoc(doc(hostDb, 'wordAudio', item.docId));
+  if (item.isGlobalPool) {
+    await recalculateGlobalAudioPoolUsage().catch(() => {});
+  }
+}
+
+export async function overwriteSavedWordAudioEntry(params: {
+  item: SavedWordAudioBrowserItem;
+  diacritizedWord: string;
+  wasAutoDiacritized: boolean;
+  fullReading: string;
+  steps: { part: string; ruleLabel: string; reading: string }[];
+  audioBase64: string;
+  mimeType: string;
+}): Promise<BookWordAudioRecord> {
+  const hostDb = params.item.config ? getFirestoreForConfig(params.item.config) : primaryDb;
+  const shrunk = shrinkWavBase64ForDb(params.audioBase64 || '', params.mimeType || 'audio/wav');
+  const cleanSteps = (Array.isArray(params.steps) ? params.steps : []).slice(0, 60).map((s) => ({
+    part: String(s.part || '').slice(0, 80),
+    ruleLabel: String(s.ruleLabel || '').slice(0, 140),
+    reading: String(s.reading || '').slice(0, 180),
+  }));
+
+  const updatedFields = {
+    diacritizedWord: String(params.diacritizedWord || params.item.record.wordText).slice(0, 1200),
+    wasAutoDiacritized: Boolean(params.wasAutoDiacritized),
+    fullReading: String(params.fullReading || params.item.record.wordText).slice(0, 2500),
+    steps: cleanSteps,
+    audioBase64: shrunk.audioBase64,
+    mimeType: shrunk.mimeType || 'audio/wav',
+  };
+  const byteSize = estimateRecordBytes({
+    ...params.item.record,
+    ...updatedFields,
+  });
+
+  await updateDoc(doc(hostDb, 'wordAudio', params.item.docId), {
+    ...updatedFields,
+    byteSize,
+    updatedAt: serverTimestamp(),
+  });
+
+  if (params.item.isGlobalPool) {
+    await recalculateGlobalAudioPoolUsage().catch(() => {});
+  }
+
+  return {
+    ...params.item.record,
+    ...updatedFields,
+    byteSize,
+  };
+}
+
 /**
- * Searches ALL databases assigned to the `library` tab (active + older full shards)
- * so previously saved word/tahajji audio is served immediately without regenerating.
+ * Searches Global Audio DB Pool (when configured), OR Presentations/Library DB shards,
+ * using canonicalized Arabic vocalized text so shared words (like اللَّهُ) are reused globally across devices,
+ * while distinct prefixes/harakat (like تَاللَّهِ vs اللَّهِ) remain strictly separate.
  */
 export async function lookupWordAudioAcrossLibrary(
   workspace: ComplexWorkspaceData,
   mode: 'noor_albayan' | 'normal',
   wordText: string,
-  contextSuffix = ''
+  contextSuffix = '',
+  options?: { preferredTabKey?: 'library' | 'presentations' }
 ): Promise<BookWordAudioRecord | null> {
-  const cleanText = wordText.trim().replace(/\s+/g, ' ');
+  const cleanText = canonicalizeArabicForAudioKey(wordText) || wordText.trim().replace(/\s+/g, ' ');
   if (!cleanText) return null;
-  const docId = buildWordAudioDocId(workspace.complex.id, mode, cleanText, contextSuffix);
 
-  try {
-    const readDbs = getReadDbsForComplexTab(workspace, 'library');
+  const globalDocId = buildGlobalWordAudioDocId(mode, cleanText, contextSuffix);
+  const legacyDocId = buildWordAudioDocId(workspace.complex.id, mode, cleanText, contextSuffix);
+
+  const searchDbsForDoc = async (dbs: Firestore[]): Promise<BookWordAudioRecord | null> => {
     const results = await Promise.all(
-      readDbs.map(async (libDb) => {
+      dbs.map(async (targetDb) => {
         try {
-          const snap = await getDoc(doc(libDb, 'wordAudio', docId));
-          if (!snap.exists()) return null;
-          return snap.data() as BookWordAudioRecord;
+          const gSnap = await getDoc(doc(targetDb, 'wordAudio', globalDocId)).catch(() => null);
+          if (gSnap?.exists()) return gSnap.data() as BookWordAudioRecord;
+          const lSnap = await getDoc(doc(targetDb, 'wordAudio', legacyDocId)).catch(() => null);
+          if (lSnap?.exists()) return lSnap.data() as BookWordAudioRecord;
+          return null;
         } catch {
           return null;
         }
       })
     );
-
-    // Prefer record containing actual WAV audio bytes, fallback to breakdown-only record
-    const withAudio = results.find(
-      (r) => r && r.audioBase64 && r.audioBase64.length > 120
-    );
+    const withAudio = results.find((r) => r && r.audioBase64 && r.audioBase64.length > 120);
     if (withAudio) return withAudio;
     return results.find((r) => Boolean(r)) || null;
+  };
+
+  try {
+    // 1. Check Global Audio DB Pool first (ordered active -> standby/full shards)
+    const globalPool = await loadGlobalAudioDbPool();
+    if (globalPool.length > 0) {
+      const orderedGlobal = [
+        ...globalPool.filter((s) => s.status === 'active'),
+        ...globalPool.filter((s) => s.status !== 'active'),
+      ];
+      const globalDbs = orderedGlobal
+        .map((s) => getFirestoreForConfig(s.config))
+        .filter((d) => d !== primaryDb);
+
+      const globalHit = await searchDbsForDoc(globalDbs);
+      if (globalHit) return globalHit;
+
+      // Also scan by exact normalized wordText in case docId came from another context
+      for (const gDb of globalDbs) {
+        const qSnap = await getDocs(
+          query(
+            collection(gDb, 'wordAudio'),
+            where('wordText', '==', cleanText),
+            where('mode', '==', mode)
+          )
+        ).catch(() => null);
+        const hitDoc = qSnap?.docs.find((d) => {
+          const rec = d.data() as BookWordAudioRecord;
+          return rec && rec.audioBase64 && rec.audioBase64.length > 120;
+        });
+        if (hitDoc) return hitDoc.data() as BookWordAudioRecord;
+      }
+      return null;
+    }
+
+    // 2. If Presentations has its own isolated DB and caller is from Presentations, search there
+    const hasIsolatedPresentations =
+      Boolean(workspace.tabPools?.presentations?.length) ||
+      Boolean(workspace.tabConfigMap?.presentations);
+    if (options?.preferredTabKey === 'presentations' && hasIsolatedPresentations) {
+      const presDbs = getReadDbsForComplexTab(workspace, 'presentations');
+      const presHit = await searchDbsForDoc(presDbs);
+      if (presHit) return presHit;
+    }
+
+    // 3. Fallback to complex's Library DB shards
+    const readDbs = getReadDbsForComplexTab(workspace, 'library');
+    return await searchDbsForDoc(readDbs);
   } catch {
     return null;
   }
 }
 
 /**
- * Persists a newly generated word/tahajji pronunciation + audio WAV into the
- * currently active `library` database shard (auto-rolling over at 4 GB).
+ * Persists a newly generated word/tahajji pronunciation + audio WAV into:
+ * 1) Global Audio DB Pool (strictly isolated from primary/tab DBs) if configured,
+ * 2) Presentations dedicated DB if preferredTabKey === 'presentations' and Presentations is isolated,
+ * 3) Complex's active `library` DB shard otherwise.
  */
 export async function saveWordAudioToLibraryDb(params: {
   workspace: ComplexWorkspaceData;
@@ -4058,18 +4724,16 @@ export async function saveWordAudioToLibraryDb(params: {
   mimeType: string;
   createdBy?: string;
   contextSuffix?: string;
+  preferredTabKey?: 'library' | 'presentations';
 }): Promise<BookWordAudioRecord | null> {
   const { workspace, mode, wordText, diacritizedWord, wasAutoDiacritized, fullReading, steps } =
     params;
-  const cleanText = wordText.trim().replace(/\s+/g, ' ').slice(0, 1200);
+  const cleanText = (
+    canonicalizeArabicForAudioKey(wordText) || wordText.trim().replace(/\s+/g, ' ')
+  ).slice(0, 1200);
   if (!cleanText) return null;
 
-  const docId = buildWordAudioDocId(
-    workspace.complex.id,
-    mode,
-    cleanText,
-    params.contextSuffix || ''
-  );
+  const docId = buildGlobalWordAudioDocId(mode, cleanText, params.contextSuffix || '');
   const shrunk = shrinkWavBase64ForDb(params.audioBase64 || '', params.mimeType || 'audio/wav');
   const cleanSteps = (Array.isArray(steps) ? steps : []).slice(0, 60).map((s) => ({
     part: String(s.part || '').slice(0, 80),
@@ -4098,9 +4762,54 @@ export async function saveWordAudioToLibraryDb(params: {
   };
 
   try {
-    const existingLoc = await findExistingDocInTabPool(workspace, 'library', 'wordAudio', docId);
+    // Priority 1: Global Audio DB Pool (never writes to primaryDb or tab DBs!)
+    const globalPool = await loadGlobalAudioDbPool();
+    if (globalPool.length > 0) {
+      const orderedGlobal = [
+        ...globalPool.filter((s) => s.status === 'active'),
+        ...globalPool.filter((s) => s.status !== 'active'),
+      ];
+      for (const sh of orderedGlobal) {
+        const gDb = getFirestoreForConfig(sh.config);
+        const snap = await getDocFresh(doc(gDb, 'wordAudio', docId)).catch(() => null);
+        if (snap?.exists()) {
+          if (shrunk.audioBase64.length > 120) {
+            await updateDoc(doc(gDb, 'wordAudio', docId), {
+              diacritizedWord: record.diacritizedWord,
+              wasAutoDiacritized: record.wasAutoDiacritized,
+              fullReading: record.fullReading,
+              steps: record.steps,
+              audioBase64: record.audioBase64,
+              mimeType: record.mimeType,
+              byteSize: record.byteSize,
+              updatedAt: serverTimestamp(),
+            }).catch(() => {});
+          }
+          return record;
+        }
+      }
+
+      await executeGlobalAudioWriteWithRollover(byteSize, true, async (targetDb) => {
+        await setDoc(doc(targetDb, 'wordAudio', docId), {
+          ...record,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      });
+      return record;
+    }
+
+    // Priority 2: Presentations isolated DB if caller is from Presentations & isolated DB exists
+    const hasIsolatedPresentations =
+      Boolean(workspace.tabPools?.presentations?.length) ||
+      Boolean(workspace.tabConfigMap?.presentations);
+    const targetTabKey: ComplexFeatureTabKey =
+      params.preferredTabKey === 'presentations' && hasIsolatedPresentations
+        ? 'presentations'
+        : 'library';
+
+    const existingLoc = await findExistingDocInTabPool(workspace, targetTabKey, 'wordAudio', docId);
     if (existingLoc.exists) {
-      // Only update if we now have richer WAV audio or better diacritics
       if (shrunk.audioBase64.length > 120) {
         await updateDoc(doc(existingLoc.db, 'wordAudio', docId), {
           diacritizedWord: record.diacritizedWord,
@@ -4116,7 +4825,7 @@ export async function saveWordAudioToLibraryDb(params: {
       return record;
     }
 
-    await executeTabWriteWithRollover(workspace, 'library', byteSize, true, async (targetDb) => {
+    await executeTabWriteWithRollover(workspace, targetTabKey, byteSize, true, async (targetDb) => {
       await setDoc(doc(targetDb, 'wordAudio', docId), {
         ...record,
         createdAt: serverTimestamp(),
@@ -4125,7 +4834,6 @@ export async function saveWordAudioToLibraryDb(params: {
     });
     return record;
   } catch {
-    // Non-fatal: playback still succeeded via local cache/speech even if user lacks DB write permissions
     return null;
   }
 }
@@ -4407,7 +5115,8 @@ async function measureTabUsageOnDb(
   let docsCount = 0;
   const colMap: Record<ComplexFeatureTabKey, string[]> = {
     attendance: ['attendance'],
-    curricula: ['curricula', 'studentQuranPlans', 'studentMushafMistakes', 'studentBookPlans', 'presentations'],
+    curricula: ['curricula', 'studentQuranPlans', 'studentMushafMistakes', 'studentBookPlans'],
+    presentations: ['presentations', 'wordAudio'],
     library: ['books', 'bookPages', 'wordAudio'],
     mosques_halaqat: ['mosques', 'halaqat'],
     accounts_invites: ['accounts', 'inviteLinks', 'quickLinks'],
@@ -4474,7 +5183,6 @@ async function migrateSingleTabRecords(params: {
         'studentQuranPlans',
         'studentMushafMistakes',
         'studentBookPlans',
-        'presentations',
       ]) {
         const snap = await getDocsFresh(
           query(collection(sDb, colName), where('complexId', '==', complexId))
@@ -4497,7 +5205,6 @@ async function migrateSingleTabRecords(params: {
         'studentQuranPlans',
         'studentMushafMistakes',
         'studentBookPlans',
-        'presentations',
       ]) {
         const pSnap = await getDocs(
           query(collection(primaryDb, colName), where('complexId', '==', complexId))
@@ -4506,6 +5213,36 @@ async function migrateSingleTabRecords(params: {
           for (const d of pSnap.docs) {
             await deleteDoc(doc(primaryDb, colName, d.id)).catch(() => {});
           }
+        }
+      }
+    }
+    return { movedCount, movedBytes };
+  }
+
+  if (tabKey === 'presentations') {
+    for (const sDb of uniqueSources) {
+      onProgress?.('جاري نقل العروض التقديمية التفاعلية...');
+      const snap = await getDocsFresh(
+        query(collection(sDb, 'presentations'), where('complexId', '==', complexId))
+      ).catch(() => null);
+      if (!snap) continue;
+      for (const d of snap.docs) {
+        const data = d.data() as Record<string, unknown>;
+        movedBytes += estimateRecordBytes(data);
+        if (sDb !== destDb) {
+          await copyDocWithTimestamp(destDb, 'presentations', d.id, data);
+          await deleteDoc(doc(sDb, 'presentations', d.id)).catch(() => {});
+        }
+        movedCount++;
+      }
+    }
+    if (destDb !== primaryDb) {
+      const pSnap = await getDocs(
+        query(collection(primaryDb, 'presentations'), where('complexId', '==', complexId))
+      ).catch(() => null);
+      if (pSnap) {
+        for (const d of pSnap.docs) {
+          await deleteDoc(doc(primaryDb, 'presentations', d.id)).catch(() => {});
         }
       }
     }
@@ -4708,6 +5445,13 @@ export async function addShardToComplexTabPool(params: {
   if (existingPool.length === 0) {
     const activeTabDb = getDbForComplexTab(workspace, tabKey);
     const sourceDbs: Firestore[] = [activeTabDb, workspace.complexDb];
+    if (tabKey === 'presentations') {
+      try {
+        sourceDbs.push(...getReadDbsForComplexTab(workspace, 'curricula'));
+      } catch {
+        // Ignore if curricula isolated on unreachable DB
+      }
+    }
     if (tabKey === 'accounts_invites' || tabKey === 'mosques_halaqat') {
       sourceDbs.push(
         ...Object.values(workspace.mosqueDbMap),
@@ -4935,6 +5679,13 @@ export async function assignExternalDbToComplexTabs(params: {
   for (const tabKey of tabKeys) {
     const readDbs = getReadDbsForComplexTab(workspace, tabKey);
     const sourceDbs: Firestore[] = [...readDbs, workspace.complexDb];
+    if (tabKey === 'presentations') {
+      try {
+        sourceDbs.push(...getReadDbsForComplexTab(workspace, 'curricula'));
+      } catch {
+        // Optional
+      }
+    }
     if (tabKey === 'accounts_invites' || tabKey === 'mosques_halaqat') {
       sourceDbs.push(
         ...Object.values(workspace.mosqueDbMap),
@@ -5158,7 +5909,6 @@ export async function cloneComplexToBackupDatabase(params: {
   const seenQuranPlanIds = new Set<string>();
   const seenMistakeIds = new Set<string>();
   const seenBookPlanIds = new Set<string>();
-  const seenPresentationIds = new Set<string>();
   for (const curDb of curriculaReadDbs) {
     const qpSnap = await getDocsFresh(
       query(collection(curDb, 'studentQuranPlans'), where('complexId', '==', workspace.complex.id))
@@ -5208,8 +5958,16 @@ export async function cloneComplexToBackupDatabase(params: {
         totalCopiedDocs++;
       }
     }
+  }
+
+  const presentationsReadDbs =
+    workspace.tabPools?.presentations?.length || workspace.tabConfigMap?.presentations
+      ? getReadDbsForComplexTab(workspace, 'presentations')
+      : curriculaReadDbs;
+  const seenPresentationIds = new Set<string>();
+  for (const prsDb of presentationsReadDbs) {
     const prSnap = await getDocsFresh(
-      query(collection(curDb, 'presentations'), where('complexId', '==', workspace.complex.id))
+      query(collection(prsDb, 'presentations'), where('complexId', '==', workspace.complex.id))
     ).catch(() => null);
     if (prSnap) {
       for (const d of prSnap.docs) {
@@ -5255,9 +6013,8 @@ export async function exportComplexTabJsonPayload(
     const qpMap = new Map<string, StudentQuranPlanRecord>();
     const mmMap = new Map<string, StudentMushafMistakesRecord>();
     const bpMap = new Map<string, StudentBookPlanRecord>();
-    const prMap = new Map<string, Record<string, unknown>>();
     for (const curDb of getReadDbsForComplexTab(workspace, 'curricula')) {
-      const [qpSnap, mmSnap, bpSnap, prSnap] = await Promise.all([
+      const [qpSnap, mmSnap, bpSnap] = await Promise.all([
         getDocsFresh(
           query(collection(curDb, 'studentQuranPlans'), where('complexId', '==', workspace.complex.id))
         ).catch(() => null),
@@ -5270,9 +6027,6 @@ export async function exportComplexTabJsonPayload(
         getDocsFresh(
           query(collection(curDb, 'studentBookPlans'), where('complexId', '==', workspace.complex.id))
         ).catch(() => null),
-        getDocsFresh(
-          query(collection(curDb, 'presentations'), where('complexId', '==', workspace.complex.id))
-        ).catch(() => null),
       ]);
       qpSnap?.forEach((d) => {
         if (!qpMap.has(d.id)) qpMap.set(d.id, d.data() as StudentQuranPlanRecord);
@@ -5283,17 +6037,28 @@ export async function exportComplexTabJsonPayload(
       bpSnap?.forEach((d) => {
         if (!bpMap.has(d.id)) bpMap.set(d.id, d.data() as StudentBookPlanRecord);
       });
-      prSnap?.forEach((d) => {
-        if (!prMap.has(d.id)) prMap.set(d.id, d.data() as Record<string, unknown>);
-      });
     }
     data = {
       curricula: records,
       studentQuranPlans: Array.from(qpMap.values()),
       studentMushafMistakes: Array.from(mmMap.values()),
       studentBookPlans: Array.from(bpMap.values()),
-      presentations: Array.from(prMap.values()),
     };
+  } else if (tabKey === 'presentations') {
+    const prMap = new Map<string, Record<string, unknown>>();
+    const prsDbs =
+      workspace.tabPools?.presentations?.length || workspace.tabConfigMap?.presentations
+        ? getReadDbsForComplexTab(workspace, 'presentations')
+        : getReadDbsForComplexTab(workspace, 'curricula');
+    for (const prsDb of prsDbs) {
+      const prSnap = await getDocsFresh(
+        query(collection(prsDb, 'presentations'), where('complexId', '==', workspace.complex.id))
+      ).catch(() => null);
+      prSnap?.forEach((d) => {
+        if (!prMap.has(d.id)) prMap.set(d.id, d.data() as Record<string, unknown>);
+      });
+    }
+    data = { presentations: Array.from(prMap.values()) };
   } else if (tabKey === 'library') {
     const books = await listBooksInComplex(workspace);
     const bookPages: BookPageRecord[] = [];
@@ -5349,6 +6114,7 @@ export async function exportAllComplexBackupFiles(workspace: ComplexWorkspaceDat
     'attendance',
     'library',
     'curricula',
+    'presentations',
   ];
 
   const files: { filename: string; content: string }[] = [];
@@ -5579,7 +6345,43 @@ export async function importComplexTabJsonPayload(params: {
       };
       await executeTabWriteWithRollover(
         workspace,
-        'curricula',
+        'presentations',
+        estimateRecordBytes(payload),
+        true,
+        async (writeDb) => {
+          await upsertTransferredDoc(writeDb, 'presentations', prId, payload);
+        }
+      );
+      importedCount++;
+    }
+    return { importedCount };
+  }
+
+  if (tabKey === 'presentations') {
+    const presentationsList = Array.isArray(sourceData.presentations)
+      ? (sourceData.presentations as Array<Record<string, unknown>>)
+      : [];
+    for (const pr of presentationsList) {
+      if (!pr || !pr.id || !pr.title) continue;
+      const prId = String(pr.id);
+      const payload: Record<string, unknown> = {
+        id: prId,
+        complexId,
+        mosqueId: String(pr.mosqueId || ''),
+        halaqaId: String(pr.halaqaId || ''),
+        title: String(pr.title || 'عرض مستورد').slice(0, 180),
+        description: String(pr.description || '').slice(0, 600),
+        sourceType: pr.sourceType === 'pptx_import' ? 'pptx_import' : 'ai',
+        sourceFileName: String(pr.sourceFileName || '').slice(0, 200),
+        slides: Array.isArray(pr.slides) ? pr.slides.slice(0, 40) : [],
+        chatHistory: Array.isArray(pr.chatHistory) ? pr.chatHistory.slice(-60) : [],
+        createdBy: String(pr.createdBy || auth.currentUser?.uid || 'admin').slice(0, 128),
+        createdByName: String(pr.createdByName || 'استيراد JSON').slice(0, 120),
+        active: pr.active !== false,
+      };
+      await executeTabWriteWithRollover(
+        workspace,
+        'presentations',
         estimateRecordBytes(payload),
         true,
         async (writeDb) => {
@@ -6144,7 +6946,7 @@ const ALL_TRACKED_COLLECTIONS: {
   { col: 'studentQuranPlans', label: 'خطط الحفظ والمراجعة', tabGroup: 'curricula' },
   { col: 'studentMushafMistakes', label: 'أخطاء تلاوة الطلاب', tabGroup: 'curricula' },
   { col: 'studentBookPlans', label: 'متابعة وواجبات الكتب', tabGroup: 'curricula' },
-  { col: 'presentations', label: 'العروض التقديمية التفاعلية', tabGroup: 'curricula' },
+  { col: 'presentations', label: 'العروض التقديمية التفاعلية', tabGroup: 'presentations' },
   { col: 'broadcasts', label: 'الإشعارات والرسائل', tabGroup: 'core_broadcasts' },
   { col: 'stats', label: 'الإحصائيات', tabGroup: 'core_broadcasts' },
   { col: 'dbRegistry', label: 'سجل القواعد المرتبطة', tabGroup: 'core_broadcasts', primaryOnly: true },
@@ -6303,6 +7105,28 @@ export async function inspectAllDatabasesUsage(params: {
     }
   }
 
+  // Include Global Audio DB Pool shards explicitly in DB usage report
+  const globalAudioPool = await loadGlobalAudioDbPool(true).catch(() => []);
+  const globalAudioHostDbKeys = new Set<string>();
+  if (selectedComplexId === 'all' && globalAudioPool.length > 0) {
+    globalAudioPool.forEach((sh, idx) => {
+      const aKey = dbKeyFromConfig(sh.config);
+      globalAudioHostDbKeys.add(aKey);
+      const entry = ensureEntry({
+        dbKey: aKey,
+        dbLabel: `قاعدة أصوات: ${sh.label}`,
+        projectId: sh.config.projectId,
+        firestoreDatabaseId: sh.config.firestoreDatabaseId || '(default)',
+        isPrimary: false,
+        db: getFirestoreForConfig(sh.config),
+        limitBytes: sh.maxBytes || SPARK_FREE_TIER_BYTES,
+      });
+      const stAr =
+        sh.status === 'active' ? 'نشطة للصوتيات' : sh.status === 'full' ? 'ممتلئة' : 'احتياط للصوتيات';
+      entry.roleTags.add(`قاعدة أصوات عالمية #${idx + 1} (${stAr})`);
+    });
+  }
+
   // Also include standalone external DBs from registry when viewing 'all'
   if (selectedComplexId === 'all') {
     const known = await getAllKnownDatabases();
@@ -6332,6 +7156,7 @@ export async function inspectAllDatabasesUsage(params: {
     ['attendance', { label: COMPLEX_FEATURE_TAB_LABELS.attendance, usedBytes: 0, docsCount: 0 }],
     ['library', { label: COMPLEX_FEATURE_TAB_LABELS.library, usedBytes: 0, docsCount: 0 }],
     ['curricula', { label: COMPLEX_FEATURE_TAB_LABELS.curricula, usedBytes: 0, docsCount: 0 }],
+    ['presentations', { label: COMPLEX_FEATURE_TAB_LABELS.presentations, usedBytes: 0, docsCount: 0 }],
     ['core_broadcasts', { label: 'الإشعارات والنظام', usedBytes: 0, docsCount: 0 }],
   ]);
 
@@ -6453,10 +7278,13 @@ export async function inspectAllDatabasesUsage(params: {
     return b.usedBytes - a.usedBytes;
   });
 
-  const resolvedAudioHostKeys = new Set<string>([
-    ...Array.from(libraryHostDbKeys),
-    ...Array.from(dbKeysWithAudioDocs),
-  ]);
+  const resolvedAudioHostKeys =
+    globalAudioHostDbKeys.size > 0
+      ? globalAudioHostDbKeys
+      : new Set<string>([
+          ...Array.from(libraryHostDbKeys),
+          ...Array.from(dbKeysWithAudioDocs),
+        ]);
   let libraryHosts = databaseSummaries.filter((d) => resolvedAudioHostKeys.has(d.dbKey));
   if (libraryHosts.length === 0 && databaseSummaries.length > 0) {
     libraryHosts = [databaseSummaries[0]];
@@ -6496,6 +7324,8 @@ export async function inspectAllDatabasesUsage(params: {
     librarySparkRemainingBytes,
     librarySparkUsagePercent,
     estimatedRemainingAudioClips: Math.floor(librarySparkRemainingBytes / avgAudioClipBytes),
+    globalAudioPoolActive: globalAudioPool.length > 0,
+    globalAudioHostCount: globalAudioPool.length,
   };
 
   const totalDocsCount = databaseSummaries.reduce((acc, d) => acc + d.totalDocs, 0);
@@ -7753,8 +8583,8 @@ export async function gatherProgrammerAiPlatformSnapshot(params: {
           'studentQuranPlans',
           'studentMushafMistakes',
           'studentBookPlans',
-          'presentations',
         ],
+        presentations: ['presentations'],
       },
     },
     freeLimitsReference: {

@@ -14,11 +14,14 @@ import {
   Minimize2,
   Plus,
   Presentation,
+  Repeat,
   Save,
   Send,
   Sparkles,
   Trash2,
+  Volume2,
   Wand2,
+  X,
 } from 'lucide-react';
 import { toArabicIndicDigits } from '../services/mushafService';
 import type { ComplexWorkspaceData } from '../services/platformService';
@@ -38,7 +41,12 @@ import type {
   PresentationThemeTone,
 } from '../types/platform';
 import { ModernLoader } from './ModernLoader';
-import { SlideArabicAudioBar, type SlideAudioTarget } from './SlideArabicAudioBar';
+import {
+  SlideArabicAudioBar,
+  type SlideAudioCommand,
+  type SlideAudioPlayMode,
+  type SlideAudioTarget,
+} from './SlideArabicAudioBar';
 
 interface PresentationsSectionProps {
   workspace: ComplexWorkspaceData;
@@ -58,14 +66,14 @@ const STARTER_IDEAS: string[] = [
 function getToneFrameClasses(tone: PresentationThemeTone): string {
   switch (tone) {
     case 'orange':
-      return 'bg-gradient-to-br from-[#FFF8F1] via-[#FFFFFF] to-[#FDF1E4] border-[#F56900]/45';
+      return 'bg-[#FFFDF9] border-[#F56900]/45';
     case 'green':
-      return 'bg-gradient-to-br from-[#F4FBE9] via-[#FFFFFF] to-[#FDF6EE] border-[#58CC02]/50';
+      return 'bg-[#FAFEF6] border-[#58CC02]/50';
     case 'espresso':
-      return 'bg-gradient-to-br from-[#FDF6EE] via-[#FFF9F2] to-[#F5E6D3] border-[#4A220D]/35';
+      return 'bg-[#FDF6EE] border-[#4A220D]/30';
     case 'cream':
     default:
-      return 'bg-gradient-to-br from-[#FFFFFF] via-[#FDF6EE] to-[#FAF0E1] border-[#EADBC8]';
+      return 'bg-white border-[#EADBC8]';
   }
 }
 
@@ -118,10 +126,17 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
 
   // Persistence & Presenter Mode
   const [saving, setSaving] = useState(false);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [fullscreenOpen, setFullscreenOpen] = useState(false);
   const [selectedAudioTarget, setSelectedAudioTarget] = useState<SlideAudioTarget | null>(null);
+  const [audioCommand, setAudioCommand] = useState<SlideAudioCommand | null>(null);
+  const [speakerMenu, setSpeakerMenu] = useState<{
+    target: SlideAudioTarget;
+    top: number;
+    left: number;
+  } | null>(null);
 
   const pptxInputRef = useRef<HTMLInputElement | null>(null);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
@@ -188,6 +203,8 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
     setPendingPptxSlides(null);
     setAiError(null);
     setSaveFeedback(null);
+    setHasUnsavedChanges(false);
+    setSpeakerMenu(null);
     setChatInput(options?.initialPrompt || '');
     setViewMode('studio');
     if (options?.autoStartPptx) {
@@ -213,6 +230,8 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
     setPendingPptxSlides(null);
     setAiError(null);
     setSaveFeedback(null);
+    setHasUnsavedChanges(false);
+    setSpeakerMenu(null);
     setViewMode('studio');
     setFullscreenOpen(startFullscreen);
   };
@@ -246,6 +265,7 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
           createdByName: currentUserName,
         });
         setActiveId(saved.id);
+        setHasUnsavedChanges(false);
         setPresentations((prev) => {
           const rest = prev.filter((p) => p.id !== saved.id);
           return [saved, ...rest];
@@ -303,6 +323,8 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
         currentSlides: slides,
         targetSlideIndex: targetedIdx,
         importedPptxSlides: pptxToUse,
+        complexId: workspace.complex.id,
+        accountId: currentUserId,
       });
 
       let mergedSlides: PresentationSlide[];
@@ -428,7 +450,7 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
       subtitle: 'اطلب من الذكاء الاصطناعي تعديل هذه الشريحة أو تعبئتها',
       layout: 'points',
       themeTone: 'cream',
-      htmlContent: `<div class="space-y-4 p-2"><h3 class="font-display text-2xl font-extrabold text-[#4A220D]">شريحة قابلة للتخصيص بالذكاء الاصطناعي</h3><p class="text-sm text-[#7D4E35]">اختر «تعديل هذه الشريحة بالـ AI» واكتب ما تريده فيها من آيات أو كلمات للتهجي أو نقاط شرح.</p><div class="flex flex-wrap gap-2"><span data-tahajji="true" class="tahajji-chip inline-flex items-center px-3 py-1.5 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE] text-[#4A220D] font-extrabold cursor-pointer">بِسْمِ اللَّهِ</span></div></div>`,
+      htmlContent: `<div class="space-y-4 p-2"><h3 class="font-display text-2xl font-extrabold text-[#4A220D]">شريحة قابلة للتخصيص بالذكاء الاصطناعي</h3><p class="text-sm text-[#7D4E35]">اختر «تعديل هذه الشريحة بالـ AI» واكتب ما تريده فيها من آيات أو كلمات للتهجي أو نقاط شرح.</p><div class="flex flex-wrap gap-2"><span data-tahajji="true" class="tahajji-chip font-quran text-xl leading-[2.1] inline-flex items-center px-4 py-2 rounded-2xl border-2 border-[#EADBC8] bg-[#FDF6EE] text-[#4A220D] font-bold cursor-pointer">بِسْمِ اللَّهِ</span></div></div>`,
       interactiveBlocks: [
         {
           id: `blk_new_${Date.now()}`,
@@ -442,6 +464,7 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
     const next = [...slides, blank];
     setSlides(next);
     setActiveSlideIndex(newIndex);
+    setHasUnsavedChanges(true);
   };
 
   const handleDeleteCurrentSlide = () => {
@@ -451,6 +474,7 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
       .map((s, i) => ({ ...s, order: i }));
     setSlides(next);
     setActiveSlideIndex((prev) => Math.max(0, Math.min(next.length - 1, prev)));
+    setHasUnsavedChanges(true);
   };
 
   const handleDeletePresentation = async (id: string) => {
@@ -471,18 +495,82 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
     }
   };
 
+  const openSpeakerPopoverAtElement = useCallback(
+    (anchorEl: HTMLElement | null, target: SlideAudioTarget) => {
+      setSelectedAudioTarget(target);
+      if (typeof window === 'undefined' || !anchorEl) {
+        setSpeakerMenu({
+          target,
+          top: 140,
+          left: 24,
+        });
+        return;
+      }
+      const rect = anchorEl.getBoundingClientRect();
+      const menuWidth = 280;
+      const clampedLeft = Math.max(
+        12,
+        Math.min(window.innerWidth - menuWidth - 12, rect.left + rect.width / 2 - menuWidth / 2)
+      );
+      const preferBelow = rect.bottom + 240 < window.innerHeight;
+      const topPos = preferBelow
+        ? rect.bottom + 8
+        : Math.max(12, rect.top - 220);
+      setSpeakerMenu({
+        target,
+        top: topPos,
+        left: clampedLeft,
+      });
+    },
+    []
+  );
+
+  const dispatchAudioCommand = useCallback(
+    (target: SlideAudioTarget, mode: SlideAudioPlayMode) => {
+      setSelectedAudioTarget(target);
+      setSpeakerMenu(null);
+      setAudioCommand({
+        id: Date.now() + Math.floor(Math.random() * 1000),
+        target,
+        mode,
+      });
+    },
+    []
+  );
+
   const handleSlideCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement | null;
     if (!target) return;
 
+    const speakerTrigger = target.closest('[data-speaker-trigger]') as HTMLElement | null;
+    if (speakerTrigger) {
+      e.stopPropagation();
+      const attrText = (speakerTrigger.getAttribute('data-audio-text') || '').trim();
+      const kind = speakerTrigger.getAttribute('data-audio-kind') || 'tahajji_words';
+      const sNum = Number(speakerTrigger.getAttribute('data-surah') || 0);
+      const aNum = Number(speakerTrigger.getAttribute('data-ayah-num') || 0);
+      const sName = speakerTrigger.getAttribute('data-surah-name') || '';
+      if (attrText) {
+        openSpeakerPopoverAtElement(speakerTrigger, {
+          text: attrText,
+          type: kind === 'ayah' ? 'ayah' : 'tahajji_words',
+          ...(sNum >= 1 && aNum >= 1
+            ? { surahNumber: sNum, ayahNumber: aNum, surahName: sName }
+            : {}),
+        });
+      }
+      return;
+    }
+
     const ayahCard = target.closest('[data-ayah], .quran-ayah-card') as HTMLElement | null;
     if (ayahCard) {
-      const txt = (ayahCard.textContent || '').trim();
+      const attrText = (ayahCard.getAttribute('data-audio-text') || '').trim();
+      const txt = attrText || (ayahCard.textContent || '').replace(/استماع \/ تهجي/g, '').trim();
       const sNum = Number(ayahCard.getAttribute('data-surah') || 0);
       const aNum = Number(ayahCard.getAttribute('data-ayah-num') || 0);
       const sName = ayahCard.getAttribute('data-surah-name') || '';
       if (txt) {
-        setSelectedAudioTarget({
+        openSpeakerPopoverAtElement(ayahCard, {
           text: txt,
           type: 'ayah',
           ...(sNum >= 1 && aNum >= 1
@@ -495,9 +583,10 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
 
     const chip = target.closest('[data-tahajji], .tahajji-chip') as HTMLElement | null;
     if (chip) {
-      const txt = (chip.textContent || '').trim();
+      const attrText = (chip.getAttribute('data-audio-text') || '').trim();
+      const txt = attrText || (chip.textContent || '').trim();
       if (txt) {
-        setSelectedAudioTarget({
+        openSpeakerPopoverAtElement(chip, {
           text: txt,
           type: 'tahajji_words',
         });
@@ -505,7 +594,7 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
       return;
     }
 
-    // Fallback: if user taps inside a paragraph/heading containing Arabic words, extract clean Arabic phrase
+    // Fallback: if user taps inside a paragraph/heading containing Arabic words
     const textEl = target.closest('p, li, h2, h3, h4, td, th, span') as HTMLElement | null;
     if (textEl) {
       const txt = (textEl.textContent || '').trim();
@@ -719,7 +808,10 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
                 <input
                   type="text"
                   value={deckTitle}
-                  onChange={(e) => setDeckTitle(e.target.value)}
+                  onChange={(e) => {
+                    setDeckTitle(e.target.value);
+                    setHasUnsavedChanges(true);
+                  }}
                   placeholder="عنوان العرض التقديمي..."
                   className="w-full min-h-[40px] px-3 rounded-xl border-2 border-[#EADBC8] bg-[#FDF6EE] font-display font-extrabold text-sm sm:text-base text-[#4A220D] focus:outline-none focus:border-[#F56900]"
                 />
@@ -790,14 +882,24 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
                       silent: false,
                     })
                   }
-                  className="duo-btn-orange min-h-[38px] px-3.5 rounded-xl font-display font-extrabold text-xs inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  className={`min-h-[40px] px-4 rounded-xl font-display font-extrabold text-xs inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50 ${
+                    hasUnsavedChanges || !activeId
+                      ? 'duo-btn-orange'
+                      : 'duo-btn-cream'
+                  }`}
                 >
                   {saving ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <Loader2 className="w-4 h-4 animate-spin" />
                   ) : (
-                    <Save className="w-3.5 h-3.5" />
+                    <Save className="w-4 h-4 text-current" />
                   )}
-                  <span>حفظ العرض</span>
+                  <span>
+                    {hasUnsavedChanges
+                      ? 'حفظ العرض (تغييرات غير محفوظة)'
+                      : activeId
+                      ? 'حفظ العرض'
+                      : 'حفظ العرض الآن'}
+                  </span>
                 </button>
               </div>
             </div>
@@ -869,14 +971,22 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
                     </div>
                   </div>
 
-                  {/* Rendered Braem Omran Theme Slide */}
+                  {/* Rendered Braem Omran 16:9 Editorial Slide */}
                   <div
                     onClick={handleSlideCanvasClick}
-                    className={`relative rounded-3xl border-2 p-5 sm:p-8 min-h-[340px] flex flex-col justify-between gap-5 shadow-sm transition-all ${getToneFrameClasses(
+                    className={`relative rounded-3xl border-2 p-5 sm:p-8 min-h-[360px] lg:aspect-[16/9] flex flex-col justify-between gap-4 shadow-sm transition-all overflow-hidden ${getToneFrameClasses(
                       currentSlide.themeTone
                     )}`}
                   >
-                    <header className="space-y-1.5 border-b border-[#EADBC8]/80 pb-4">
+                    <header className="space-y-1 border-b border-[#EADBC8]/80 pb-3.5 shrink-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-display font-extrabold text-[#F56900] bg-[#F56900]/10 px-2.5 py-0.5 rounded-lg">
+                          {getLayoutBadgeLabel(currentSlide.layout)}
+                        </span>
+                        <span className="text-[11px] font-bold text-[#7D4E35] tabular-nums">
+                          {toArabicIndicDigits(activeSlideIndex + 1)} / {toArabicIndicDigits(slides.length)}
+                        </span>
+                      </div>
                       <h3 className="font-display text-xl sm:text-2xl lg:text-3xl font-extrabold text-[#4A220D] leading-snug">
                         {currentSlide.title}
                       </h3>
@@ -888,13 +998,13 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
                     </header>
 
                     <div
-                      className="flex-1 text-[#4A220D] text-sm sm:text-base leading-relaxed space-y-3"
+                      className="flex-1 text-[#4A220D] text-sm sm:text-base leading-relaxed space-y-3 overflow-y-auto pr-0.5"
                       dangerouslySetInnerHTML={{ __html: sanitizedCurrentHtml }}
                     />
 
-                    {/* Interactive Quick Chips on Slide Bottom */}
+                    {/* Interactive Quick Chips on Slide Bottom with Speaker Icon */}
                     {currentSlide.interactiveBlocks.length > 0 && (
-                      <div className="pt-3 border-t border-[#EADBC8]/80 flex flex-wrap items-center gap-2">
+                      <div className="pt-3 border-t border-[#EADBC8]/80 flex flex-wrap items-center gap-2 shrink-0">
                         <span className="text-[11px] font-extrabold text-[#7D4E35]">
                           عناصر التهجي والتلاوة:
                         </span>
@@ -902,33 +1012,48 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
                           const isSelected =
                             selectedAudioTarget?.text === blk.arabicText &&
                             selectedAudioTarget?.type === blk.type;
+                          const targetObj: SlideAudioTarget = {
+                            text: blk.arabicText,
+                            type: blk.type,
+                            surahNumber: blk.surahNumber,
+                            ayahNumber: blk.ayahNumber,
+                            surahName: blk.surahName,
+                            label: blk.label,
+                          };
                           return (
-                            <button
+                            <div
                               key={blk.id}
-                              type="button"
-                              onClick={(ev) => {
-                                ev.stopPropagation();
-                                setSelectedAudioTarget({
-                                  text: blk.arabicText,
-                                  type: blk.type,
-                                  surahNumber: blk.surahNumber,
-                                  ayahNumber: blk.ayahNumber,
-                                  surahName: blk.surahName,
-                                  label: blk.label,
-                                });
-                              }}
-                              className={`px-3 py-1.5 rounded-xl border-2 text-xs font-extrabold cursor-pointer transition-colors ${
+                              className={`inline-flex items-center gap-1 rounded-2xl border-2 px-2.5 py-1 transition-colors ${
                                 isSelected
-                                  ? 'bg-[#F56900] border-[#F56900] text-white'
+                                  ? 'bg-[#F56900]/10 border-[#F56900] text-[#4A220D]'
                                   : blk.type === 'ayah'
-                                  ? 'bg-[#58CC02]/12 border-[#58CC02]/50 text-[#357A02] hover:border-[#F56900]'
-                                  : 'bg-white border-[#EADBC8] text-[#4A220D] hover:border-[#F56900]'
+                                  ? 'bg-[#F4FBE9] border-[#58CC02]/60 text-[#357A02]'
+                                  : 'bg-[#FDF6EE] border-[#EADBC8] text-[#4A220D]'
                               }`}
                             >
-                              {blk.type === 'ayah' ? '📖 ' : ''}
-                              {blk.arabicText.slice(0, 46)}
-                              {blk.arabicText.length > 46 ? '…' : ''}
-                            </button>
+                              <button
+                                type="button"
+                                onClick={(ev) => {
+                                  ev.stopPropagation();
+                                  openSpeakerPopoverAtElement(ev.currentTarget, targetObj);
+                                }}
+                                className="font-quran text-lg leading-[1.9] font-bold cursor-pointer px-1"
+                              >
+                                {blk.arabicText.slice(0, 44)}
+                                {blk.arabicText.length > 44 ? '…' : ''}
+                              </button>
+                              <button
+                                type="button"
+                                aria-label={`خيارات الاستماع والتهجي لعنصر ${blk.arabicText.slice(0, 30)}`}
+                                onClick={(ev) => {
+                                  ev.stopPropagation();
+                                  openSpeakerPopoverAtElement(ev.currentTarget, targetObj);
+                                }}
+                                className="w-7 h-7 rounded-xl bg-white border border-[#EADBC8] hover:bg-[#F56900] hover:text-white text-[#F56900] flex items-center justify-center cursor-pointer transition-colors shrink-0"
+                              >
+                                <Volume2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
                           );
                         })}
                       </div>
@@ -989,6 +1114,7 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
                 selectedTarget={selectedAudioTarget}
                 slideBlocks={currentSlide.interactiveBlocks}
                 onSelectTarget={setSelectedAudioTarget}
+                commandRequest={audioCommand}
               />
             )}
           </section>
@@ -1239,8 +1365,87 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
                 selectedTarget={selectedAudioTarget}
                 slideBlocks={currentSlide.interactiveBlocks}
                 onSelectTarget={setSelectedAudioTarget}
+                commandRequest={audioCommand}
                 compact
               />
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* ==================== 3-MODE SPEAKER POPOVER MENU ==================== */}
+      {speakerMenu &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[110]"
+            onClick={() => setSpeakerMenu(null)}
+            dir="rtl"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                top: `${speakerMenu.top}px`,
+                left: `${speakerMenu.left}px`,
+                width: '280px',
+              }}
+              className="fixed bg-white border-2 border-[#F56900] rounded-3xl shadow-2xl p-3.5 space-y-2.5"
+              role="menu"
+              aria-label="خيارات الاستماع والتهجي"
+            >
+              <div className="flex items-start justify-between gap-2 pb-2 border-b border-[#F7EBDD]">
+                <p className="font-quran text-xl text-[#4A220D] leading-[1.9] line-clamp-2">
+                  {speakerMenu.target.text}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setSpeakerMenu(null)}
+                  aria-label="إغلاق القائمة"
+                  className="p-1 rounded-lg text-[#7D4E35] hover:bg-[#FDF6EE] cursor-pointer shrink-0"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="space-y-1.5">
+                <button
+                  type="button"
+                  onClick={() => dispatchAudioCommand(speakerMenu.target, 'normal')}
+                  className="w-full min-h-[42px] px-3 py-2 rounded-2xl bg-[#FDF6EE] hover:bg-[#58CC02] hover:text-white text-[#4A220D] font-display font-bold text-xs flex items-center gap-2 transition-colors cursor-pointer"
+                >
+                  <Volume2 className="w-4 h-4 shrink-0 text-[#46A302]" />
+                  <span>قراءة مباشرة</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => dispatchAudioCommand(speakerMenu.target, 'noor_albayan')}
+                  className="w-full min-h-[42px] px-3 py-2 rounded-2xl bg-[#FDF6EE] hover:bg-[#F56900] hover:text-white text-[#4A220D] font-display font-bold text-xs flex items-center gap-2 transition-colors cursor-pointer"
+                >
+                  <Sparkles className="w-4 h-4 shrink-0 text-[#F56900]" />
+                  <span>تهجي مباشر (الفتح الرباني)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => dispatchAudioCommand(speakerMenu.target, 'cumulative_tahajji')}
+                  className="w-full min-h-[42px] px-3 py-2 rounded-2xl bg-[#FDF6EE] hover:bg-[#D98A00] hover:text-white text-[#4A220D] font-display font-bold text-xs flex items-center gap-2 transition-colors cursor-pointer text-right"
+                >
+                  <Repeat className="w-4 h-4 shrink-0 text-[#D98A00]" />
+                  <span>تهجي تجميعي (يتهجى ويرجع من البداية)</span>
+                </button>
+
+                {speakerMenu.target.surahNumber && speakerMenu.target.ayahNumber && (
+                  <button
+                    type="button"
+                    onClick={() => dispatchAudioCommand(speakerMenu.target, 'sheikh')}
+                    className="w-full min-h-[42px] px-3 py-2 rounded-2xl bg-[#58CC02]/12 hover:bg-[#58CC02] hover:text-white text-[#357A02] font-display font-bold text-xs flex items-center gap-2 transition-colors cursor-pointer"
+                  >
+                    <Volume2 className="w-4 h-4 shrink-0" />
+                    <span>تلاوة الشيخ للآية</span>
+                  </button>
+                )}
+              </div>
             </div>
           </div>,
           document.body

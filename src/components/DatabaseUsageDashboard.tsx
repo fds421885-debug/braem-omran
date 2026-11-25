@@ -20,7 +20,9 @@ import type {
   DatabaseUsageDashboardReport,
   PhysicalDatabaseUsageSummary,
 } from '../types/platform';
+import { AudioDatabasesManager } from './AudioDatabasesManager';
 import { ModernLoader } from './ModernLoader';
+import { SavedAudioManager } from './SavedAudioManager';
 
 interface DatabaseUsageDashboardProps {
   complexes: DiscoveredComplex[];
@@ -45,12 +47,16 @@ const TAB_BAR_COLORS: Record<string, string> = {
   attendance: '#FFA900',
   library: '#2B8A3E',
   curricula: '#C95200',
+  presentations: '#D98A00',
   core_broadcasts: '#7D4E35',
 };
+
+type DbDashboardSubTab = 'usage' | 'audio_dbs' | 'saved_audio';
 
 export const DatabaseUsageDashboard: React.FC<DatabaseUsageDashboardProps> = ({
   complexes,
 }) => {
+  const [subTab, setSubTab] = useState<DbDashboardSubTab>('usage');
   const [selectedComplexId, setSelectedComplexId] = useState<string>('all');
   const [report, setReport] = useState<DatabaseUsageDashboardReport | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -125,6 +131,67 @@ export const DatabaseUsageDashboard: React.FC<DatabaseUsageDashboardProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Sub-Navigation Bar: Stats | Audio DBs Pool | Saved Audio Browser */}
+      <nav
+        aria-label="أقسام إدارة قواعد البيانات"
+        className="bg-white border-2 border-[#EADBC8] rounded-3xl p-2 grid grid-cols-1 sm:grid-cols-3 gap-2"
+      >
+        <button
+          type="button"
+          onClick={() => setSubTab('usage')}
+          className={`min-h-[44px] px-4 py-2 rounded-2xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center justify-center gap-2 cursor-pointer transition-colors ${
+            subTab === 'usage'
+              ? 'duo-btn-orange'
+              : 'bg-[#FDF6EE] text-[#4A220D] hover:bg-[#F7EBDD]'
+          }`}
+        >
+          <BarChart3 className="w-4 h-4 shrink-0" />
+          <span>إحصائيات الاستهلاك والحدود</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setSubTab('audio_dbs')}
+          className={`min-h-[44px] px-4 py-2 rounded-2xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center justify-center gap-2 cursor-pointer transition-colors ${
+            subTab === 'audio_dbs'
+              ? 'duo-btn-orange'
+              : 'bg-[#FDF6EE] text-[#4A220D] hover:bg-[#F7EBDD]'
+          }`}
+        >
+          <Database className="w-4 h-4 shrink-0" />
+          <span>
+            قواعد الأصوات المخصصة
+            {report?.audioStorageSummary.globalAudioHostCount
+              ? ` (${report.audioStorageSummary.globalAudioHostCount})`
+              : ''}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setSubTab('saved_audio')}
+          className={`min-h-[44px] px-4 py-2 rounded-2xl font-display font-extrabold text-xs sm:text-sm inline-flex items-center justify-center gap-2 cursor-pointer transition-colors ${
+            subTab === 'saved_audio'
+              ? 'duo-btn-orange'
+              : 'bg-[#FDF6EE] text-[#4A220D] hover:bg-[#F7EBDD]'
+          }`}
+        >
+          <Volume2 className="w-4 h-4 shrink-0" />
+          <span>
+            الأصوات المحفوظة
+            {report?.audioStorageSummary.audioWithWavDocs
+              ? ` (${report.audioStorageSummary.audioWithWavDocs.toLocaleString('en-US')})`
+              : ''}
+          </span>
+        </button>
+      </nav>
+
+      {subTab === 'audio_dbs' ? (
+        <AudioDatabasesManager onPoolChanged={() => void fetchUsage(true)} />
+      ) : subTab === 'saved_audio' ? (
+        <SavedAudioManager onAudioMutated={() => void fetchUsage(true)} />
+      ) : (
+        <>
       {/* Header & Filter Bar */}
       <section className="bg-white border-2 border-[#EADBC8] rounded-3xl p-5 sm:p-6 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-4">
@@ -291,13 +358,20 @@ export const DatabaseUsageDashboard: React.FC<DatabaseUsageDashboardProps> = ({
               <div>
                 <div className="inline-flex items-center gap-1.5 text-xs font-display font-extrabold text-[#2B8A3E]">
                   <Volume2 className="w-4 h-4" />
-                  <span>عداد تخزين الصوتيات والتهجي (wordAudio)</span>
+                  <span>
+                    عداد تخزين الصوتيات والتهجي (wordAudio)
+                    {report.audioStorageSummary.globalAudioPoolActive
+                      ? ' · وضع قواعد الأصوات المخصصة مفعّل'
+                      : ''}
+                  </span>
                 </div>
                 <h2 className="font-display text-lg sm:text-xl font-extrabold text-[#4A220D] mt-0.5">
                   استهلاك الصوتيات المتبقي قبل نفاد الحدود المجانية
                 </h2>
                 <p className="text-xs text-[#7D4E35] mt-1">
-                  القواعد المستضيفة للصوتيات والمكتبة حالياً:{' '}
+                  {report.audioStorageSummary.globalAudioPoolActive
+                    ? 'قواعد الأصوات المخصصة (معزولة عن القاعدة الأساسية والتبويبات): '
+                    : 'القواعد المستضيفة للصوتيات والمكتبة حالياً: '}
                   <strong className="text-[#4A220D]">
                     {report.audioStorageSummary.libraryHostDbLabels.join(' ، ') || 'القاعدة الأساسية للموقع'}
                   </strong>
@@ -789,6 +863,8 @@ export const DatabaseUsageDashboard: React.FC<DatabaseUsageDashboardProps> = ({
           </section>
         </>
       ) : null}
+        </>
+      )}
     </div>
   );
 };

@@ -51,6 +51,7 @@ import {
 } from '../services/clientArabicEngine';
 import { generateValidId, getReciterAyahAudioUrl } from '../services/multiDb';
 import {
+  canonicalizeArabicForAudioKey,
   deleteBookFromWorkspace,
   listBooksInComplex,
   loadBookPages,
@@ -985,7 +986,8 @@ export const BookLibrarySection: React.FC<BookLibrarySectionProps> = ({
       mode: 'noor_albayan' | 'normal',
       options?: { callToken?: number; showUi?: boolean; segments?: BookTextSegment[] }
     ): Promise<ResolvedWordAudio> => {
-      const normalizedText = seg.text.trim().replace(/\s+/g, ' ');
+      const normalizedText =
+        canonicalizeArabicForAudioKey(seg.text) || seg.text.trim().replace(/\s+/g, ' ');
       const ctx = getSegmentContext(seg, options?.segments);
       const contextSuffix = mode === 'noor_albayan' ? ctx.contextSuffix : '';
       const cacheKey = `${

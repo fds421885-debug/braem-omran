@@ -282,6 +282,7 @@ export type ComplexFeatureTabKey =
   | 'attendance'
   | 'library'
   | 'curricula'
+  | 'presentations'
   | 'accounts_invites'
   | 'mosques_halaqat';
 
@@ -289,6 +290,7 @@ export const COMPLEX_FEATURE_TAB_LABELS: Record<ComplexFeatureTabKey, string> = 
   attendance: 'الحضور والغياب',
   library: 'الملفات والكتب',
   curricula: 'المقررات',
+  presentations: 'العروض التقديمية',
   accounts_invites: 'الحسابات وروابط التسجيل',
   mosques_halaqat: 'المساجد والحلقات',
 };
@@ -528,6 +530,18 @@ export interface AudioStorageQuotaSummary {
   librarySparkRemainingBytes: number;
   librarySparkUsagePercent: number;
   estimatedRemainingAudioClips: number;
+  globalAudioPoolActive?: boolean;
+  globalAudioHostCount?: number;
+}
+
+export interface SavedWordAudioBrowserItem {
+  docId: string;
+  record: BookWordAudioRecord;
+  dbKey: string;
+  dbLabel: string;
+  isGlobalPool: boolean;
+  config: ExternalFirebaseConfig | null;
+  approxBytes: number;
 }
 
 export interface DatabaseUsageDashboardReport {

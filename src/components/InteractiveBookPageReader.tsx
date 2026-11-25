@@ -36,6 +36,7 @@ import {
   toArabicIndicDigits,
 } from '../services/mushafService';
 import {
+  canonicalizeArabicForAudioKey,
   lookupWordAudioAcrossLibrary,
   saveWordAudioToLibraryDb,
   type ComplexWorkspaceData,
@@ -351,7 +352,8 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
       wordText: string,
       ctx?: { nextWord?: string; isEndOfAyah?: boolean; contextSuffix?: string }
     ): Promise<ResolvedWordAudio | null> => {
-      const normalizedText = wordText.trim().replace(/\s+/g, ' ');
+      const normalizedText =
+        canonicalizeArabicForAudioKey(wordText) || wordText.trim().replace(/\s+/g, ' ');
       if (!normalizedText) return null;
       const contextSuffix = mode === 'noor_albayan' ? ctx?.contextSuffix || '' : '';
       const cacheKey = `${
@@ -691,7 +693,8 @@ export const InteractiveBookPageReader: React.FC<InteractiveBookPageReaderProps>
       mode: 'noor_albayan' | 'normal',
       options?: { callToken?: number; showUi?: boolean; segments?: BookTextSegment[] }
     ): Promise<ResolvedWordAudio> => {
-      const normalizedText = seg.text.trim().replace(/\s+/g, ' ');
+      const normalizedText =
+        canonicalizeArabicForAudioKey(seg.text) || seg.text.trim().replace(/\s+/g, ' ');
       const ctx = getSegmentContext(seg, options?.segments);
       const contextSuffix = mode === 'noor_albayan' ? ctx.contextSuffix : '';
       const cacheKey = `${
