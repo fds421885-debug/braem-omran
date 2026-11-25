@@ -187,6 +187,17 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
     }
   }, [activeSlideIndex, currentSlide]);
 
+  useEffect(() => {
+    setAudioCommand(null);
+    setSpeakerMenu(null);
+  }, [activeSlideIndex]);
+
+  const setFullscreenMode = useCallback((open: boolean) => {
+    setAudioCommand(null);
+    setSpeakerMenu(null);
+    setFullscreenOpen(open);
+  }, []);
+
   const openNewStudio = (options?: {
     initialPrompt?: string;
     autoStartPptx?: boolean;
@@ -204,7 +215,9 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
     setAiError(null);
     setSaveFeedback(null);
     setHasUnsavedChanges(false);
+    setAudioCommand(null);
     setSpeakerMenu(null);
+    setFullscreenOpen(false);
     setChatInput(options?.initialPrompt || '');
     setViewMode('studio');
     if (options?.autoStartPptx) {
@@ -231,6 +244,7 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
     setAiError(null);
     setSaveFeedback(null);
     setHasUnsavedChanges(false);
+    setAudioCommand(null);
     setSpeakerMenu(null);
     setViewMode('studio');
     setFullscreenOpen(startFullscreen);
@@ -652,7 +666,12 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
           {viewMode === 'studio' && (
             <button
               type="button"
-              onClick={() => setViewMode('library')}
+              onClick={() => {
+                setAudioCommand(null);
+                setSpeakerMenu(null);
+                setFullscreenOpen(false);
+                setViewMode('library');
+              }}
               className="min-h-[42px] px-3 py-1.5 rounded-2xl border-2 border-[#EADBC8] bg-[#FDF6EE] hover:bg-white text-[#4A220D] font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer"
             >
               <ArrowRight className="w-4 h-4 text-[#F56900]" />
@@ -838,7 +857,7 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
 
                     <button
                       type="button"
-                      onClick={() => setFullscreenOpen(true)}
+                      onClick={() => setFullscreenMode(true)}
                       className="duo-btn-green min-h-[38px] px-3 rounded-xl font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer"
                     >
                       <Maximize2 className="w-3.5 h-3.5" />
@@ -1106,8 +1125,8 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
               )}
             </div>
 
-            {/* Interactive Tahajji + Quran Audio Player Docked Under Canvas */}
-            {currentSlide && (
+            {/* Interactive Tahajji + Quran Audio Player Docked Under Canvas (unmounted in fullscreen to avoid duplicate players) */}
+            {currentSlide && !fullscreenOpen && (
               <SlideArabicAudioBar
                 workspace={workspace}
                 currentUserId={currentUserId}
@@ -1115,6 +1134,7 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
                 slideBlocks={currentSlide.interactiveBlocks}
                 onSelectTarget={setSelectedAudioTarget}
                 commandRequest={audioCommand}
+                slideKey={`${currentSlide.id}_${activeSlideIndex}`}
               />
             )}
           </section>
@@ -1327,7 +1347,7 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setFullscreenOpen(false)}
+                  onClick={() => setFullscreenMode(false)}
                   className="duo-btn-orange min-h-[38px] px-3.5 rounded-xl font-display font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer"
                 >
                   <Minimize2 className="w-4 h-4" />
@@ -1366,6 +1386,7 @@ export const PresentationsSection: React.FC<PresentationsSectionProps> = ({
                 slideBlocks={currentSlide.interactiveBlocks}
                 onSelectTarget={setSelectedAudioTarget}
                 commandRequest={audioCommand}
+                slideKey={`${currentSlide.id}_${activeSlideIndex}_fs`}
                 compact
               />
             </div>
